@@ -1,0 +1,12 @@
+{
+  "display_name": "柏宝绘",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "dist/index.js?ver=0.3.0",
+  "author": "柏柏",
+  "version": "0.3.0",
+  "homePage": "https://github.com/baibai-git/ST-BaiBai-Image",
+  "auto_update": false,
+  "minimum_client_version": "1.12.13"
+}
