@@ -1,6 +1,9 @@
 import vue from '@vitejs/plugin-vue';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const projectDir = path.dirname(fileURLToPath(import.meta.url));
 import { defineConfig } from 'vite';
 
 // 浏览器从 /scripts/extensions/third-party/ST-BaiBai-Image/dist/index.js 加载,
@@ -8,8 +11,8 @@ import { defineConfig } from 'vite';
 // `@sillytavern/scripts/xxx` -> `../../../../../scripts/xxx.js`,并标为 external,
 // 这样 ST 自身的代码不会被打进我们的包里,运行时浏览器直接走相对路径。
 const relative_sillytavern_path = path.relative(
-  path.join(__dirname, 'dist'),
-  __dirname.substring(0, __dirname.lastIndexOf('public') + 'public'.length),
+  path.join(projectDir, 'dist'),
+  projectDir.substring(0, projectDir.lastIndexOf('public') + 'public'.length),
 );
 
 // ST 已在全局挂载的第三方库,映射到全局变量,避免重复打包。
@@ -19,7 +22,7 @@ const globals: Record<string, string> = {
   toastr: 'toastr',
 };
 
-const package_json = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')) as {
+const package_json = JSON.parse(fs.readFileSync(path.join(projectDir, 'package.json'), 'utf8')) as {
   version?: string;
 };
 const package_version = String(package_json.version ?? '');
@@ -53,7 +56,7 @@ export default defineConfig(({ mode }) => ({
 
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src'),
+      '@': path.resolve(projectDir, 'src'),
     },
   },
 
