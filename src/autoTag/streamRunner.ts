@@ -3,7 +3,7 @@ import { buildAutoTagMessages, captureAutoTagEnvironment, type AutoTagEnvironmen
 import { prepareTargetText, type PreparedTargetText } from '@/autoTag/clean';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import { applyPositionedCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
-import { MarkerScanner, markerSegments, prefixBefore, replaceMarkers, findMarkers } from '@/autoTag/markers';
+import { MarkerScanner, markerSegments, prefixBefore, replaceMarkers, findMarkers, contextWithoutRepeatedTarget } from '@/autoTag/markers';
 import { injectImageTags, parseImagePlan, type ImageInsertion, type CharChange, type ImagePlan } from '@/autoTag/protocol';
 import { rebaseImagePositions } from '@/autoTag/rebase';
 import { captureRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
@@ -158,30 +158,40 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
   return plan;
 }
 async function analyze(s: Session, job: Job): Promise<Payload> {
+  const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const target = prepareTargetText(job.input.text || job.input.intent, [...settings.excludes.customStripTags, 'bbi_image']);
   const entries = charTagsBeforeFloor((s.binding?.floor ?? s.referenceFloor) + (s.continuing ? 1 : 0));
   const anchors = resolveCharAnchors(entries, lockedCharTagNames());
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
-  const note = `本次只分析以下剧情段，为标记「${job.input.intent}」规划恰好一张图。画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${job.input.prefix}`;
+  const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
+  const note = `本次只分析以下剧情段，为标记「${job.input.intent}」规划恰好一张图。画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
   const analysisContext = { ...getContext()!, chat: [...getContext()!.chat] };
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
   const messages = await buildAutoTagMessages(analysisContext, analysisFloor,
     { ...s.options, minImages: 1, maxImages: 1 }, memory, target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+  const preparedAt = performance.now(), promptChars = messages.reduce((total, message) => total + message.content.length, 0);
   let payload: Payload | undefined;
   let error: unknown;
   for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
     if (job.controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    const requestStart = performance.now(); let responseChars = 0;
     try {
       await completion(s, messages, job.controller.signal, raw => {
+        responseChars = raw.length;
         const plan = preparePlan(s, parseImagePlan(raw, target.segments, 1, 1), anchors);
         const image = plan.images[0];
         payload = { image: { ...image, sourceLine: image.sourceLine + job.input.sourceLine, renderProfile: s.profile },
           changes: plan.changes.map(change => ({ ...change, sourceLine: change.sourceLine + job.input.sourceLine })) };
       });
+      log('stream:analysis-timing', { job: job.id, queueMs: Math.round(start-job.createdAt), prepareMs: Math.round(preparedAt-start),
+        apiMs: Math.round(performance.now()-requestStart), attempt: attempt+1, promptChars, responseChars, removedDuplicateChars: job.input.prefix.length-prefix.length, ok: !!payload });
       if (payload) return payload;
-    } catch (e) { error = e; if (job.controller.signal.aborted) throw e; }
+    } catch (e) {
+      log('stream:analysis-timing', { job: job.id, queueMs: Math.round(start-job.createdAt), prepareMs: Math.round(preparedAt-start), apiMs: Math.round(performance.now()-requestStart), attempt: attempt+1, promptChars, ok: false });
+      error = e; if (job.controller.signal.aborted) throw e;
+    }
   }
   throw error ?? new Error('配图分析未返回有效图片');
 }

@@ -3,6 +3,7 @@ import type { StreamPhase } from '@/autoTag/streamState';
 export interface StreamJob<P, R> {
   id: string;
   ordinal: number;
+  createdAt: number;
   input: { raw: string; intent: string; text: string; prefix: string; sourceLine: number };
   phase: StreamPhase;
   controller: AbortController;
@@ -38,7 +39,7 @@ export class StreamRun<P, R> {
   add(input: StreamJob<P, R>['input'], payload?: P): StreamJob<P, R> | null {
     if (this.stopped || this.jobs.filter(job => job.phase !== 'cancelled').length >= this.max) return null;
     const ordinal = this.jobs.length;
-    const job: StreamJob<P, R> = { id: `${this.id}_${ordinal}`, ordinal, input, phase: 'analyzing',
+    const job: StreamJob<P, R> = { id: `${this.id}_${ordinal}`, ordinal, createdAt: performance.now(), input, phase: 'analyzing',
       controller: new AbortController(), attached: false, saved: false, revision: 0 };
     this.jobs.push(job);
     if (payload) { job.payload = payload; job.phase = this.autoGenerate ? 'generating' : 'pending'; this.touch(job); if (this.autoGenerate) this.startGeneration(job); }
@@ -60,6 +61,7 @@ export class StreamRun<P, R> {
   retry(job: StreamJob<P, R>): void {
     if (this.stopped || job.saved || this.generating.has(job.id) || this.commits.has(job.id) || job.phase === 'analyzing') return;
     job.controller = new AbortController(); job.error = undefined;
+    job.createdAt = performance.now();
     if (job.result) { job.phase = 'saving'; this.touch(job); }
     else if (job.payload) this.startGeneration(job);
     else { job.phase = 'analyzing'; this.queue.push(job); this.touch(job); this.pump(); }

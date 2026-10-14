@@ -105,4 +105,11 @@ describe('real stream runner integration with controlled external dependencies',
     expect(tail.options).toMatchObject({minImages:0,maxImages:1});expect(tail.content).toContain('进入车站');expect(tail.content).not.toContain('她开门');
     finishAnalysis(1);await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);
   });
+  it('keeps the full current target and earlier facts without repeating the current target in the task note',async()=>{
+    const text='她穿白裙，持钥匙。\n[img: 钥匙]\n她用钥匙推开车站的门。\n[img: 推门]';
+    beginStreamSession('A');feedStreamText(text);await flush();
+    const request=h.analyses[1].m[0];
+    expect(request.content).toContain('她用钥匙推开车站的门。');expect(request.note).toContain('她穿白裙，持钥匙。');
+    expect(request.note).not.toContain('她用钥匙推开车站的门。');expect(h.analyses).toHaveLength(2);
+  });
 });

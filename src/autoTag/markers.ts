@@ -136,3 +136,13 @@ export function prefixBefore(text: string, markerIndex: number, maxChars: number
   const nl = cut.indexOf('\n');
   return nl >= 0 ? cut.slice(nl + 1) : cut;
 }
+
+/** The target is already provided in full with position IDs; remove only its exact repeated suffix. */
+export function contextWithoutRepeatedTarget(prefix: string, target: string): string {
+  const body = target.trim(), before = prefix.trimEnd();
+  if (!body || !before) return prefix;
+  if (before.endsWith(body)) return before.slice(0, before.length - body.length).trimEnd();
+  // A long target may occupy the entire retained prefix window. Its full text remains in target.
+  if (body.endsWith(before.trimStart())) return '';
+  return prefix; // Ambiguous overlap keeps the original facts rather than deleting any of them.
+}
