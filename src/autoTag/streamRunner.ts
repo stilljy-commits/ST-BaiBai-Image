@@ -8,10 +8,11 @@ import { injectImageTags, parseImagePlan, type ImageInsertion, type CharChange, 
 import { rebaseImagePositions } from '@/autoTag/rebase';
 import { captureRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
 import { StreamRun, type StreamJob } from '@/autoTag/streamCore';
+import { prepareStreamBatch, splitStreamBatch } from '@/autoTag/streamBatch';
 import { mergeStreamProfiles } from '@/autoTag/streamProfiles';
 import { registerStreamActions, updateStreamSlot, forgetStreamSlot } from '@/autoTag/streamState';
 import { planChangeOps } from '@/autoTag/changeOps';
-import { charTagsBeforeFloor, lockedCharTagNames, makeCharTagFloorDelta, readCharTagFloorDelta, recomputeCharTags, BBI_CHAR_EXTRA_KEY, type CharTagAutoOp } from '@/state/charTags';
+import { charTagsBeforeFloor, lockedCharTagNames, makeCharTagFloorDelta, readCharTagFloorDelta, recomputeCharTags, applyCharTagOps, BBI_CHAR_EXTRA_KEY, type CharTagAutoOp } from '@/state/charTags';
 import { settings, getTagGenChannel, isCurrentChatExcluded, type AutoTagSettings } from '@/state/settings';
 import { captureGenerationSnapshot, generateImage, decideSeed, type GenerationSnapshot, type GenerateOutput } from '@/generate';
 import { saveImageResult } from '@/floor/storage';
@@ -20,6 +21,7 @@ import { applyMessageText, ensureFloorRendered, isSameMessage } from '@/st/messa
 import { getContext, type STContext, type STMessage } from '@/st/context';
 import { parseImageTags, parseImageTagContent, serializeImageTag } from '@/st/imageTagRegex';
 import { randomUuid } from '@/randomUuid';
+import { effectiveOrientation, parseSize, pickSize } from '@/backends/size';
 
 interface Payload { image: ImageInsertion; changes: CharChange[]; }
 type Job = StreamJob<Payload, GenerateOutput>;
@@ -29,7 +31,7 @@ interface Session {
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
   promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText;
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
-  controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; completed: boolean; supplementDone: boolean;
+  controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; changeOps: Map<string, CharTagAutoOp>; completed: boolean; supplementDone: boolean;
 }
 const sessions = new Map<string, Session>();
 let current: Session | undefined;
@@ -49,12 +51,14 @@ function serial<T>(s: Session, action: () => Promise<T>): Promise<T> {
 }
 function tagFor(s: Session, job: Job): string {
   return serializeImageTag(job.payload ? { ...job.payload.image, slotId: job.id, renderProfile: s.profile }
-    : { tag: '', nl: '', negative: '', characters: [], size: 'portrait', slotId: job.id,
-      pending: job.input.raw || job.input.intent, renderProfile: s.profile });
+    : { tag: '', nl: '', negative: '', characters: [], slotId: job.id,
+      pending: job.input.raw || job.input.intent, renderProfile: s.profile, size: s.promptEnvironment.profile.lockedSize ?? 'portrait' });
 }
 function publish(s: Session, job: Job): void {
   if (job.saved || job.phase === 'cancelled') { forgetStreamSlot(job.id); updatePreview(s); return; }
-  updateStreamSlot(job.id, { phase: job.phase, url: job.result?.result.url, error: job.error });
+  const dimensions = s.generation.backend === 'nai' ? parseSize(pickSize(s.generation.nai,
+    effectiveOrientation(s.generation.orientation, job.payload?.image.size ?? s.promptEnvironment.profile.lockedSize ?? 'portrait')) || '832×1216') : null;
+  updateStreamSlot(job.id, { phase: job.phase, url: job.result?.result.url, error: job.error, dimensions: dimensions ?? undefined });
   registerStreamActions(job.id, { cancel: () => s.core.cancelJob(job), retry: () => { if (ownerValid(s)) s.core.retry(job); } });
   updatePreview(s);
 }
@@ -81,15 +85,22 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
     promptEnvironment: captureAutoTagEnvironment(), existingCount: type === 'continue' ? parseImageTags(ctx.chat.at(-1)?.mes ?? '').length : 0,
     continuing: type === 'continue', baselineOps: [],
     channel: getTagGenChannel() ? jsonCopy(getTagGenChannel()) : null,
-    controller: new AbortController(), chain: Promise.resolve(), written: new Map(), established: new Map(), completed: false, supplementDone: false,
+    controller: new AbortController(), chain: Promise.resolve(), written: new Map(), established: new Map(), changeOps: new Map(), completed: false, supplementDone: false,
   };
   const core = new StreamRun<Payload, GenerateOutput>(state.id, Math.max(0, state.options.maxImages - state.existingCount), Math.min(4, Math.max(1, state.options.streamAnalysisConcurrency ?? 2)),
     state.options.autoGenerate, {
       analyze: job => analyze(s, job),
-      generate: (payload, job) => generateImage({ prompt: payload.image.tag, nl: payload.image.nl,
+      analyzeBatch: jobs => analyzeBatch(s, jobs),
+      batchFailed: jobs => log('stream:batch-fallback', { jobs: jobs.map(job => job.id), reason: '批量分析未通过，按原单张流程重试' }),
+      generate: async (payload, job) => {
+        const start = performance.now();
+        const output = await generateImage({ prompt: payload.image.tag, nl: payload.image.nl,
         negative: payload.image.negative, characters: payload.image.characters, size: payload.image.size,
         seed: s.generation.backend === 'nai' && s.generation.nai.seed > 0 ? s.generation.nai.seed : decideSeed(s.generation.backend),
-        renderProfile: s.profile }, job.controller.signal, {}, s.generation),
+        renderProfile: s.profile }, job.controller.signal, {}, s.generation);
+        log('stream:image-timing', { job: job.id, queueAndGenerateMs: Math.round(performance.now() - start) });
+        return output;
+      },
       commit: job => commit(s, job), changed: job => publish(s, job),
       release: output => output.result.revoke(), idle: () => retire(s),
     });
@@ -134,6 +145,18 @@ async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, 
   if (s.channel) await requestCompletion(s.channel, messages, { signal, source: '流式配图', validate });
   else await requestViaMainApi(messages, { signal, source: '流式配图', validate });
 }
+const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
+本楼仍指整条消息；当前请求的「目标正文」仅指下方带 P 编号的段落。图片规划和首次建档检查都只处理这些目标段落中的角色。
+角色卡、世界书、柏宝书、此前正文提供完整设定与连续性依据；段外出现但未进入本次目标段落的角色，不在本请求补建档，不追加 changes，也不用反复盘点其此前是否漏建档。
+目标段内的正式角色即使不入画，也照原规则检查建档；固定外貌库里已列出的角色直接复用，不重复 new。本楼其他流式任务已确认的首次建档会加入该库，固定外貌本楼全程有效。临时服装、动作等仍以对应目标段落事实为准，不把后文临时状态提前套用。`;
+function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
+  const floor = s.binding?.floor ?? s.referenceFloor;
+  const entries = charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
+  const locked = lockedCharTagNames();
+  // Only immutable introductions are shared. Timeline updates (outfit etc.) remain positional.
+  const introduced = planChangeOps({ images: [], changes: [...s.established.values()] }).map(item => item.op);
+  return resolveCharAnchors(applyCharTagOps(entries, introduced, floor, locked), locked);
+}
 function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof resolveCharAnchors>): ImagePlan {
   const profile = s.promptEnvironment.profile;
   if (profile.naiCharPrompts && profile.nl && plan.changes.some(change => change.field === 'new' && !change.nl?.trim())) {
@@ -161,11 +184,10 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const target = prepareTargetText(job.input.text || job.input.intent, [...settings.excludes.customStripTags, 'bbi_image']);
-  const entries = charTagsBeforeFloor((s.binding?.floor ?? s.referenceFloor) + (s.continuing ? 1 : 0));
-  const anchors = resolveCharAnchors(entries, lockedCharTagNames());
+  const anchors = analysisAnchors(s);
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
-  const note = `本次只分析以下剧情段，为标记「${job.input.intent}」规划恰好一张图。画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
+  const note = `${STREAM_ANALYSIS_SCOPE}\n本次只分析以下剧情段，为标记「${job.input.intent}」规划恰好一张图。画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
   const analysisContext = { ...getContext()!, chat: [...getContext()!.chat] };
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
@@ -196,6 +218,47 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   throw error ?? new Error('配图分析未返回有效图片');
 }
 
+async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
+  const start = performance.now();
+  if (!ownerValid(s)) throw new Error('聊天已切换');
+  const batch = prepareStreamBatch(jobs, [...settings.excludes.customStripTags, 'bbi_image']);
+  const anchors = analysisAnchors(s);
+  const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
+  const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, scanText, s.context.name1);
+  const prefix = contextWithoutRepeatedTarget(jobs[0].input.prefix, jobs[0].input.text);
+  const note = `${STREAM_ANALYSIS_SCOPE}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
+  const ctx = getContext()!;
+  const analysisContext = { ...ctx, chat: [...ctx.chat] };
+  const floor = s.binding?.floor ?? s.referenceFloor;
+  analysisContext.chat[floor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: scanText };
+  const messages = await buildAutoTagMessages(analysisContext, floor, { ...s.options, minImages: jobs.length, maxImages: jobs.length },
+    memory, batch.target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+  const preparedAt = performance.now(), requestStart = preparedAt;
+  const controller = new AbortController();
+  const cancel = () => { if (s.controller.signal.aborted || jobs.every(job => job.controller.signal.aborted)) controller.abort(); };
+  s.controller.signal.addEventListener('abort', cancel);
+  for (const job of jobs) job.controller.signal.addEventListener('abort', cancel);
+  cancel();
+  let responseChars = 0, payloads: Payload[] | undefined;
+  try {
+    await completion(s, messages, controller.signal, raw => {
+      responseChars = raw.length;
+      const parsed = parseImagePlan(raw, batch.target.segments, jobs.length, jobs.length);
+      splitStreamBatch(parsed, batch); // Check ownership before mutating the shared appearance library.
+      const plan = preparePlan(s, parsed, anchors);
+      payloads = splitStreamBatch(plan, batch).map(image => ({ image: { ...image, renderProfile: s.profile }, changes: plan.changes }));
+    });
+    if (!payloads) throw new Error('批量分析未返回有效图片');
+    return payloads;
+  } finally {
+    s.controller.signal.removeEventListener('abort', cancel);
+    for (const job of jobs) job.controller.signal.removeEventListener('abort', cancel);
+    log('stream:analysis-timing', { jobs: jobs.map(job => job.id), batchSize: jobs.length,
+      queueMs: Math.round(Math.max(...jobs.map(job => start - job.createdAt))), prepareMs: Math.round(preparedAt - start),
+      apiMs: Math.round(performance.now() - requestStart), attempt: 1, promptChars: messages.reduce((sum, message) => sum + message.content.length, 0), responseChars, ok: !!payloads });
+  }
+}
+
 async function commit(s: Session, job: Job): Promise<boolean> {
   if (!s.binding || !job.payload || !ownerValid(s)) throw new Error('图片的原消息已变化，停止接管');
   const { floor, message, swipeId, expectedSwipe } = s.binding;
@@ -206,7 +269,7 @@ async function commit(s: Session, job: Job): Promise<boolean> {
       const tag = parseImageTags(text).find(raw => parseImageTagContent(raw).slotId === job.id);
       if (!tag || (s.written.has(job.id) && s.written.get(job.id) !== tag)) return null;
       return text.replace(tag, nextTag);
-    }, s.chatId, expectedSwipe, message);
+    }, s.chatId, expectedSwipe, message, undefined, { refresh: 'image-slots' });
     if (ok !== 'saved') throw new Error(`后到配图写入失败：${ok}`);
     s.written.set(job.id, nextTag);
     // Rebuild changes from every completed segment; preserve timeline updates and late arrivals.
@@ -218,7 +281,12 @@ async function commit(s: Session, job: Job): Promise<boolean> {
       if (seen.has(key)) continue; seen.add(key); changes.push(change);
     }
     const locked = lockedCharTagNames();
-    const ops = planChangeOps({ images: [], changes }).filter(item => !locked.has(item.op.name)).map(item => item.op);
+    const ops = changes.filter(change => !locked.has(change.name)).flatMap(change => {
+      const key = JSON.stringify(change);
+      let op = s.changeOps.get(key);
+      if (!op) { op = planChangeOps({ images: [], changes: [change] })[0]?.op; if (op) s.changeOps.set(key, op); }
+      return op ? [op] : [];
+    });
     if (ops.length) {
       const changed = await applyMessageText(floor, text => text, s.chatId, expectedSwipe, message,
         { key: BBI_CHAR_EXTRA_KEY, value: makeCharTagFloorDelta([...s.baselineOps, ...ops], swipeId) });
@@ -226,17 +294,17 @@ async function commit(s: Session, job: Job): Promise<boolean> {
       recomputeCharTags();
     }
     hydrateMessage(floor, getContext()!);
-    void ensureFloorRendered(getContext()!, message, floor, s.chatId);
   });
   const output = job.result;
   if (!output || job.saved) return false;
   if (!ownerValid(s) || job.controller.signal.aborted) throw new Error('任务归属已变化');
   const seq = parseImageTags(getContext()!.chat[floor].mes).findIndex(raw => parseImageTagContent(raw).slotId === job.id);
   if (seq < 0) throw new Error('配图位置已被删除');
+  const saveStart = performance.now();
   await saveImageResult(floor, swipeId, seq, nextTag, output.seed, output.result, output.meta,
     { slotId: job.id, signal: job.controller.signal, owner: { chatId: s.chatId, message, swipeId } });
   if (ownerValid(s)) hydrateMessage(floor, getContext()!);
-  log('stream:saved', { job: job.id, floor, seq });
+  log('stream:saved', { job: job.id, floor, seq, saveMs: Math.round(performance.now() - saveStart) });
   return true;
 }
 

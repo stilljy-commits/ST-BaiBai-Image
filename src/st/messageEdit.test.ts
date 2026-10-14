@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { applyMessageText } from '@/st/messageEdit';
+import { applyMessageText, sameImageSlotLayout } from '@/st/messageEdit';
+import { serializeImageTag } from '@/st/imageTagRegex';
+const tag = (value: Partial<Parameters<typeof serializeImageTag>[0]>) => serializeImageTag({tag:'',nl:'',negative:'',characters:[],size:'portrait',...value});
 
 function installContext(context: Record<string, unknown>): void {
   vi.stubGlobal('window', {
@@ -12,6 +14,49 @@ function installContext(context: Record<string, unknown>): void {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('safe message editing', () => {
+  it('does not save or rerender an unchanged message when an image finishes', async () => {
+    const message = { mes: '正文', extra: {}, name: 'Char', is_user: false, is_system: false };
+    const saveChat = vi.fn(), emit = vi.fn(), updateMessageBlock = vi.fn();
+    installContext({chat:[message],getCurrentChatId:()=> 'A',saveChat,eventSource:{emit},eventTypes:{MESSAGE_EDITED:'edit'},updateMessageBlock});
+    await expect(applyMessageText(0,text=>text,'A',null,message)).resolves.toBe('saved');
+    expect(saveChat).not.toHaveBeenCalled(); expect(emit).not.toHaveBeenCalled(); expect(updateMessageBlock).not.toHaveBeenCalled();
+  });
+  it('saves metadata without emitting events that replace the message DOM', async () => {
+    const message = { mes: '正文', extra: {}, name: 'Char', is_user: false, is_system: false };
+    const saveChat = vi.fn(), emit = vi.fn(), updateMessageBlock = vi.fn();
+    installContext({chat:[message],getCurrentChatId:()=> 'A',saveChat,eventSource:{emit},eventTypes:{MESSAGE_EDITED:'edit'},updateMessageBlock});
+    await applyMessageText(0,text=>text,'A',null,message,{key:'chars',value:{ops:['appearance']}});
+    expect(saveChat).toHaveBeenCalledOnce(); expect(emit).not.toHaveBeenCalled(); expect(updateMessageBlock).not.toHaveBeenCalled();
+    await applyMessageText(0,text=>text,'A',null,message,{key:'chars',value:{ops:['appearance']}});
+    expect(saveChat).toHaveBeenCalledOnce();
+  });
+  it('patches late tags in the same slot and leaves the reader DOM and editor intact', async () => {
+    const oldTag = tag({tag:'',slotId:'slot-a',pending:'门口',size:'portrait'});
+    const newTag = tag({tag:'doorway',slotId:'slot-a',size:'portrait'});
+    const message = {mes:'正文\n'+oldTag,extra:{},name:'Char',is_user:false,is_system:false};
+    const editor = {value:message.mes}, cancel = {click:vi.fn()};
+    const element = {querySelector:vi.fn((selector:string)=>selector==='#curEditTextarea'?editor:cancel)};
+    const saveChat = vi.fn(), emit = vi.fn(), updateMessageBlock = vi.fn();
+    installContext({chat:[message],getCurrentChatId:()=> 'A',saveChat,eventSource:{emit},eventTypes:{MESSAGE_EDITED:'edit'},updateMessageBlock});
+    vi.stubGlobal('document',{querySelector:()=>element});
+    await applyMessageText(0,text=>text.replace(oldTag,newTag),'A',null,message,undefined,{refresh:'image-slots'});
+    expect(message.mes).toContain(newTag); expect(editor.value).toBe(message.mes);
+    expect(cancel.click).not.toHaveBeenCalled(); expect(emit).not.toHaveBeenCalled(); expect(updateMessageBlock).not.toHaveBeenCalled();
+  });
+  it('does not classify changed prose, inserted slots or reordered slots as a card update', () => {
+    const a=tag({tag:'a',slotId:'a'}), b=tag({tag:'b',slotId:'b'});
+    expect(sameImageSlotLayout('正文'+a,'改写正文'+a)).toBe(false);
+    expect(sameImageSlotLayout('正文'+a,'正文'+a+b)).toBe(false);
+    expect(sameImageSlotLayout('正文'+a+b,'正文'+b+a)).toBe(false);
+    expect(sameImageSlotLayout('正文'+a,'正文'+tag({tag:'new',slotId:'a'}))).toBe(true);
+  });
+  it('does not refresh or touch another chat editor after asynchronous saving', async () => {
+    let chatId='A';const message={mes:'old',name:'Char',is_user:false,is_system:false};
+    const emit=vi.fn(), updateMessageBlock=vi.fn();
+    installContext({chat:[message],getCurrentChatId:()=>chatId,saveChat:async()=>{chatId='B';},eventSource:{emit},eventTypes:{MESSAGE_EDITED:'edit'},updateMessageBlock});
+    await expect(applyMessageText(0,()=> 'new','A',null,message)).resolves.toBe('chat-changed');
+    expect(emit).not.toHaveBeenCalled();expect(updateMessageBlock).not.toHaveBeenCalled();
+  });
   it('updates mes and the active swipe, then emits edit/update events', async () => {
     const message = {
       name: 'Char',

@@ -1,5 +1,5 @@
 import { getContext, type STContext, type STMessage } from '@/st/context';
-import { parseImageTags } from '@/st/imageTagRegex';
+import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
 
 /** Retry formatting only while the originating chat and message still own this floor. */
 export async function ensureFloorRendered(context: STContext, message: STMessage, floor: number, chatId = context.getCurrentChatId()): Promise<boolean> {
@@ -83,6 +83,25 @@ export interface MessageExtraUpdate {
   value: unknown;
 }
 
+/** Existing slot contents can change without replacing the surrounding message DOM. */
+export function sameImageSlotLayout(before: string, after: string): boolean {
+  const oldTags = parseImageTags(before), newTags = parseImageTags(after);
+  if (!oldTags.length || oldTags.length !== newTags.length) return false;
+  let oldBody = before, newBody = after;
+  for (let i = 0; i < oldTags.length; i++) {
+    const id = parseImageTagContent(oldTags[i]).slotId;
+    if (!id || id !== parseImageTagContent(newTags[i]).slotId) return false;
+    oldBody = oldBody.replace(oldTags[i], '\u0000BBI_SLOT\u0000');
+    newBody = newBody.replace(newTags[i], '\u0000BBI_SLOT\u0000');
+  }
+  return oldBody === newBody;
+}
+
+function sameExtra(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; }
+}
+
 /**
  * 判断槽位里的消息还是不是请求开始时那一条。
  *
@@ -112,6 +131,7 @@ export async function applyMessageText(
   expectedSwipeId: number | null,
   expectedMessage?: STMessage,
   extraUpdate?: MessageExtraUpdate,
+  options: { refresh?: 'image-slots' } = {},
 ): Promise<ApplyMessageResult> {
   const context = getContext();
   if (!context?.saveChat) return 'unavailable';
@@ -123,8 +143,17 @@ export async function applyMessageText(
   if (currentSwipeId(message) !== expectedSwipeId) return 'swipe-changed';
 
   // 编辑框开着时它才是正文的活口径(用户改了还没确认),落盘基底以它为准
-  const nextText = buildNext(activeEditorText(floor) ?? message.mes);
+  const editorText = activeEditorText(floor);
+  const currentText = editorText ?? message.mes;
+  const nextText = buildNext(currentText);
   if (nextText === null) return 'build-failed';
+
+  const textChanged = nextText !== message.mes;
+  const extraChanged = !!extraUpdate && !sameExtra(message.extra?.[extraUpdate.key], extraUpdate.value);
+  if (!textChanged && !extraChanged) return 'saved';
+  // Caller hydrates the existing Vue cards. Emitting edit events here would let the host
+  // replace .mes_text again, destroying those anchors and moving the reader's viewport.
+  const patchSlots = options.refresh === 'image-slots' && sameImageSlotLayout(currentText, nextText);
 
   const previousText = message.mes;
   const previousExtra = message.extra;
@@ -148,6 +177,18 @@ export async function applyMessageText(
     }
     throw error;
   }
+
+  const live = getContext();
+  if (!live || live.getCurrentChatId() !== expectedChatId) return 'chat-changed';
+  if (!live.chat[floor] || !isSameMessage(live.chat[floor], message)) return 'floor-changed';
+  if (currentSwipeId(live.chat[floor]) !== expectedSwipeId) return 'swipe-changed';
+
+  if (patchSlots) {
+    const editor = findMessage(floor)?.querySelector<HTMLTextAreaElement>('#curEditTextarea');
+    if (editor && editor.value === editorText) editor.value = nextText;
+    return 'saved';
+  }
+  if (!textChanged) return 'saved';
 
   await emitMessageEvent(context, context.eventTypes.MESSAGE_EDITED, floor).catch(error => {
     console.warn('[柏宝绘] tag 已保存，但 MESSAGE_EDITED 事件发送失败', error);

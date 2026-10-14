@@ -62,11 +62,11 @@
 }
 
 .bbi-figure__stage[data-placeholder='1'][data-size='portrait'] {
-  aspect-ratio: 2 / 3;
+  aspect-ratio: var(--bbi-image-ratio, 2 / 3);
 }
 
 .bbi-figure__stage[data-placeholder='1'][data-size='landscape'] {
-  aspect-ratio: 3 / 2;
+  aspect-ratio: var(--bbi-image-ratio, 3 / 2);
 }
 
 /* ——— 图片:默认铺满楼层宽度,高度随原图比例 ———
@@ -103,11 +103,11 @@
 
 /* 无图占位没有内容可撑宽(fit-content 会塌成 0):按画幅比例反推「高度恰好顶到上限」的宽 */
 .bbi-figure[data-capped='1'] .bbi-figure__stage[data-placeholder='1'][data-size='portrait'] {
-  width: calc(var(--bbi-figure-max-h) * 2 / 3);
+  width: var(--bbi-placeholder-width, calc(var(--bbi-figure-max-h) * 2 / 3));
 }
 
 .bbi-figure[data-capped='1'] .bbi-figure__stage[data-placeholder='1'][data-size='landscape'] {
-  width: calc(var(--bbi-figure-max-h) * 3 / 2);
+  width: var(--bbi-placeholder-width, calc(var(--bbi-figure-max-h) * 3 / 2));
 }
 
 /* ——— 生成中遮罩:磨砂盖住整个舞台,旧图在底下隐约可见 ——— */

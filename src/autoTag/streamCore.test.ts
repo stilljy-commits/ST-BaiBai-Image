@@ -5,6 +5,32 @@ function deferred<T>() { let resolve!: (value:T)=>void; const promise=new Promis
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 const input={raw:'[img: 门口相见]',intent:'门口相见',text:'她打开门。',prefix:'',sourceLine:0};
 describe('streamed task lifetime',()=>{
+  it('starts the first markers immediately and reduces a ten-marker backlog to six requests within the same concurrency limit',async()=>{
+    const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
+    let running=0,peak=0;const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});peak=Math.max(peak,++running);return task.promise.finally(()=>running--);};
+    const generate=vi.fn(async(p:string)=>p);
+    const run=new StreamRun<string,string>('paired',10,2,true,{analyze:async job=>(await start([job]))[0],analyzeBatch:start,
+      generate,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
+    const jobs=Array.from({length:10},()=>run.add(input)!);run.attach(jobs);
+    expect(requests.map(r=>r.jobs.length)).toEqual([1,1]);
+    for(let i=0;i<6;i++){expect(requests[i]).toBeDefined();requests[i].task.resolve(requests[i].jobs.map(job=>job.id));await flush();}
+    await run.settled();expect(requests).toHaveLength(6);expect(peak).toBe(2);expect(generate).toHaveBeenCalledTimes(10);expect(jobs.every(job=>job.saved)).toBe(true);
+  });
+  it('does not generate or save a cancelled member of a pair while its neighbor still completes',async()=>{
+    const first=deferred<string>(), pair=deferred<string[]>(), generate=vi.fn(async(p:string)=>p);
+    const run=new StreamRun<string,string>('cancel-pair',3,1,true,{analyze:()=>first.promise,analyzeBatch:()=>pair.promise,
+      generate,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
+    const jobs=Array.from({length:3},()=>run.add(input)!);run.attach(jobs);first.resolve('first');await flush();run.cancelJob(jobs[1]);
+    pair.resolve(['cancelled','neighbor']);await run.settled();expect(generate.mock.calls.map(c=>c[0])).toEqual(['first','neighbor']);
+    expect(jobs[1].saved).toBe(false);expect(jobs[1].phase).toBe('cancelled');expect(jobs[2].saved).toBe(true);
+  });
+  it('falls back through the original queue, preserving identities and the request limit',async()=>{
+    const first=deferred<string>();let running=0,peak=0;const record=async(p:string)=>{peak=Math.max(peak,++running);await Promise.resolve();running--;return p;};
+    const single=vi.fn(job=>job.ordinal===0?first.promise:record(job.id));const batch=vi.fn(async()=>{throw Error('invalid batch');});
+    const run=new StreamRun<string,string>('fallback',3,1,true,{analyze:single,analyzeBatch:batch,generate:async p=>p,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
+    const jobs=Array.from({length:3},()=>run.add(input)!);run.attach(jobs);first.resolve('first');await run.settled();
+    expect(batch).toHaveBeenCalledOnce();expect(single).toHaveBeenCalledTimes(3);expect(peak).toBe(1);expect(jobs.map(job=>job.id)).toEqual(['fallback_0','fallback_1','fallback_2']);expect(jobs.every(job=>job.saved)).toBe(true);
+  });
   it('attaches without waiting for analysis, then saves the same late task once',async()=>{
     const analysis=deferred<string>(),image=deferred<string>();
     const commit=vi.fn(async job=>!!job.result),generate=vi.fn(()=>image.promise),release=vi.fn();

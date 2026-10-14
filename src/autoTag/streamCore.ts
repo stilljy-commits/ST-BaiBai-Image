@@ -16,6 +16,9 @@ export interface StreamJob<P, R> {
 }
 export interface StreamDependencies<P, R> {
   analyze: (job: StreamJob<P, R>) => Promise<P>;
+  /** Only already queued neighbors are paired; the first available marker never waits. */
+  analyzeBatch?: (jobs: StreamJob<P, R>[]) => Promise<P[]>;
+  batchFailed?: (jobs: StreamJob<P, R>[], error: unknown) => void;
   generate: (payload: P, job: StreamJob<P, R>) => Promise<R>;
   commit: (job: StreamJob<P, R>) => Promise<boolean>;
   changed: (job: StreamJob<P, R>) => void;
@@ -33,6 +36,7 @@ export class StreamRun<P, R> {
   private commits = new Set<string>();
   private committed = new Map<string, number>();
   private generating = new Set<string>();
+  private singles = new Set<string>();
   constructor(readonly id: string, readonly max: number, readonly concurrency: number,
     readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>) {}
 
@@ -80,17 +84,33 @@ export class StreamRun<P, R> {
   }
   private pump(): void {
     while (!this.stopped && this.analyzing < this.concurrency && this.queue.length) {
-      const job = this.queue.shift()!;
-      if (job.controller.signal.aborted) continue;
+      this.queue = this.queue.filter(job => !job.controller.signal.aborted);
+      const job = this.queue.shift();
+      if (!job) break;
+      const jobs = [job];
+      if (this.dependencies.analyzeBatch && !this.singles.has(job.id) && this.queue[0] && !this.singles.has(this.queue[0].id)) {
+        jobs.push(this.queue.shift()!);
+      }
       this.analyzing++;
       this.track((async () => {
         try {
-          const payload = await this.dependencies.analyze(job);
-          if (job.controller.signal.aborted) return;
-          job.payload = payload;
-          job.phase = this.autoGenerate ? 'generating' : 'pending'; this.touch(job);
-          if (this.autoGenerate) this.startGeneration(job);
-        } catch (error) { this.failed(job, error); }
+          const payloads = jobs.length === 1 ? [await this.dependencies.analyze(job)] : await this.dependencies.analyzeBatch!(jobs);
+          if (payloads.length !== jobs.length) throw new Error('批量分析未覆盖所有标记');
+          for (let i = 0; i < jobs.length; i++) {
+            const item = jobs[i];
+            if (item.controller.signal.aborted) continue;
+            item.payload = payloads[i];
+            item.phase = this.autoGenerate ? 'generating' : 'pending'; this.touch(item);
+            if (this.autoGenerate) this.startGeneration(item);
+          }
+        } catch (error) {
+          if (jobs.length > 1 && !this.stopped) {
+            const remaining = jobs.filter(item => !item.controller.signal.aborted);
+            for (const item of remaining) this.singles.add(item.id);
+            this.queue.unshift(...remaining);
+            this.dependencies.batchFailed?.(remaining, error);
+          } else for (const item of jobs) this.failed(item, error);
+        }
         finally { this.analyzing--; this.pump(); }
       })());
     }

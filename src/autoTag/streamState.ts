@@ -1,7 +1,7 @@
 import { reactive } from 'vue';
 
 export type StreamPhase = 'analyzing' | 'pending' | 'generating' | 'saving' | 'ready' | 'error' | 'cancelled';
-export interface StreamSlotState { phase: StreamPhase; url?: string; error?: string; }
+export interface StreamSlotState { phase: StreamPhase; url?: string; error?: string; dimensions?: { width: number; height: number }; }
 const slots = reactive(new Map<string, StreamSlotState>());
 const actions = new Map<string, { cancel: () => void; retry: () => void }>();
 

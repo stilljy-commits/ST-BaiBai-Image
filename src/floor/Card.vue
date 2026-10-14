@@ -28,6 +28,7 @@ import {
   slotKey,
 } from '@/floor/genState';
 import { hydrateMessage } from '@/floor/hydrate';
+import { imageDimensions, imageGeometryStyle } from '@/floor/imageGeometry';
 import { openLightbox } from '@/floor/lightbox';
 import { confirmImageMissing, isImageMissing } from '@/floor/missingImages';
 import { openPromptEditor } from '@/floor/promptEditor';
@@ -197,6 +198,16 @@ const promptText = computed(() =>
  */
 const shownEntry = computed(() => (liveHistory.value.length ? current.value : liveStale.value));
 const imageSrc = computed(() => shownEntry.value?.path ?? streamed.value?.url ?? '');
+const loadedSrc = ref('');
+const decodedDimensions = ref<{ width: number; height: number }>();
+const dimensions = computed(() => imageDimensions(shownEntry.value?.meta) ?? streamed.value?.dimensions ?? decodedDimensions.value);
+const figureStyle = computed(() => imageGeometryStyle(dimensions.value, displayMaxHeight.value));
+watch(imageSrc, value => { if (!value) { loadedSrc.value = ''; decodedDimensions.value = undefined; } });
+function onImageLoad(event: Event): void {
+  const img = event.target as HTMLImageElement;
+  decodedDimensions.value = imageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+  loadedSrc.value = imageSrc.value;
+}
 /**
  * 灯箱展示用:提示词 + 只读元信息(画师串/vibe/采样参数)。
  * 与卡片内可编辑的 `promptText` 分开 —— 元信息只读,绝不能混进可写回的 tag 文本。
@@ -487,7 +498,7 @@ onMounted(() => {
     class="bbi-figure"
     :data-phase="phase"
     :data-capped="displayMaxHeight ? '1' : ''"
-    :style="displayMaxHeight ? { '--bbi-figure-max-h': `${displayMaxHeight}px` } : undefined"
+    :style="figureStyle"
   >
     <!-- 折叠态:收成一条细条,职责只有「占位 + 展开」——整条点击展开,
          生成中/出错在条上给状态但不放操作按钮(要操作先展开)。 -->
@@ -513,14 +524,17 @@ onMounted(() => {
          高度归零 + 淡出,<img> 不卸载——展开瞬间图就在,不会重新发起请求。 -->
     <div class="bbi-figure__collapse" :data-collapsed="collapsed ? '1' : ''">
       <div class="bbi-figure__collapse-inner">
-    <div class="bbi-figure__stage" :data-size="effectiveSize" :data-placeholder="imageSrc ? '' : '1'">
+    <div class="bbi-figure__stage" :data-size="effectiveSize" :data-placeholder="imageSrc && loadedSrc === imageSrc ? '' : '1'">
       <img
         v-if="imageSrc"
         class="bbi-figure__img"
         :src="imageSrc"
+        :width="dimensions?.width"
+        :height="dimensions?.height"
         alt="生图结果"
         @click="openImage"
         @error="onImageError"
+        @load="onImageLoad"
       />
 
       <!-- 无图时的生成中:骨架微光扫过占位底 -->
