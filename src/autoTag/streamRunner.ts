@@ -340,4 +340,3 @@ function updatePreview(s: Session): void {
     img.style.cssText = 'width:72px;height:96px;object-fit:cover;border-radius:4px'; host.appendChild(img);
   }
 }
-
