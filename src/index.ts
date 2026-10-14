@@ -1,4 +1,4 @@
-import { syncMarkerInjection } from '@/autoTag/markerInjection';
+import { bindMarkerInjection, syncMarkerInjection } from '@/autoTag/markerInjection';
 import { syncWorldBookRule } from '@/autoTag/worldBookSync';
 import { stopCurrentStream } from '@/autoTag/streamRunner';
 import App from '@/App.vue';
@@ -106,6 +106,7 @@ async function hydrateWhenReady(attempt = 0) {
       bindAutoTagging();
       bindFloorHydration();
       bindTagActionButtons();
+      bindMarkerInjection();
       syncMarkerInjection();
       watch(() => [settings.enabled, settings.autoTag.enabled, settings.autoTag.streamGen, settings.autoTag.minImages, settings.autoTag.maxImages], () => {
         syncMarkerInjection(); if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen) stopCurrentStream();

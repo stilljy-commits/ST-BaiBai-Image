@@ -82,7 +82,10 @@ export interface STContext {
   saveMetadataDebounced: () => void;
   saveChat: () => Promise<void>;
   reloadCurrentChat?: () => Promise<void>;
-  setExtensionPrompt?: (key: string, value: string, position?: number, depth?: number, scan?: boolean, role?: number) => void;
+  setExtensionPrompt?: (key: string, value: string, position?: number, depth?: number, scan?: boolean, role?: number, filter?: () => boolean) => void;
+  loadWorldInfo?: (name: string) => Promise<Record<string, unknown> | null>;
+  saveWorldInfo?: (name: string, data: Record<string, unknown>, immediately?: boolean) => Promise<void>;
+  reloadWorldInfoEditor?: (name: string) => unknown;
   updateMessageBlock?: (
     messageId: number,
     message: STMessage,
@@ -173,16 +176,17 @@ type CheckWorldInfoFn = (
  * 才能逐条渲染——而 getWorldInfoPrompt 只吐拼好的字符串,元信息全丢。
  * 取不到(旧版/路径变动)时返回 null,调用方据此降级回 getWorldInfoPrompt。
  */
-export async function getCheckWorldInfo(): Promise<CheckWorldInfoFn | null> {
-  try {
-    // 变量持有路径,避免 Vite/vue-tsc 把它当本地模块解析
-    const wiPath = '/scripts/world-info.js';
-    const mod: Record<string, unknown> = await import(/* @vite-ignore */ wiPath);
-    const fn = mod.checkWorldInfo;
-    return typeof fn === 'function' ? (fn as CheckWorldInfoFn) : null;
-  } catch {
-    return null;
-  }
+let checkWorldInfoModule: Promise<CheckWorldInfoFn | null> | undefined;
+export function getCheckWorldInfo(): Promise<CheckWorldInfoFn | null> {
+  // Cache only the module entry point (including an unavailable path), never activated worldbook content.
+  return checkWorldInfoModule ??= (async () => {
+    try {
+      const wiPath = '/scripts/world-info.js';
+      const mod: Record<string, unknown> = await import(/* @vite-ignore */ wiPath);
+      const fn = mod.checkWorldInfo;
+      return typeof fn === 'function' ? (fn as CheckWorldInfoFn) : null;
+    } catch { return null; }
+  })();
 }
 
 /**

@@ -698,7 +698,7 @@ async function confirmUpdate() {
           <input v-model="settings.autoTag.streamGen" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">
-          开启后通过客户端注入接口或已配置的世界书，让主模型输出标记：主模型在正文里放 [img: 意图] 标记,
+          开启后自动给正文模型添加配图标记规则，发送前检查是否已包含规则；已挂同类世界书时复用已有规则。主模型在正文里放 [img: 意图] 标记,
           插件流式期间逐标记分段分析并提前出图,正文结束即显示已完成图片和在途位置，后到图片继续完成；文末只补不足或空档。数量指引同步
           上面的最少/最多图片数。关闭则完整回退「正文结束→全量分析」路径;主模型没放标记时也会自动回退。
         </p>
