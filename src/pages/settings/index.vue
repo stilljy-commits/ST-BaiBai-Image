@@ -693,6 +693,49 @@ async function confirmUpdate() {
         </label>
         <p class="bbi-field-hint">写入 tag 后立即按当前出图渠道自动出图;关闭则只写 tag,在卡片上手动生成。</p>
 
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">流式出图(正文没写完,图已经在出)</span>
+          <input v-model="settings.autoTag.streamGen" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">
+          开启后通过客户端注入接口或已配置的世界书，让主模型输出标记：主模型在正文里放 [img: 意图] 标记,
+          插件流式期间逐标记分段分析并提前出图,正文结束即显示已完成图片和在途位置，后到图片继续完成；文末只补不足或空档。数量指引同步
+          上面的最少/最多图片数。关闭则完整回退「正文结束→全量分析」路径;主模型没放标记时也会自动回退。
+        </p>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">流式浮层预览(流式期间在角落显示已出缩略图)</span>
+          <input v-model="settings.autoTag.streamPreview" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">只影响流式期间的显示,不动正文;关闭没有任何副作用。</p>
+
+        <label class="bbi-num-row">
+          <span class="bbi-field-label">流式分段分析并发</span>
+          <input
+            v-model.number="settings.autoTag.streamAnalysisConcurrency"
+            class="bbi-input bbi-num"
+            type="number"
+            min="1"
+            max="4"
+            step="1"
+          />
+        </label>
+        <p class="bbi-field-hint">同时几个标记的副API分析在飞(1~4);出图并发仍在渠道页控制。</p>
+
+        <label class="bbi-num-row">
+          <span class="bbi-field-label">标记规则世界书(自动同步数量)</span>
+          <input
+            v-model="settings.autoTag.streamWorldBook"
+            class="bbi-input"
+            type="text"
+            placeholder="世界书名,留空=不同步"
+          />
+        </label>
+        <p class="bbi-field-hint">
+          填写承载「正文配图标记」规则的世界书名后,上面最少/最多图片数改动时会自动改写该
+          世界书规则条目里的数量行——不用再手动同步数字。只改数量那一行,条目其余内容不动。
+        </p>
+
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近 AI 楼数</span>
           <input

@@ -46,8 +46,8 @@ export interface GenRecord {
   token: number;
 }
 
-export function slotKey(chatId: string, messageId: number, swipeId: number, seq: number): string {
-  return `${chatId}|${messageId}|${swipeId}|${seq}`;
+export function slotKey(chatId: string, messageId: number, swipeId: number, seq: number, slotId?: string): string {
+  return `${chatId}|${messageId}|${swipeId}|${slotId ? `id:${slotId}` : seq}`;
 }
 
 /** 展示态:进 reactive,卡片 computed 直接读。 */
@@ -180,11 +180,14 @@ export function pruneGenSlots(
   messageId: number,
   swipeId: number,
   keepCount: number,
+  keepIds?: ReadonlySet<string>,
 ): void {
   const prefix = `${chatId}|${messageId}|${swipeId}|`;
   for (const key of [...records.keys()]) {
     if (!key.startsWith(prefix)) continue;
-    const seq = Number(key.slice(prefix.length));
+    const suffix = key.slice(prefix.length);
+    if (suffix.startsWith('id:')) { if (keepIds && !keepIds.has(suffix.slice(3))) cancelGen(key); continue; }
+    const seq = Number(suffix);
     if (Number.isInteger(seq) && seq >= keepCount) cancelGen(key);
   }
 }

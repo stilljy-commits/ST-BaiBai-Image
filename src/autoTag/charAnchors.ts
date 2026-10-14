@@ -190,6 +190,21 @@ export function resolveCharAnchors(
 /** @名 占位符;名字允许中文/字母/数字/点/下划线/间隔号(常见角色名形态)。 */
 const REF_PATTERN = /@([\p{L}\p{N}_.·]+)/gu;
 
+/**
+ * 漫画页协议(nai.comicMode)的保留标记词:这些 @词是发给 NovelAI V5 的分段标记,
+ * 不是角色占位符——必须原样保留,既不替换也不剥除,更不能计入「未建档」告警。
+ */
+const REF_RESERVED = new Set([
+  'page',
+  'panel',
+  'character',
+  'characters',
+  'negative',
+  'non_character',
+  'position',
+  'center',
+]);
+
 function joinEntryTag(entry: CharTagEntry): string {
   // 与 state/charTags.buildEntryTag 同构;重复这一小段以避开循环依赖
   if (entry.raw.trim() && CHAR_TAG_FIELDS.every(f => !(entry.fields[f] ?? '').trim())) {
@@ -223,7 +238,8 @@ export function applyCharRefs(
   const byName = new Map(entries.map(e => [e.name, e]));
   const unknown: string[] = [];
   const seen = new Set<string>();
-  const replaced = text.replace(REF_PATTERN, (_full, name: string) => {
+  const replaced = text.replace(REF_PATTERN, (full, name: string) => {
+    if (REF_RESERVED.has(name)) return full; // 漫画页分段标记,原样保留
     const entry = byName.get(name);
     if (entry) {
       if (mode === 'nl' && entry.nl.trim()) return entry.nl.trim();

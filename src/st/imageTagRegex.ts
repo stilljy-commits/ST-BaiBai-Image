@@ -1,3 +1,4 @@
+import { parseRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import { getContext } from '@/st/context';
@@ -171,7 +172,7 @@ export function stripImageTags(mes: string): string {
  * 内容里混进一个 `</bbi_image>` 就会让 tag 提前截断、后半截漏进 DOM 与提示词，
  * 正好破掉「tag 永不进 DOM、永不进提示词」这条不变式。
  */
-export const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size)\b/i;
+export const FORBIDDEN_SUBTAG = /<\/?(?:bbi_image|tag|nl|negative|characters|size|slot|pending|render)\b/i;
 
 /** 文本里是否含 bbi_image 子标签字面量（手输校验用；口径同 AI 侧）。 */
 export function containsTagMarkup(text: string): boolean {
@@ -179,6 +180,9 @@ export function containsTagMarkup(text: string): boolean {
 }
 
 export interface ImageTagContent {
+  slotId?: string;
+  pending?: string;
+  renderProfile?: RenderProfile;
   /** danbooru 短 tag 部分：显式 <tag> 子标签内容，或剔除子标签后的裸文本（存量格式）。 */
   tag: string;
   /** 自然语言部分：<nl> 子标签内容，无则空串。 */
@@ -202,6 +206,10 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   // 内容统一折叠成单行:手写 tag 可能跨行,而提示词里换行没有意义
   const oneLine = (text: string) => text.trim().replace(/[\r\n]+/g, ' ');
   const inner = raw.replace(/^<bbi_image[^>]*>/i, '').replace(/<\/bbi_image>$/i, '');
+  const slot = inner.match(/<slot>([a-zA-Z0-9_-]{1,100})<\/slot>/i)?.[1];
+  const pending = inner.match(/<pending>([\s\S]*?)<\/pending>/i)?.[1];
+  let renderProfile: RenderProfile | undefined;
+  try { renderProfile = parseRenderProfile(JSON.parse(inner.match(/<render>([\s\S]*?)<\/render>/i)?.[1] ?? 'null')); } catch {}
   const nlMatch = inner.match(/<nl>([\s\S]*?)<\/nl>/i);
   const nl = nlMatch ? oneLine(nlMatch[1]) : '';
   const negativeMatch = inner.match(/<negative>([\s\S]*?)<\/negative>/i);
@@ -216,7 +224,11 @@ export function parseImageTagContent(raw: string): ImageTagContent {
           if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
           const rawItem = item as Record<string, unknown>;
           const name = oneLine(typeof rawItem.name === 'string' ? rawItem.name : '');
-          const tag = oneLine(typeof rawItem.tag === 'string' ? rawItem.tag : '');
+          // 漫画页 V2 的条目末行 Text: 对白必须独立成行(1.3.1 同形态):
+          // 含 Text: 行的 tag 保留换行(仅归一 CRLF),其余仍压成单行(历史口径不变)。
+          const keepLines = (text: string) =>
+            /^\s*Text:/im.test(text) ? text.trim().replace(/\r\n?/g, '\n') : oneLine(text);
+          const tag = keepLines(typeof rawItem.tag === 'string' ? rawItem.tag : '');
           const nl = oneLine(typeof rawItem.nl === 'string' ? rawItem.nl : '');
           return name && tag ? [{ name, tag, nl }] : [];
         });
@@ -228,6 +240,7 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   const sizeMatch = inner.match(/<size>([\s\S]*?)<\/size>/i);
   const size = normalizeOrientation(sizeMatch ? oneLine(sizeMatch[1]) : '');
   const withoutSubTags = inner
+    .replace(/<(slot|pending|render)>[\s\S]*?<\/\1>/gi, '')
     .replace(/<nl>[\s\S]*?<\/nl>/gi, '')
     .replace(/<negative>[\s\S]*?<\/negative>/gi, '')
     .replace(/<characters>[\s\S]*?<\/characters>/gi, '')
@@ -235,9 +248,15 @@ export function parseImageTagContent(raw: string): ImageTagContent {
   const explicit = [...withoutSubTags.matchAll(/<tag>([\s\S]*?)<\/tag>/gi)]
     .map(match => oneLine(match[1]))
     .filter(Boolean);
-  const bare = oneLine(withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, ''));
+  const bareSource = withoutSubTags.replace(/<tag>[\s\S]*?<\/tag>/gi, '');
+  // 漫画页 tag(以 <image> 开头)保留原始换行:V5 漫画协议的 @page/@panel/@character
+  // 标记各自独占一行,压成单行会干扰 NAI 的分段解析(官方协议示例均为多行)。
+  // 换行统一成 \n,避免 CRLF 混进提示词。其余 tag 仍压成单行(历史口径不变)。
+  const bare = /^\s*<image[\s>]/i.test(bareSource)
+    ? bareSource.trim().replace(/\r\n?/g, '\n')
+    : oneLine(bareSource);
   const tag = [...(bare ? [bare] : []), ...explicit].join(', ');
-  return { tag, nl, negative, characters, size };
+  return { tag, nl, negative, characters, size, ...(slot ? { slotId: slot } : {}), ...(pending !== undefined ? { pending } : {}), ...(renderProfile ? { renderProfile } : {}) };
 }
 
 /**
@@ -256,7 +275,10 @@ export function serializeImageTag(content: ImageTagContent): string {
   const characters = content.characters.length
     ? `<characters>${JSON.stringify(content.characters)}</characters>`
     : '';
-  return `<bbi_image>${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
+  const slot = content.slotId && /^[a-zA-Z0-9_-]{1,100}$/.test(content.slotId) ? '<slot>' + content.slotId + '</slot>' : '';
+  const pending = content.pending !== undefined ? '<pending>' + content.pending.replace(/[<>]/g, '') + '</pending>' : '';
+  const profile = content.renderProfile ? '<render>' + JSON.stringify(content.renderProfile) + '</render>' : '';
+  return `<bbi_image>${slot}${pending}${profile}${content.tag}${nl}${negative}${characters}<size>${content.size}</size></bbi_image>`;
 }
 
 /**

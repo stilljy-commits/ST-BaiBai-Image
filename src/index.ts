@@ -1,3 +1,6 @@
+import { syncMarkerInjection } from '@/autoTag/markerInjection';
+import { syncWorldBookRule } from '@/autoTag/worldBookSync';
+import { stopCurrentStream } from '@/autoTag/streamRunner';
 import App from '@/App.vue';
 import { bindAutoTagging } from '@/autoTag/runner';
 import { bindTagActionButtons } from '@/floor/actionButton';
@@ -6,7 +9,7 @@ import { injectMenuButton } from '@/menu';
 import { registerPublicInterface } from '@/public/register';
 import { bindCharTagSync } from '@/state/charTags';
 import { initGlobalCharTags } from '@/state/globalCharTags';
-import { hydrateSettings } from '@/state/settings';
+import { hydrateSettings, settings } from '@/state/settings';
 import { ui } from '@/state/ui';
 import { guardEditableArrowKeys } from '@/st/keyboard';
 import { ensureImageTagRegexRegistered } from '@/st/imageTagRegex';
@@ -103,6 +106,11 @@ async function hydrateWhenReady(attempt = 0) {
       bindAutoTagging();
       bindFloorHydration();
       bindTagActionButtons();
+      syncMarkerInjection();
+      watch(() => [settings.enabled, settings.autoTag.enabled, settings.autoTag.streamGen, settings.autoTag.minImages, settings.autoTag.maxImages], () => {
+        syncMarkerInjection(); if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen) stopCurrentStream();
+      });
+      watch(() => [settings.autoTag.minImages, settings.autoTag.maxImages, settings.autoTag.streamWorldBook], () => void syncWorldBookRule());
       // 公开接口必须排在 hydrateSettings 之后:设置回灌前 getBackendStatus() 读的是
       // 默认值,会把配好的用户报成「未配置」。排在 bindCharTagSync 之后则是为了让
       // ready 事件里的 revision 已经对应真实角色库。

@@ -92,13 +92,13 @@ function oneLine(text: string): string {
 
 /** 草稿归一后的结果 —— 保存与「有没有改」都以它为准,两处不能各算一次。 */
 const draft = computed<ImageTagContent>(() => ({
-  tag: oneLine(tag.value),
+  tag: /^\s*<image>/i.test(tag.value) ? tag.value.trim().replace(/\r\n?/g, '\n') : oneLine(tag.value),
   nl: oneLine(nl.value),
   negative: oneLine(negative.value),
   characters: characters.value
     .map(character => ({
       name: oneLine(character.name),
-      tag: oneLine(character.tag),
+      tag: /^\s*Text:/im.test(character.tag) ? character.tag.trim().replace(/\r\n?/g, '\n') : oneLine(character.tag),
       nl: oneLine(character.nl),
     }))
     // 与 parseImageTagContent 同口径:name/tag 缺一条即丢弃(空行不落进正文)

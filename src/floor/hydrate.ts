@@ -138,7 +138,7 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
     const swipeId = message.swipe_id ?? 0;
     // 槽位可能整个消失(用户删掉 tag / swipe 到 tag 更少的一版):那些槽位再没有卡片
     // 来对账,运行态记录会永久留存,日后同 key 复现时被新卡片误认领。按 tag 数剪掉越界的。
-    pruneGenSlots(chatId ?? '-', messageId, swipeId, tags.length);
+    pruneGenSlots(chatId ?? '-', messageId, swipeId, tags.length, new Set(tags.map(raw => parseImageTagContent(raw).slotId).filter((id): id is string => !!id)));
 
     if (tags.length > 0) {
       const mesText = findMesText(messageId);
@@ -153,18 +153,21 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
         const count = Math.min(anchors.length, tags.length);
 
         for (let seq = 0; seq < count; seq++) {
-          const key = slotRegistry.key(chatId, messageId, swipeId, seq);
+          const content = parseImageTagContent(tags[seq]);
+          const key = slotRegistry.key(chatId, messageId, swipeId, seq, content.slotId);
           // 从 extra 恢复:当前 tag 原文重算 hash 匹配同槽位历史 → ready(可翻页);
           // 无匹配但有旧提示词结果 → stale(DESIGN-FLOOR-UI.md §7.1)。
           const store = readStore(message);
           const hash = promptHash(tags[seq]);
-          const history = historyEntries(store, swipeId, hash, seq);
+          const history = historyEntries(store, swipeId, hash, seq, content.slotId);
           const entry = history.length ? history[history.length - 1] : null;
-          const staleEntry = entry ? null : latestStaleEntry(store, swipeId, hash, seq);
-          const content = parseImageTagContent(tags[seq]);
+          const staleEntry = entry ? null : latestStaleEntry(store, swipeId, hash, seq, content.slotId);
           desired.set(key, {
             anchor: anchors[seq],
             vnode: h(Card, {
+              slotId: content.slotId,
+              pending: content.pending,
+              renderProfile: content.renderProfile,
               prompt: content.tag,
               nl: content.nl,
               negative: content.negative,
@@ -371,7 +374,12 @@ export function bindFloorHydration(): boolean {
     eventSource.on(eventTypes.MORE_MESSAGES_LOADED, onVisibleReload);
   }
   eventSource.on(eventTypes.MESSAGE_DELETED, onFullReload);
-  eventSource.on(eventTypes.CHAT_CHANGED, onFullReload);
+  let lastChatId = ctx.getCurrentChatId();
+  eventSource.on(eventTypes.CHAT_CHANGED, () => {
+    const id = getContext()?.getCurrentChatId();
+    if (id === lastChatId) onVisibleReload(); else onFullReload();
+    lastChatId = id;
+  });
 
   scheduleHydration(hydrateAll, hydrateVisible);
 

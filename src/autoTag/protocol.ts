@@ -1,3 +1,4 @@
+import type { RenderProfile } from '@/autoTag/renderProfile';
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import type { TargetSegment } from '@/autoTag/clean';
 import { FORBIDDEN_SUBTAG, serializeImageTag } from '@/st/imageTagRegex';
@@ -14,6 +15,8 @@ export interface ImageCharacterPrompt {
 }
 
 export interface ImageInsertion {
+  slotId?: string;
+  renderProfile?: RenderProfile;
   /** 模型选择的目标正文位置 ID。 */
   position: string;
   /** 位置 ID 对应的原始物理行(0-based，仅插件内部使用)。 */
@@ -130,8 +133,15 @@ function parseObject(raw: string): Record<string, unknown> {
 
 /** tag / nl / negative 内容里不允许出现的子标签字面量（口径见 st/imageTagRegex.ts）。 */
 
-function sanitizeContent(value: unknown, field: string, index: number): string {
-  const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
+function sanitizeContent(
+  value: unknown,
+  field: string,
+  index: number,
+  /** 漫画页文本需要保留换行:@page/@panel/@character 标记必须独占一行,压成空格 V5 就无法分段。 */
+  keepNewlines = false,
+): string {
+  const text =
+    typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, keepNewlines ? '\n' : ' ') : '';
   if (text && FORBIDDEN_SUBTAG.test(text)) {
     throw new Error(`images[${index}].${field} 不得包含 bbi_image/tag/nl/negative/size 标签`);
   }
@@ -147,7 +157,14 @@ function sanitizeCharacters(value: unknown, imageIndex: number): ImageCharacterP
     const item = raw as Record<string, unknown>;
     try {
       const name = sanitizeContent(item.name, `characters[${index}].name`, imageIndex);
-      const tag = sanitizeContent(item.tag ?? item.prompt, `characters[${index}].tag`, imageIndex);
+      // 漫画页 V2 的条目末行 Text: 对白必须独立成行,压成空格会并进 tag 串
+      const rawTag = String(item.tag ?? item.prompt ?? '');
+      const tag = sanitizeContent(
+        item.tag ?? item.prompt,
+        `characters[${index}].tag`,
+        imageIndex,
+        /^\s*Text:/im.test(rawTag),
+      );
       const nl = sanitizeContent(item.nl, `characters[${index}].nl`, imageIndex);
       if (name && tag) characters.push({ name, tag, nl });
     } catch {
@@ -198,8 +215,8 @@ export function parseImagePlan(
     if (sourceLine === undefined) {
       throw new Error(`images[${index}].position=${position} 不在目标正文可选位置中`);
     }
-    // 兼容模型按旧协议/习惯返回 prompt 键的情况
-    const tag = sanitizeContent(entry.tag ?? entry.prompt, 'tag', index);
+    // 兼容模型按旧协议/习惯返回 prompt 键的情况;漫画页文本(<image> 开头)保留换行
+    const tag = sanitizeContent(entry.tag ?? entry.prompt, 'tag', index, /^\s*<image>/i.test(String(entry.tag ?? entry.prompt ?? '')));
     if (!tag) throw new Error(`images[${index}].tag 不能为空`);
     const nl = sanitizeContent(entry.nl, 'nl', index);
     const negative = sanitizeContent(entry.negative ?? entry.negative_prompt, 'negative', index);

@@ -44,6 +44,9 @@ const emit = defineEmits<{ close: []; delete: [] }>();
 /** 适应屏幕 ↔ 原始尺寸。 */
 const zoomed = ref(false);
 
+/** tags/提示词面板默认收起,点顶部按钮才展开。 */
+const showInfo = ref(false);
+
 /** 滚动容器(放大后平移用)。 */
 const stage = ref<HTMLElement | null>(null);
 
@@ -149,6 +152,17 @@ const promptText = computed(() => (props.prompt ?? '').trim());
         <button
           v-if="promptText"
           class="bbi-lb-btn"
+          :class="{ 'bbi-lb-btn--on': showInfo }"
+          type="button"
+          :title="showInfo ? '收起提示词' : '查看提示词/TAGS'"
+          :aria-expanded="showInfo"
+          @click="showInfo = !showInfo"
+        >
+          <Icon name="text" :size="18" />
+        </button>
+        <button
+          v-if="promptText"
+          class="bbi-lb-btn"
           type="button"
           title="复制提示词"
           @click="copyPrompt"
@@ -190,7 +204,10 @@ const promptText = computed(() => (props.prompt ?? '').trim());
         />
       </div>
 
-      <p v-if="promptText" class="bbi-lightbox__prompt" @click.stop>{{ promptText }}</p>
+      <!-- tags/提示词:默认收起,点顶部 text 按钮展开;悬浮在图片底部,不挤压图片 -->
+      <Transition name="bbi-lb-info">
+        <p v-if="promptText && showInfo" class="bbi-lightbox__prompt" @click.stop>{{ promptText }}</p>
+      </Transition>
     </div>
   </Teleport>
 </template>
@@ -209,17 +226,23 @@ const promptText = computed(() => (props.prompt ?? '').trim());
   z-index: 10050;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  background: oklch(0 0 0 / 0.82);
+  /* 全屏相册式:无 padding/gap,图片直接占满视口;按钮栏与 tags 面板均为悬浮层 */
+  background: oklch(0 0 0 / 0.92);
   backdrop-filter: blur(6px);
 }
 
 .bbi-lightbox__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
   flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  /* 悬浮在图片上方:留出安全边距,半透明渐变垫底保证浅色图上按钮可读 */
+  padding: 12px 16px;
+  background: linear-gradient(to bottom, oklch(0 0 0 / 0.45), transparent);
 }
 
 .bbi-lb-btn {
@@ -247,6 +270,12 @@ const promptText = computed(() => (props.prompt ?? '').trim());
   background: var(--bbi-danger);
   border-color: var(--bbi-danger);
   color: #fff;
+}
+
+/* tags 按钮的激活态:面板展开时高亮,提示当前可见 */
+.bbi-lb-btn--on {
+  background: oklch(1 0 0 / 0.28);
+  border-color: oklch(1 0 0 / 0.55);
 }
 
 /* 居中不用 justify-content/align-items:center:放大后图片比容器宽时,flex 居中
@@ -302,19 +331,37 @@ const promptText = computed(() => (props.prompt ?? '').trim());
 }
 
 .bbi-lightbox__prompt {
-  flex: 0 0 auto;
-  max-height: 22%;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  max-height: 40%;
   overflow-y: auto;
   margin: 0;
-  padding: 10px 12px;
-  border-radius: var(--bbi-radius-sm);
-  background: oklch(1 0 0 / 0.08);
-  color: oklch(1 0 0 / 0.85);
+  padding: 14px 16px;
+  /* 底部渐变垫底:面板悬浮在图片上时文字始终可读 */
+  background: linear-gradient(to top, oklch(0 0 0 / 0.78), oklch(0 0 0 / 0.45) 70%, transparent);
+  color: oklch(1 0 0 / 0.88);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
   /* 提示词要可选中复制,故此处不禁用选择 */
   user-select: text;
+}
+
+/* tags 面板展开/收起过渡:自下而上滑入淡入 */
+.bbi-lb-info-enter-active,
+.bbi-lb-info-leave-active {
+  transition:
+    transform 0.22s var(--bbi-ease, ease),
+    opacity 0.22s var(--bbi-ease, ease);
+}
+
+.bbi-lb-info-enter-from,
+.bbi-lb-info-leave-to {
+  transform: translateY(14px);
+  opacity: 0;
 }
 </style>

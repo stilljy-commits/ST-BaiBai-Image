@@ -1,3 +1,4 @@
+import { isSameMessage } from '@/st/messageEdit';
 import type { ComfyImageResult } from '@/backends/comfyui';
 import { utf8ToBase64 } from '@/base64';
 import { normalizeImagePath } from '@/floor/missingImages';
@@ -39,6 +40,8 @@ export interface BbiImageEntry {
   /** 生成时所在槽位序号（楼层内第 N 个 tag）。多 tag 楼层按位置隔离结果；
    *  旧数据缺失时按 entrySeq() 回退为 0。 */
   slotSeq?: number;
+  /** Stable identity for streamed and supplemental slots; older records use slotSeq. */
+  slotId?: string;
   /** 出图元信息（画师串/vibe/采样参数）。图库当前聊天的快速通道读它，避免逐张抓侧写；
    *  旧数据没有此键。 */
   meta?: GenerationMeta;
@@ -132,6 +135,9 @@ export function readStore(message: STMessage): BbiImageStore | null {
 
 /** hash 匹配的最新一条结果（卡片 ready）。 */
 /** 旧数据（无 slotSeq 字段）回退为槽位 0。 */
+function matchesSlot(entry: BbiImageEntry, seq: number, slotId?: string): boolean {
+  return slotId ? entry.slotId === slotId : !entry.slotId && entrySeq(entry) === seq;
+}
 function entrySeq(entry: BbiImageEntry): number {
   return entry.slotSeq ?? 0;
 }
@@ -142,10 +148,11 @@ export function historyEntries(
   swipeId: number,
   hash: string,
   seq: number,
+  slotId?: string,
 ): BbiImageEntry[] {
   const list = store?.[String(swipeId)]?.[hash];
   if (!list) return [];
-  return list.filter(entry => entrySeq(entry) === seq);
+  return list.filter(entry => matchesSlot(entry, seq, slotId));
 }
 
 /** hash 匹配且位于同一槽位的最新一条结果（卡片 ready）。 */
@@ -154,11 +161,12 @@ export function latestEntry(
   swipeId: number,
   hash: string,
   seq: number,
+  slotId?: string,
 ): BbiImageEntry | null {
   const list = store?.[String(swipeId)]?.[hash];
   if (!list || list.length === 0) return null;
   for (let i = list.length - 1; i >= 0; i--) {
-    if (entrySeq(list[i]) === seq) return list[i];
+    if (matchesSlot(list[i], seq, slotId)) return list[i];
   }
   return null;
 }
@@ -170,6 +178,7 @@ export function latestStaleEntry(
   swipeId: number,
   hash: string,
   seq: number,
+  slotId?: string,
 ): BbiImageEntry | null {
   const bucket = store?.[String(swipeId)];
   if (!bucket) return null;
@@ -177,7 +186,7 @@ export function latestStaleEntry(
   for (const [key, list] of Object.entries(bucket)) {
     if (key === hash || list.length === 0) continue;
     for (let i = list.length - 1; i >= 0; i--) {
-      if (entrySeq(list[i]) !== seq) continue;
+      if (!matchesSlot(list[i], seq, slotId)) continue;
       const candidate = list[i];
       if (!latest || candidate.createdAt > latest.createdAt) latest = candidate;
       break; // 该桶内最新的一条即可
@@ -418,12 +427,19 @@ export async function saveImageResult(
   seed: number,
   result: ComfyImageResult,
   meta?: GenerationMeta,
+  options?: { slotId?: string; signal?: AbortSignal; owner?: { chatId: string; message: STMessage; swipeId: number } },
 ): Promise<BbiImageEntry> {
   const ctx = getContext();
   if (!ctx?.saveChat) throw new Error('SillyTavern 上下文不可用');
   const chatId = ctx.getCurrentChatId();
   if (!chatId) throw new Error('当前聊天不可用');
 
+  const owned = () => {
+    if (options?.signal?.aborted) return false;
+    const current = getContext(); const message = current?.chat[messageId]; const owner = options?.owner;
+    return !owner || (current?.getCurrentChatId() === owner.chatId && !!message && isSameMessage(message, owner.message) && (message?.swipe_id ?? 0) === owner.swipeId);
+  };
+  if (!owned()) throw new Error('图片所属聊天、消息或 swipe 已变化');
   const hash = promptHash(tag);
   const characterName = ctx.chat[messageId]?.name?.trim() || ctx.name2?.trim() || '未命名角色';
   const { path, genId, createdAt } = await uploadImageWithSidecar(
@@ -436,6 +452,7 @@ export async function saveImageResult(
     meta,
   );
 
+  if (!owned()) throw new Error('图片已上传，但原消息已变化，未写入其它聊天');
   const entry: BbiImageEntry = {
     generationId: genId,
     path,
@@ -445,6 +462,7 @@ export async function saveImageResult(
     status: 'ready',
     createdAt,
     slotSeq: seq,
+    ...(options?.slotId ? { slotId: options.slotId } : {}),
     ...(meta ? { meta } : {}),
   };
 

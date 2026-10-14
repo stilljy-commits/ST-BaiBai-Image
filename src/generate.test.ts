@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateComfyImage } from '@/backends/comfyui';
 import { generateNaiImage } from '@/backends/nai';
 import { acquireNaiSlot } from '@/floor/genQueue';
-import { backendStatus, decideSeed, generateImage } from '@/generate';
+import { backendStatus, captureGenerationSnapshot, decideSeed, generateImage } from '@/generate';
 import { activeNaiEndpoint, newNaiEndpoint, settings, type NaiModel } from '@/state/settings';
 
 vi.mock('@/backends/nai', async importOriginal => ({
@@ -168,6 +168,18 @@ describe('decideSeed', () => {
 });
 
 describe('generateImage', () => {
+  it('keeps connection, model and interpretation snapshots while waiting for the NAI gate', async () => {
+    naiReady('nai-diffusion-5-full-medium'); settings.nai.comicMode = true;
+    const snapshot = captureGenerationSnapshot();
+    let releaseGate!: (release: () => void) => void;
+    vi.mocked(acquireNaiSlot).mockReturnValue(new Promise(resolve => { releaseGate = resolve; }));
+    const pending = generateImage({ prompt: 'scene', seed: 1, renderProfile: { mode: 'illustration', text: false } }, new AbortController().signal, {}, snapshot);
+    settings.nai.model = 'nai-diffusion-4-5-full'; activeNaiEndpoint().key = 'changed'; settings.nai.comicMode = false;
+    releaseGate(vi.fn()); await pending;
+    expect(vi.mocked(generateNaiImage).mock.calls[0][0]).toMatchObject({ model: 'nai-diffusion-5-full-medium', key: 'k', comicMode: false });
+    expect(snapshot.nai.comicMode).toBe(true);
+  });
+
   it('holds a NAI gate slot and always releases it — even when the request throws', async () => {
     naiReady();
     const release = vi.fn();

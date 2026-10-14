@@ -82,6 +82,7 @@ export interface STContext {
   saveMetadataDebounced: () => void;
   saveChat: () => Promise<void>;
   reloadCurrentChat?: () => Promise<void>;
+  setExtensionPrompt?: (key: string, value: string, position?: number, depth?: number, scan?: boolean, role?: number) => void;
   updateMessageBlock?: (
     messageId: number,
     message: STMessage,

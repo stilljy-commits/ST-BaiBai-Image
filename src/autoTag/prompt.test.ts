@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { autoTagProfile, buildAutoTagMessages, expandNlSections } from '@/autoTag/prompt';
+import { autoTagProfile, buildAutoTagMessages, captureAutoTagEnvironment, expandNlSections } from '@/autoTag/prompt';
+import { prepareTargetText } from '@/autoTag/clean';
 import {
   activeComfyPreset,
   DEFAULT_NAI_V5_SPEC,
@@ -58,6 +59,43 @@ function context(): STContext {
 }
 
 describe('auto tag prompt', () => {
+  it('builds a real prompt from streamed prose before an AI floor exists', async () => {
+    const ctx = context(); ctx.chat = [ctx.chat[0]];
+    const target = prepareTargetText('她在车站推开门。', []);
+    const messages = await buildAutoTagMessages(ctx, 1, { ...settings.autoTag, contextMessages: 1 }, null, target);
+    expect(messages.at(-1)?.content).toContain('她在车站推开门。 ⟦P1⟧');
+    expect(messages.at(-1)?.content).toContain('assistant（Char）');
+    expect(ctx.chat).toHaveLength(1);
+  });
+
+  it('keeps the captured comic protocol while live model settings change', async () => {
+    const oldNai = { ...settings.nai }; const oldBackend = settings.defaultBackend;
+    try {
+      settings.defaultBackend = 'nai'; Object.assign(settings.nai, { model: 'nai-diffusion-5-full', comicMode: true, comicV2: true });
+      const environment = captureAutoTagEnvironment();
+      settings.nai.comicMode = false; settings.nai.model = 'nai-diffusion-4-5-full';
+      const messages = await buildAutoTagMessages(context(), 1, { ...settings.autoTag }, null, undefined, undefined, undefined, environment.profile, environment);
+      expect(messages.some(message => message.content.includes('漫画页 V2 协议'))).toBe(true);
+      expect(environment.nai.model).toBe('nai-diffusion-5-full');
+    } finally { Object.assign(settings.nai, oldNai); settings.defaultBackend = oldBackend; }
+  });
+
+  it('provides consistent text-free comic examples in both comic protocols', async () => {
+    const oldNai = { ...settings.nai }; const oldBackend = settings.defaultBackend;
+    try {
+      settings.defaultBackend = 'nai'; Object.assign(settings.nai, { model: 'nai-diffusion-5-full', comicMode: true, comicText: false, orientationLock: 'landscape' });
+      for (const comicV2 of [false, true]) {
+        settings.nai.comicV2 = comicV2;
+        const messages = await buildAutoTagMessages(context(), 1, { ...settings.autoTag }, null);
+        const contract = messages.find(message => message.content.startsWith('你是严谨的剧情画面规划'))!.content;
+        const sample = JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]).images[0];
+        expect(sample.size).toBe('landscape'); expect(sample.tag).not.toMatch(/Text:|Chinese text|speech bubble/i);
+        expect(JSON.stringify(sample.characters)).not.toMatch(/Text:|speech bubble/i);
+        if (!comicV2) expect(sample.tag).toContain('\n@panel P1\n');
+      }
+    } finally { Object.assign(settings.nai, oldNai); settings.defaultBackend = oldBackend; }
+  });
+
   it('marks only clean target paragraphs without pulling user messages before the earliest selected AI floor', async () => {
     const options: AutoTagSettings = {
       enabled: true,
@@ -66,6 +104,9 @@ describe('auto tag prompt', () => {
       maxImages: 3,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts({ jailbreak: '附加规则' }),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -111,6 +152,9 @@ describe('auto tag prompt', () => {
       maxImages: 4,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -128,6 +172,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(
@@ -172,6 +219,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
 
@@ -205,6 +255,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -308,6 +361,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts({ comfyThinking: '自定义清单' }),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -328,6 +384,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts({
         comfyThinking: 'COMFY-CHECKLIST',
         naiThinking: 'NAI-CHECKLIST',
@@ -378,6 +437,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -416,7 +478,7 @@ describe('auto tag prompt', () => {
       expect(text).toContain('若正文明确为显式 NSFW 场景');
       expect(text).toContain('若本图是显式 NSFW 场景');
       expect(text).not.toContain('若本图协议含 negative 键');
-      expect(text).not.toContain('成年人');
+      expect(DEFAULT_NAI_V5_THINKING).not.toContain('成年人');
       // NAI 侧用户没有白痘问题,不引入这条禁令。
       expect(text).not.toContain('白皙肤色词');
       expect(text).not.toContain('白皙词一律禁止');
@@ -432,7 +494,7 @@ describe('auto tag prompt', () => {
       expect(text).toContain('若正文明确为显式 NSFW 场景');
       expect(text).toContain('若本图是显式 NSFW 场景');
       expect(text).not.toContain('若本图协议含 negative 键');
-      expect(text).not.toContain('成年人');
+      expect(DEFAULT_NAI_V5_THINKING).not.toContain('成年人');
       expect(text).not.toContain('白皙肤色词');
     } finally {
       settings.defaultBackend = oldBackend;
@@ -450,6 +512,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -512,6 +577,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -581,6 +649,9 @@ describe('auto tag prompt', () => {
         maxImages: 2,
         retryCount: 1,
         autoGenerate: true,
+        streamGen: false,
+        streamPreview: false,
+        streamAnalysisConcurrency: 2,
         prompts: prompts(),
       };
       const oldBackend = settings.defaultBackend;
@@ -630,6 +701,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -670,6 +744,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -711,6 +788,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const library = '【角色固定外貌库(系统维护)】\n小雪: 1girl, long silver hair';
@@ -735,6 +815,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -752,6 +835,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(
@@ -777,6 +863,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -812,6 +901,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -847,6 +939,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -885,6 +980,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const messages = await buildAutoTagMessages(context(), 1, options, null);
@@ -919,6 +1017,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -961,6 +1062,9 @@ describe('auto tag prompt', () => {
       maxImages: 2,
       retryCount: 1,
       autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
       prompts: prompts(),
     };
     const oldBackend = settings.defaultBackend;
@@ -981,6 +1085,114 @@ describe('auto tag prompt', () => {
       settings.defaultBackend = oldBackend;
       preset.mode = oldMode;
       preset.simple.template = oldTemplate;
+    }
+  });
+
+  it('漫画页 V2 规范要求每格布局句带取景与核心动作,思维链自查分级词', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
+      prompts: prompts(),
+    };
+    const old = {
+      backend: settings.defaultBackend,
+      model: settings.nai.model,
+      comicMode: settings.nai.comicMode,
+      comicV2: settings.nai.comicV2,
+      comicExtraRules: settings.nai.comicExtraRules,
+      comicNsfwRules: settings.nai.comicNsfwRules,
+    };
+    try {
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-5-full';
+      settings.nai.comicMode = true;
+      settings.nai.comicV2 = true;
+      settings.nai.comicExtraRules = '';
+      settings.nai.comicNsfwRules = false;
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      const text = messages.map(m => m.content).join('\n');
+
+      // 1A:每格布局句 = 位置句 + 取景词 + 核心动作短语,作为条目对号入座锚点。
+      expect(text.includes('紧跟该格取景词与核心动作短语')).toBe(true);
+      expect(text.includes('对号入座锚点')).toBe(true);
+      expect(text.includes('Full body view from behind, deep squat at barbell squat rack.')).toBe(true);
+      // 分级词明确为 SFW/NSFW 且必写。
+      expect(text.includes('分级(SFW 或 NSFW,按画面实际暴露程度二选一,永远写在 Base 行首位,禁止省略)')).toBe(true);
+      // 思维链自查同步。
+      expect(text.includes('首位是分级词 SFW 或 NSFW')).toBe(true);
+      // 动作必写:人物条目与思维链都带硬性要求。
+      expect(text.includes('动作必写')).toBe(true);
+      expect(text.includes('没有纯外貌堆砌的静态条目')).toBe(true);
+      // 关闭 NSFW 规则时不注入该块(用块内独有短语判断)。
+      expect(text.includes('杜绝穿裤做、凭空全裸')).toBe(false);
+      expect(text.includes('mating press')).toBe(false);
+    } finally {
+      settings.defaultBackend = old.backend;
+      settings.nai.model = old.model;
+      settings.nai.comicMode = old.comicMode;
+      settings.nai.comicV2 = old.comicV2;
+      settings.nai.comicExtraRules = old.comicExtraRules;
+      settings.nai.comicNsfwRules = old.comicNsfwRules;
+    }
+  });
+
+  it('NSFW 工程规则块随 comicNsfwRules 开关注入与移除', async () => {
+    const options: AutoTagSettings = {
+      enabled: true,
+      contextMessages: 2,
+      minImages: 0,
+      maxImages: 2,
+      retryCount: 1,
+      autoGenerate: true,
+      streamGen: false,
+      streamPreview: false,
+      streamAnalysisConcurrency: 2,
+      prompts: prompts(),
+    };
+    const old = {
+      backend: settings.defaultBackend,
+      model: settings.nai.model,
+      comicMode: settings.nai.comicMode,
+      comicV2: settings.nai.comicV2,
+      comicExtraRules: settings.nai.comicExtraRules,
+      comicNsfwRules: settings.nai.comicNsfwRules,
+    };
+    try {
+      settings.defaultBackend = 'nai';
+      settings.nai.model = 'nai-diffusion-5-full';
+      settings.nai.comicMode = true;
+      settings.nai.comicV2 = true;
+      settings.nai.comicExtraRules = '';
+      settings.nai.comicNsfwRules = true;
+      const messages = await buildAutoTagMessages(context(), 1, options, null);
+      const text = messages.map(m => m.content).join('\n');
+
+      // 3A:六项检查全部注入,且明确仅 NSFW 页适用。
+      expect(text.includes('NSFW 工程规则(仅分级为 NSFW 的页面适用;SFW 页跳过)')).toBe(true);
+      for (const item of ['表情神态', '标准体位术语', '体液交互', '衣物脱卸边界', '可见器官零件', '骨盆挂载与人体工学']) {
+        expect([item, text.includes(item)]).toEqual([item, true]);
+      }
+      expect(text.includes('mating press')).toBe(true);
+
+      settings.nai.comicNsfwRules = false;
+      const offMessages = await buildAutoTagMessages(context(), 1, options, null);
+      const offText = offMessages.map(m => m.content).join('\n');
+      expect(offText.includes('杜绝穿裤做、凭空全裸')).toBe(false);
+      expect(offText.includes('骨盆挂载与人体工学')).toBe(false);
+    } finally {
+      settings.defaultBackend = old.backend;
+      settings.nai.model = old.model;
+      settings.nai.comicMode = old.comicMode;
+      settings.nai.comicV2 = old.comicV2;
+      settings.nai.comicExtraRules = old.comicExtraRules;
+      settings.nai.comicNsfwRules = old.comicNsfwRules;
     }
   });
 });

@@ -285,6 +285,24 @@ describe('saveImageResult', () => {
     settings.storage.saveAsJpeg = false;
   });
 
+  it.each(['chat-change', 'cancel'])('does not save a late uploaded result after %s during the upload', async reason => {
+    const message = { ...fakeMessage(), send_date: 'original' }; const other = { ...fakeMessage(), send_date: 'other' };
+    let chatId = 'chat-a'; const saveChat = vi.fn(async () => undefined); const controller = new AbortController();
+    const ctx = { chat: [message], name2: 'Char', saveChat, getRequestHeaders: () => ({}), getCurrentChatId: () => chatId };
+    vi.stubGlobal('window', { SillyTavern: { getContext: () => ctx } });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/files/upload') {
+        if (reason === 'cancel') controller.abort();
+        else { chatId = 'chat-b'; ctx.chat = [other]; }
+      }
+      return new Response(JSON.stringify({ path: '/user/images/fixture.png' }), { status: 200 });
+    }));
+    const result = { url: 'data:image/png;base64,AAAA', filename: 'x.png', format: 'png', revoke() {} };
+    await expect(saveImageResult(0, 0, 0, '<bbi_image>a</bbi_image>', 1, result, undefined,
+      { slotId: 'stream_0', signal: controller.signal, owner: { chatId: 'chat-a', message, swipeId: 0 } })).rejects.toThrow('原消息已变化');
+    expect(message.extra).toBeUndefined(); expect(other.extra).toBeUndefined(); expect(saveChat).not.toHaveBeenCalled();
+  });
+
   it.each([
     { name: ' 柏宝 ', name2: '柏宝', groupId: undefined, characterName: '柏宝', storedName: '柏宝' },
     { name: ' 小雪 ', name2: '另一位角色', groupId: 'group-a', characterName: '小雪', storedName: '小雪' },

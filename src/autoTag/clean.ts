@@ -1,3 +1,4 @@
+import { MARKER_REGEX_SOURCE } from '@/autoTag/markerSyntax';
 /**
  * 正文清洗工具(与柏宝书 timeTag.ts 的 stripCustomTags 完全同口径,改动需双端同步)。
  * 名单来自共享存储(settings.excludes.customStripTags),输入时已由 sanitizeTagName 消毒,
@@ -92,7 +93,7 @@ function clampToStoryBody(
 export function cleanHistoryText(mes: string, tags: string[]): string {
   return clampToStoryBody(mes, tags, true)
     .replace(RE_START, (_, value) => `(起始时间:${String(value).trim()})`)
-    .replace(RE_END, (_, value) => `(结束时间:${String(value).trim()})`);
+    .replace(RE_END, (_, value) => `(结束时间:${String(value).trim()})`).replace(new RegExp(MARKER_REGEX_SOURCE, 'g'), '');
 }
 
 interface RemovalRange {
@@ -228,7 +229,7 @@ function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
  */
 export function prepareTargetText(mes: string, tags: string[]): PreparedTargetText {
   const source = String(mes ?? '');
-  const ranges = targetRemovalRanges(source, tags);
+  const ranges = mergeRanges([...targetRemovalRanges(source, tags), ...rangesForRegex(source, new RegExp(MARKER_REGEX_SOURCE, 'g'))]);
   const segments = sourceLineRanges(source)
     .map(line => ({ sourceLine: line.index, text: retainedLineText(source, line, ranges) }))
     .filter(segment => !!segment.text)

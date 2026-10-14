@@ -1,3 +1,4 @@
+import { cancelStreamSlot } from '@/autoTag/streamState';
 import { h, render } from 'vue';
 
 import PromptEditor from '@/floor/PromptEditor.vue';
@@ -37,6 +38,7 @@ const HOST_ID = 'bbi-app-host';
 
 /** 楼层坐标快照。弹窗活得比卡片长,这些一律开窗时取值,回调里绝不读 props。 */
 export interface PromptEditorAt {
+  slotId?: string;
   chatId: string;
   messageId: number;
   swipeId: number;
@@ -102,7 +104,9 @@ async function writeBack(
     return false;
   }
 
-  const nextTag = serializeImageTag(content);
+  const previous = parseImageTagContent(at.rawTag);
+  const nextTag = serializeImageTag({ ...content, slotId: previous.slotId, renderProfile: previous.renderProfile });
+  if (previous.slotId) cancelStreamSlot(previous.slotId);
   // 标记必须挂在写回**之前**:写回即触发重水合、卡片挂载时消费标记(同 autoTag/runner.ts)。
   // force 模式无条件开跑 —— 用户点的就是「重新生成」,即便这条提示词以前出过图。
   if (regenerate) {
@@ -201,7 +205,7 @@ export function openPromptEditor(options: PromptEditorOptions): void {
    */
   let rewritten = false;
   /** 本槽位的运行态 key,与 genState / tagPlanState 同构。 */
-  const planKey = slotKey(options.at.chatId, options.at.messageId, options.at.swipeId, options.at.seq);
+  const planKey = slotKey(options.at.chatId, options.at.messageId, options.at.swipeId, options.at.seq, options.at.slotId);
   /**
    * 本窗已经关了(含被后来者顶掉)。**迟到的回调一律不准再渲染** ——
    * 重写跑在 tagPlanState 里、活得比弹窗长,它的收尾回调会在关窗之后才到。

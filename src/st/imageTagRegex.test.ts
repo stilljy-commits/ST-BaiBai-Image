@@ -179,6 +179,15 @@ describe('stripImageTags', () => {
 });
 
 describe('parseImageTagContent', () => {
+  it('keeps newlines in comic-page tags starting with <image> (V5 marker protocol)', () => {
+    const content = parseImageTagContent(
+      '<bbi_image><image>\n@page\nSFW, 1girl, comic page\n\n@panel P1\nA main panel.\n</image></bbi_image>',
+    );
+    expect(content.tag).toBe(
+      '<image>\n@page\nSFW, 1girl, comic page\n\n@panel P1\nA main panel.\n</image>',
+    );
+  });
+
   it('treats bare content as the tag part (legacy format)', () => {
     expect(parseImageTagContent('<bbi_image>1girl, moonlight</bbi_image>')).toEqual({
       tag: '1girl, moonlight',
@@ -319,6 +328,23 @@ describe('serializeImageTag', () => {
       nl: 'A girl smiling.',
       negative: 'duplicate',
       characters: [{ name: '小雪', tag: 'girl, white hair', nl: 'right side' }],
+      size: 'portrait' as const,
+    };
+    expect(parseImageTagContent(serializeImageTag(content))).toEqual(content);
+  });
+
+  it('漫画页 V2:characters 条目的 Text: 对白行在序列化/解析往返中逐字保留', () => {
+    const content = {
+      tag: 'R-15, 1girl, comic, 3 panels, tight layout, text, chinese text',
+      nl: '',
+      negative: '',
+      characters: [
+        {
+          name: '小雪',
+          tag: 'girl, kasumi (blue archive), long black hair, medium shot, speech bubble\nText: 呼……哈……心率……一百六十五……',
+          nl: '',
+        },
+      ],
       size: 'portrait' as const,
     };
     expect(parseImageTagContent(serializeImageTag(content))).toEqual(content);

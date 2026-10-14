@@ -1,4 +1,26 @@
 import { getContext, type STContext, type STMessage } from '@/st/context';
+import { parseImageTags } from '@/st/imageTagRegex';
+
+/** Retry formatting only while the originating chat and message still own this floor. */
+export async function ensureFloorRendered(context: STContext, message: STMessage, floor: number, chatId = context.getCurrentChatId()): Promise<boolean> {
+  const owned = () => { const ctx = getContext(); return !!ctx && ctx.getCurrentChatId() === chatId && !!ctx.chat[floor] && isSameMessage(ctx.chat[floor], message); };
+  const count = () => document.querySelectorAll(`#chat .mes[mesid="${floor}"] div[data-bbi-slot]`).length;
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  await wait(150);
+  if (!owned()) return false;
+  let expected = parseImageTags(getContext()!.chat[floor].mes).length;
+  if (count() >= expected) return true;
+  try { await context.updateMessageBlock?.(floor, getContext()!.chat[floor], { rerenderMessage: true }); } catch {}
+  await wait(250);
+  if (!owned()) return false;
+  expected = parseImageTags(getContext()!.chat[floor].mes).length;
+  if (count() >= expected) return true;
+  console.warn('[BBI][AutoTagDebug] render:missing-anchors', { floor, expected, count: count() });
+  // A full reload can replace message objects; the stable message identity is rechecked afterwards.
+  try { await context.reloadCurrentChat?.(); } catch {}
+  await wait(350);
+  return owned() && count() >= expected;
+}
 
 function findMessage(floor: number): HTMLElement | null {
   return document.querySelector<HTMLElement>(`#chat .mes[mesid="${floor}"]`);
@@ -38,7 +60,7 @@ async function refreshRenderedMessage(context: STContext, message: STMessage, fl
   if (!findMessage(floor)) return;
   if (typeof context.updateMessageBlock === 'function') {
     try {
-      await context.updateMessageBlock(floor, message);
+      await context.updateMessageBlock(floor, message, { rerenderMessage: true });
       return;
     } catch {
       // 局部刷新失败时再退回整段聊天重载。
@@ -69,7 +91,7 @@ export interface MessageExtraUpdate {
  * send_date 在消息创建时定死、编辑不变,配 name 足以认人;删楼导致索引平移时
  * send_date 必然不同,该拦的照样拦住。旧消息没有 send_date 时退回引用比对。
  */
-function isSameMessage(message: STMessage, expected: STMessage): boolean {
+export function isSameMessage(message: STMessage, expected: STMessage): boolean {
   if (message === expected) return true;
   if (!expected.send_date) return false;
   return message.send_date === expected.send_date && message.name === expected.name;

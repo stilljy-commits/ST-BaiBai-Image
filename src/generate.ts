@@ -1,3 +1,4 @@
+import { applyRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
 /**
  * 「一次出图」的共用中段 —— 楼层卡片与公开接口的唯一生成入口。
  *
@@ -33,6 +34,7 @@ import { activeComfyPreset, activeNaiEndpoint, activeOrientationLock, effectiveC
 
 /** 一次生成的输入。与协议层 ImageInsertion 同形,但不含正文位置信息。 */
 export interface GenerateInput {
+  renderProfile?: RenderProfile;
   /** 正向 danbooru 短 tag。 */
   prompt: string;
   /** 自然语言部分(可空)。 */
@@ -170,12 +172,23 @@ export function decideSeed(backend: BackendId, override?: number): number {
  * 闸门纪律(见 floor/genQueue.ts):NAI 路径必须持槽发请求,release 放在 finally,
  * 漏一格就永久少一格并发。
  */
+export interface GenerationSnapshot {
+  backend: BackendId;
+  nai: ReturnType<typeof effectiveNai>;
+  comfy: ReturnType<typeof effectiveComfyConn>;
+  orientation: ReturnType<typeof activeOrientationLock>;
+  status: BackendStatus;
+}
+export function captureGenerationSnapshot(): GenerationSnapshot {
+  return { backend: settings.defaultBackend, nai: JSON.parse(JSON.stringify(effectiveNai())), comfy: JSON.parse(JSON.stringify(effectiveComfyConn())), orientation: activeOrientationLock(), status: backendStatus() };
+}
 export async function generateImage(
   input: GenerateInput,
   signal?: AbortSignal,
   progress: GenerateProgress = {},
+  snapshot: GenerationSnapshot = captureGenerationSnapshot(),
 ): Promise<GenerateOutput> {
-  const status = backendStatus();
+  const status = snapshot.status;
   // 兜底:卡片侧已用 configured 拦在按钮上,公开接口侧也会先报 not_configured。
   // 真漏到这里说明上游判据漂了,宁可明说也别发一个注定 401/404 的请求。
   if (!status.configured) throw new Error(status.reason || '出图后端未配置');
@@ -193,12 +206,12 @@ export async function generateImage(
 
     // 画幅锁在这里统一生效(卡片与公开接口同走本函数):只决定这一次用哪格尺寸,
     // tag 里记的方向原样不动——promptHash 吃 tag 原文,改写会让老图无辜变 stale。
-    const size = effectiveOrientation(activeOrientationLock(), input.size ?? 'portrait');
+    const size = effectiveOrientation(snapshot.orientation, input.size ?? 'portrait');
     let result: ComfyImageResult;
     let meta: GenerationMeta;
     if (isNai) {
       const output = await generateNaiImage(
-        effectiveNai(),
+        input.renderProfile ? applyRenderProfile(snapshot.nai, input.renderProfile) : snapshot.nai,
         // characters 原样透传:不支持的模型由 buildNaiParameters 自己滤掉(同一口径
         // naiSupportsCharacterPrompts),在这儿再滤一遍只会多一处会漂的判据
         { prompt: input.prompt, nl: input.nl ?? '', characters, seed: input.seed, size },
@@ -208,7 +221,7 @@ export async function generateImage(
       result = output.result;
       meta = { backend: 'nai', model: status.model, ...output.usage };
     } else {
-      const conn = effectiveComfyConn();
+      const conn = snapshot.comfy;
       result = await generateComfyImage(
         conn,
         {

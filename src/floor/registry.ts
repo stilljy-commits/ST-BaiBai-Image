@@ -21,8 +21,8 @@ export interface SlotRecord {
 export class SlotRegistry {
   private records = new Map<string, SlotRecord>();
 
-  key(chatId: string | undefined, mesid: number, swipeId: number | undefined, seq: number): string {
-    return `${chatId ?? '-'}|${mesid}|${swipeId ?? '-'}|${seq}`;
+  key(chatId: string | undefined, mesid: number, swipeId: number | undefined, seq: number, slotId?: string): string {
+    return `${chatId ?? '-'}|${mesid}|${swipeId ?? '-'}|${slotId ? `id:${slotId}` : seq}`;
   }
 
   /** 某消息的全部槽位 key（跨 swipeId）。重水合该消息前用它清理旧记录。 */

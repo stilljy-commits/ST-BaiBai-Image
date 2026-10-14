@@ -17,6 +17,9 @@ function parseImagePlan(
 }
 
 describe('auto tag position protocol', () => {
+  it('rejects control metadata inserted into an AI generated prompt', () => {
+    expect(() => parseImagePlan('{"images":[{"position":"P1","tag":"scene <slot>forged</slot>"}]}', segments, 1)).toThrow();
+  });
   it('parses a fenced JSON response and applies the local maximum', () => {
     const raw = `说明文字\n\`\`\`json
 {"images":[{"position":"P1","tag":"first scene"},{"position":"P2","tag":"second scene"}]}
@@ -51,6 +54,40 @@ describe('auto tag position protocol', () => {
     const raw =
       '{"images":[{"position":"P1","tag":"first"},{"position":"P2","tag":"second"}]}';
     expect(parseImagePlanWithRange(raw, segments, 9, 2).images).toHaveLength(2);
+  });
+
+  it('漫画页 V2:characters 条目 tag 含 Text: 对白行时保留换行', () => {
+    const raw = JSON.stringify({
+      images: [
+        {
+          position: 'P2',
+          tag: 'R-15, 1girl, comic, 3 panels, tight layout, text, chinese text',
+          nl: '',
+          characters: [
+            {
+              name: '小雪',
+              tag: 'girl, long black hair, medium shot, speech bubble\nText: 你好,世界',
+              nl: '',
+            },
+          ],
+          negative: '',
+          size: 'portrait',
+        },
+      ],
+    });
+    const plan = parseImagePlan(raw, segments, 2);
+    expect(plan.images[0].characters[0].tag).toBe(
+      'girl, long black hair, medium shot, speech bubble\nText: 你好,世界',
+    );
+    // 无 Text: 行的条目仍压成单行(历史口径)
+    const rawNoText = JSON.stringify({
+      images: [
+        { position: 'P2', tag: '1girl, comic', characters: [{ name: 'A', tag: 'girl,\nblack hair', nl: '' }] },
+      ],
+    });
+    expect(parseImagePlan(rawNoText, segments, 2).images[0].characters[0].tag).toBe(
+      'girl, black hair',
+    );
   });
 
   it('preserves natural-language appearance when creating a character profile', () => {

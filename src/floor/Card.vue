@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { requestSlotTag } from '@/autoTag/runner';
+import type { RenderProfile } from '@/autoTag/renderProfile';
+import { streamSlotState, retryStreamSlot, cancelStreamSlot } from '@/autoTag/streamState';
+import { inferRenderProfile } from '@/autoTag/renderProfile';
 import { computed, onMounted, ref, watch } from 'vue';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
@@ -58,6 +62,9 @@ import { formatPromptText } from '@/st/imageTagRegex';
 
 const props = defineProps<{
   /** tag 原文解析出的 tag 部分(danbooru 短 tag;展示与生成用)。 */
+  slotId?: string;
+  pending?: string;
+  renderProfile?: RenderProfile;
   prompt: string;
   /** tag 原文解析出的自然语言部分(无则空串;生成时写入 %nl% 占位符)。 */
   nl: string;
@@ -81,7 +88,7 @@ const props = defineProps<{
 
 type Phase = 'pending' | 'queued' | 'generating' | 'ready' | 'stale' | 'error';
 
-const key = computed(() => slotKey(props.chatId, props.messageId, props.swipeId, props.seq));
+const key = computed(() => slotKey(props.chatId, props.messageId, props.swipeId, props.seq, props.slotId));
 const hash = computed(() => promptHash(props.tag));
 
 /**
@@ -133,7 +140,11 @@ const record = computed(() => getGenRecord(key.value));
  */
 const planning = computed(() => isTagPlanning(key.value));
 
+const streamed = computed(() => streamSlotState(props.slotId));
 const phase = computed<Phase>(() => {
+  const task = streamed.value;
+  if (task && ['analyzing', 'generating', 'saving'].includes(task.phase)) return 'generating';
+  if (task && ['error', 'cancelled'].includes(task.phase)) return 'error';
   const running = record.value;
   if (running) return running.phase;
   // 用存活口径:图被图库删光后该退回 pending 给出「生成图片」入口,
@@ -143,7 +154,7 @@ const phase = computed<Phase>(() => {
   return 'pending';
 });
 
-const error = computed(() => record.value?.error ?? '');
+const error = computed(() => streamed.value?.error ?? record.value?.error ?? '');
 const queueAhead = computed(() => record.value?.queueAhead ?? null);
 /** 限流退避中(NAI 自动重试);非 null 时状态文案优先报它。 */
 const retryInfo = computed(() => record.value?.retry ?? null);
@@ -185,7 +196,7 @@ const promptText = computed(() =>
  * 否则「有图 → 点重绘 → 失败」会让图凭空消失(只剩一行报错),看着像把图弄丢了。
  */
 const shownEntry = computed(() => (liveHistory.value.length ? current.value : liveStale.value));
-const imageSrc = computed(() => shownEntry.value?.path ?? '');
+const imageSrc = computed(() => shownEntry.value?.path ?? streamed.value?.url ?? '');
 /**
  * 灯箱展示用:提示词 + 只读元信息(画师串/vibe/采样参数)。
  * 与卡片内可编辑的 `promptText` 分开 —— 元信息只读,绝不能混进可写回的 tag 文本。
@@ -231,6 +242,8 @@ const statusLabel = computed(() => {
   // 退避优先:请求已经失败过、正在等重试,不能继续报「生成中」骗人
   const retry = retryInfo.value;
   if (retry) return `请求受限,稍后第 ${retry.attempt}/${retry.max} 次重试…`;
+  if (streamed.value?.phase === 'analyzing') return '正在分析配图…';
+  if (streamed.value?.phase === 'saving') return '正在保存图片…';
   if (phase.value === 'queued') return '排队中…';
   const ahead = queueAhead.value;
   if (phase.value === 'generating' && ahead !== null && ahead > 0) return `排队中(前面 ${ahead} 个)`;
@@ -241,7 +254,7 @@ const statusLabel = computed(() => {
 const barText = computed(() => {
   if (planning.value) return 'AI 重写提示词…';
   if (busy.value) return statusLabel.value;
-  if (phase.value === 'error') return error.value || '生成失败';
+  if (phase.value === 'error') return streamed.value?.error || error.value || '生成失败';
   if (shownEntry.value) return props.prompt || props.nl || '图片';
   if (filesGone.value) return '图片文件已删除';
   return '待生成';
@@ -258,11 +271,15 @@ const pendingHint = computed(() => {
 
 async function generate(): Promise<void> {
   if (busy.value || planning.value || !configured.value) return;
+  if (retryStreamSlot(props.slotId)) return;
+  if (props.pending !== undefined || !props.prompt.trim()) { await requestSlotTag(props.messageId, props.seq); return; }
   const slot = key.value;
   const currentHash = hash.value;
   // 本次任务的输入全部就地取值:请求在途时本组件很可能已被重水合销毁
   // (任一兄弟槽位出图都会触发全楼重建),销毁后再读 props 不可靠。
   const job = {
+    slotId: props.slotId,
+    renderProfile: props.renderProfile ?? inferRenderProfile(props.prompt),
     messageId: props.messageId,
     swipeId: props.swipeId,
     seq: props.seq,
@@ -315,7 +332,7 @@ async function generate(): Promise<void> {
     }
     // 落盘:图片进 ST 文件系统 + extra 写指针。成功后重水合,
     // 卡片从 extra 恢复为 ready(blob/dataURL 生命周期随之结束)。
-    await saveImageResult(job.messageId, job.swipeId, job.seq, job.tag, seed, result, meta);
+    await saveImageResult(job.messageId, job.swipeId, job.seq, job.tag, seed, result, meta, { slotId: job.slotId });
     result.revoke();
     if (historyId !== null) safeHistory(() => finishImage(historyId!));
     // 先清运行态再重水合:重水合会重建本组件,清完才不会带着 generating 复活
@@ -336,12 +353,13 @@ async function generate(): Promise<void> {
 }
 
 function cancel(): void {
+  if (cancelStreamSlot(props.slotId)) return;
   cancelGen(key.value);
 }
 
 function openImage(): void {
   const entry = shownEntry.value;
-  if (!entry) return;
+  if (!entry) { if (imageSrc.value) openLightbox({ src: imageSrc.value, prompt: promptText.value }); return; }
   // 就地取值:灯箱挂在插件 shadow root,**活得比本卡片长**——任一兄弟槽位出图都会
   // 重水合销毁本组件,而灯箱还开着。回调里再读 props 就是读已销毁实例,故全部先快照。
   const at = { messageId: props.messageId, swipeId: props.swipeId };
@@ -361,6 +379,7 @@ function openImage(): void {
 function openEditor(): void {
   openPromptEditor({
     at: {
+      slotId: props.slotId,
       chatId: props.chatId,
       messageId: props.messageId,
       swipeId: props.swipeId,
@@ -451,6 +470,8 @@ onMounted(() => {
   // (本组件没有单测,留在这儿锁不住),口径见 floor/autoGenerate.ts。
   // 未配置后端时不跑(卡片维持 pending,显示配置引导);标记同样已消费掉。
   if (!props.chatId) return;
+  if (props.slotId && streamSlotState(props.slotId)) return;
+  if (props.pending !== undefined) return;
   const mode = consumeAutoGenerate(props.chatId, props.messageId, props.swipeId, props.seq);
   if (!mode) return;
   if (!shouldAutoGenerate(mode, phase.value)) return;

@@ -1,3 +1,6 @@
+import { planChangeOps } from '@/autoTag/changeOps';
+import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
+import { captureRenderProfile } from '@/autoTag/renderProfile';
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import {
@@ -7,7 +10,7 @@ import {
 } from '@/autoTag/charAnchors';
 import { prepareTargetText } from '@/autoTag/clean';
 import { beginGeneration, clearGeneration, consumeGeneration } from '@/autoTag/generationGate';
-import { autoTagProfile, buildAutoTagMessages } from '@/autoTag/prompt';
+import { autoTagProfile, buildAutoTagMessages, captureAutoTagEnvironment } from '@/autoTag/prompt';
 import { rebaseImagePositions, type RebaseReport } from '@/autoTag/rebase';
 import { buildSlotTaskNote } from '@/autoTag/slotPlan';
 import {
@@ -30,10 +33,11 @@ import {
   consumeAutoGenerate,
   markForAutoGenerate,
 } from '@/floor/autoGenerate';
-import { applyMessageText, type ApplyMessageResult } from '@/st/messageEdit';
+import { applyMessageText, ensureFloorRendered, type ApplyMessageResult } from '@/st/messageEdit';
 import { getContext, isAiStoryMessage, type STMessage } from '@/st/context';
 import {
   hasImageTagTrace,
+  parseImageTagContent,
   parseImageTags,
   replaceImageTagAt,
   serializeImageTag,
@@ -132,48 +136,7 @@ function describeRebase(report: RebaseReport): string {
 }
 
 /** 把 AI 报告的 changes 转成当前楼层操作;真正写回在正文 CAS 成功时一次完成。 */
-function planChangeOps(plan: ImagePlan): PositionedCharOp[] {
-  const ops: PositionedCharOp[] = [];
-  for (const change of plan.changes) {
-    let op: CharTagAutoOp | null = null;
-    if (change.field === 'new') {
-      // value 可能是结构化字段的 JSON 串(protocol.ts 拼),也可能是整串 tag 文本
-      let fields: Partial<Record<CharTagField, string>> | null = null;
-      let value = '';
-      if (change.value.startsWith('{')) {
-        try {
-          const parsed = JSON.parse(change.value) as Record<string, unknown>;
-          const picked: Partial<Record<CharTagField, string>> = {};
-          for (const field of CHAR_TAG_FIELDS) {
-            const value = parsed[field];
-            if (typeof value === 'string' && value.trim()) picked[field] = value.trim();
-          }
-          if (Object.keys(picked).length) fields = picked;
-        } catch {
-          /* 非 JSON → 当整串处理 */
-        }
-      }
-      if (!fields && change.value) value = change.value;
-      op = createCharTagNewOp(
-        {
-          name: change.name,
-          fields: { ...emptyCharFields(), ...(fields ?? {}) },
-          raw: value,
-          nl: change.nl ?? '',
-          source: 'ai',
-          desc: '',
-        },
-        change.reason,
-      );
-    } else if (change.field === 'nl') {
-      op = createCharTagSetOp(change.name, 'nl', change.value || change.nl || '', change.reason);
-    } else {
-      op = createCharTagSetOp(change.name, change.field, change.value, change.reason);
-    }
-    if (op) ops.push({ op, sourceLine: change.sourceLine });
-  }
-  return ops.sort((left, right) => left.sourceLine - right.sourceLine);
-}
+
 
 async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> {
   const context = getContext();
@@ -311,6 +274,8 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       : settings.autoTag;
     // 协议形态开跑时快照一次:写协议、验收与收尾同一份,用户中途拨开关也不会前后不一
     const profile = autoTagProfile();
+    const environment = captureAutoTagEnvironment(profile);
+    const renderProfile = captureRenderProfile(environment.nai, environment.backend);
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -320,6 +285,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       anchors.text,
       slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
       profile,
+      environment,
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -400,6 +366,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
+    for (const image of plan.images) image.renderProfile = renderProfile;
+    if (slot && slotRawTag) {
+      const old = parseImageTagContent(slotRawTag);
+      for (const image of plan.images) { image.slotId = old.slotId; }
+    }
     // 单槽重写不落 changes:首次全量分析已为整楼建过档,这里再应用一次只会产生
     // 重复的建档/变更记录;库文本已含本楼增量(见上面 entriesBefore),AI 照抄即可。
     const planOps = slot ? [] : planChangeOps(plan);
@@ -549,6 +520,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         return;
       }
       recomputeCharTags();
+      if (plan.images.length) void ensureFloorRendered(context, message, floor, chatId);
       if (rebaseNote) console.info(`[柏宝绘] 第 ${floor} 楼 tag 位置重定位:${rebaseNote}`);
       if (plan.images.length) {
         toastr.success(`已在第 ${floor} 楼插入 ${plan.images.length} 个生图 tag`, '柏宝绘');
@@ -657,6 +629,7 @@ export function bindAutoTagging(): void {
     return;
   }
   bound = true;
+  let lastChatId = context.getCurrentChatId();
 
   diagnostic('bind', {
     generationStarted: events.GENERATION_STARTED,
@@ -674,8 +647,12 @@ export function bindAutoTagging(): void {
       );
       diagnostic('GENERATION_STARTED', { chatId, type, dryRun, eligible, options });
       beginGeneration(chatId, type, dryRun);
+      if (eligible) beginStreamSession(chatId, typeof type === 'string' ? type : 'normal');
     },
   );
+  context.eventSource.on(events.STREAM_TOKEN_RECEIVED || 'stream_token_received', (text: unknown) => {
+    if (typeof text === 'string') feedStreamText(text);
+  });
   context.eventSource.on(events.CHARACTER_MESSAGE_RENDERED, (messageId: unknown, type: unknown) => {
     const chatId = getContext()?.getCurrentChatId?.() ?? '';
     const matched = consumeGeneration(chatId, type);
@@ -684,6 +661,11 @@ export function bindAutoTagging(): void {
     const floor = typeof messageId === 'number' ? messageId : Number(messageId);
     if (!Number.isInteger(floor) || floor < 0) {
       diagnostic('render:skip', { chatId, messageId, type, reason: 'invalid-floor' });
+      return;
+    }
+    if (settings.autoTag.streamGen) {
+      void reconcileStreamFloor(floor, chatId).then(handled => { if (!handled) scheduleForGeneratedFloor(floor, chatId); })
+        .catch(error => { diagnostic('stream:reconcile-failed', String(error)); toastr.warning('流式配图落位失败，正文保持可读，请查看配图日志', '柏宝绘'); });
       return;
     }
     // Do not block ST finalization, and pin the deferred run to the originating chat.
@@ -699,10 +681,15 @@ export function bindAutoTagging(): void {
     context.eventSource.on(events.GENERATION_STOPPED, (...args: unknown[]) => {
       diagnostic('GENERATION_STOPPED', { args });
       clearGeneration();
+      stopCurrentStream();
     });
   }
+  context.eventSource.on(events.MESSAGE_DELETED, () => invalidateStreamOwners());
+  context.eventSource.on(events.MESSAGE_SWIPED, () => invalidateStreamOwners());
   context.eventSource.on(events.CHAT_CHANGED, (...args: unknown[]) => {
     diagnostic('CHAT_CHANGED', { args, currentChatId: getContext()?.getCurrentChatId?.() ?? '' });
-    cancelAll();
+    const chatId = getContext()?.getCurrentChatId();
+    if (chatId !== lastChatId) { cancelAll(); cancelStreamSessions(chatId); }
+    lastChatId = chatId;
   });
 }

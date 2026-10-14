@@ -4,11 +4,18 @@ import { randomUuid } from '@/randomUuid';
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { ComfyImageResult } from '@/backends/comfyui';
 import {
+  isAbortError,
   parseRetryAfter,
   runNaiWithRetry,
   type NaiRetryInfo,
 } from '@/backends/naiRateLimit';
 import { parseSize, pickSize, type Orientation } from '@/backends/size';
+
+/**
+ * 生图请求硬超时:NAI V5 Full 在 1024×1536 档正常也要 1~2 分钟,留足余量到 4 分钟;
+ * 超过即认定连接挂起(弱网/手机 WebView 常见),转网络级错误走自动重试。
+ */
+const NAI_TIMEOUT_MS = 240_000;
 import { clampVibeStrength, loadVibeData } from '@/backends/vibeStore';
 import type { GenerationArtist, GenerationMeta, GenerationParams, GenerationVibe } from '@/generationMeta';
 import type {
@@ -69,6 +76,7 @@ export const NAI_NOISE_SCHEDULES: { value: string; label: string }[] = [
 /** 各模型官方质量词，拼到正向提示词末尾;用户在面板改过则用其覆盖值。 */
 const QUALITY_TAGS: Record<string, string> = {
   'nai-diffusion-5-full': 'very aesthetic, masterpiece, no text',
+  'nai-diffusion-5-full-medium': 'very aesthetic, masterpiece, no text',
   'nai-diffusion-5-curated': 'very aesthetic, masterpiece, no text',
   'nai-diffusion-4-5-full': 'location, very aesthetic, masterpiece, no text',
   'nai-diffusion-4-5-curated': 'location, masterpiece, no text, -0.8::feet::, rating:general',
@@ -110,6 +118,24 @@ export function naiDefaultQualityTags(model: string): string {
 
 export function naiDefaultUndesired(model: string): string {
   return DEFAULT_UNDESIRED_CONTENT[model] ?? '';
+}
+
+/**
+ * V5 Full Medium Effort(蒸馏版,2026-10-08 发布):固定 14 步 + Euler Ancestral +
+ * 固定 Heavy 负面预设 + 不可用 CFG Rescale;自定义负面(整页与逐人物)被服务端忽略。
+ * 官方文档: https://docs.novelai.net/en/image/effort/
+ */
+export const NAI_MEDIUM_MODEL = 'nai-diffusion-5-full-medium';
+export const NAI_MEDIUM_STEPS = 14;
+export const NAI_MEDIUM_SAMPLER = 'k_euler_ancestral';
+/** Medium 固定的 Heavy 负面预设(官方 web client 同款;RS_NAI_API_Request 已实测)。 */
+export const NAI_MEDIUM_UNDESIRED =
+  'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, ' +
+  'jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, ' +
+  'screentone, multiple views, logo, too many watermarks, negative space, blank page';
+
+export function isNaiMedium(model: string): boolean {
+  return model === NAI_MEDIUM_MODEL;
 }
 
 /** variety boost 的 magic 常数(st-chatu8 同口径):按像素量相对参考分辨率缩放。 */
@@ -339,7 +365,69 @@ export function naiUndesiredContent(nai: NaiSettings): string {
  * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
  * NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同的提示词,且只在 NAI3 上暴露。
  */
+/**
+ * 漫画页模式关闭「对白上画」时,剥掉页文本里的 Text 行与气泡/文字指令行
+ * (模型偶发仍会写出,发送端兜底剥除,保证 NAI 收到的页文本无文字元素)。
+ */
+export function stripComicText(page: string): string {
+  return page
+    .replace(/^[ \t]*(?:Text:[^\n]*|speech bubble[^\n]*|thought bubble[^\n]*|narration[^\n]*|sound effects[^\n]*|縦書き[^\n]*|横書き[^\n]*)[ \t]*\r?\n?/gim, '')
+    .split('\n').map(line => stripComicV2Tokens(line)).join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * 漫画页 V2 关闭「对白上画」时的 token 级剥除:单行文本(1.3.1 同形态)里的
+ * 文字语言词(text, chinese text 等)与气泡词(speech/thought bubble)是行内 token,
+ * stripComicText 只删「整行起始」的形态,这里按逗号 token 过滤,Base 行与人物条目共用。
+ */
+export function stripComicV2Tokens(line: string): string {
+  return line
+    .split(',')
+    .map(part => part.trim())
+    .filter(
+      part =>
+        part &&
+        !/^(?:chinese|japanese|english)?\s*text$/i.test(part) &&
+        !/^(?:speech|thought)\s+bubble$/i.test(part) &&
+        !/^(?:縦書き|横書き|narration|sound effects)$/i.test(part),
+    )
+    .join(', ');
+}
+
 export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
+  // 漫画页模式:tag 已是完整的 @page/@panel 整页指令,画师串拼在前后会变成页文本
+  // 外的零散 tag、干扰 V5 的分格解析,故不拼画师串;**质量词同样不拼**——整页文本的
+  // 最后一段是 @negative,追加的质量词会落进负面段、被 NAI 当成排除词反向压制画面
+  // (复杂度由规范要求写进 @page 页面基础词,如 high complexity,不需要外部质量词)。
+  // <image></image> 包装是聊天侧格式,发送前剥掉(发给 NAI 是页首/页尾噪声)。
+  // 关闭对白上画时剥掉 Text 行。
+  if (nai.comicMode && isNai5(nai.model)) {
+    let stripped = (nai.comicText ? prompt.trim() : stripComicText(prompt))
+      .replace(/^\s*<image>\s*/i, '')
+      .replace(/\s*<\/image>\s*$/i, '')
+      .trim();
+    if (nai.comicV2) {
+      stripped = stripped.replace(/\s*\n+\s*/g, ', ');
+      // 关闭对白上画:Base 行里的文字语言词与气泡词按 token 剥除
+      if (!nai.comicText) stripped = stripComicV2Tokens(stripped);
+      // V2 恢复普通模式的质量词/画师串拼装:V2 没有 @negative 段,末尾追加安全。
+      // 漏拼质量词会让 V5 拿不到 very aesthetic/masterpiece 等官方质量链,整页
+      // 画质与人物结构明显劣化;画师串照常放最前(决定画风基调,NAI 对靠前 tag
+      // 权重更高)。对白上画时从质量词滤掉 no text(官方默认含它,会压制漫画对白)。
+      const artist = naiArtistPrompt(nai);
+      const quality = nai.comicText
+        ? naiQualityTags(nai)
+            .split(',')
+            .map(part => part.trim())
+            .filter(part => part && !/^no\s+text$/i.test(part))
+            .join(', ')
+        : naiQualityTags(nai);
+      return [artist, stripped, quality].filter(Boolean).join(', ');
+    }
+    return stripped;
+  }
   const artist = naiArtistPrompt(nai);
   const quality = naiQualityTags(nai);
   const tags = [artist, prompt.trim(), quality].filter(Boolean).join(', ');
@@ -348,7 +436,14 @@ export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): s
 
 function characterCaption(character: ImageCharacterPrompt): string {
   // Character Prompts identify one subject: library count tags (1girl/1boy) become girl/boy here.
-  const tag = character.tag
+  // 漫画页 V2 的条目末行是 Text: 对白(独立一行,1.3.1 预设同形态):逗号清洗只作用于
+  // Text: 之前的部分,对白原句(含标点/空格/权重)逐字保留;模型偶发写成 ", Text:" 时
+  // 先归一成换行形态。多条 Text: 行时全部保留。
+  const raw = character.tag.replace(/\r\n?/g, '\n').replace(/,\s*Text:/g, '\nText:');
+  const textAt = raw.indexOf('\nText:');
+  const head = textAt >= 0 ? raw.slice(0, textAt) : raw;
+  const tail = textAt >= 0 ? raw.slice(textAt) : '';
+  const tag = head
     .split(',')
     .map(part => {
       const value = part.trim();
@@ -358,14 +453,17 @@ function characterCaption(character: ImageCharacterPrompt): string {
     })
     .filter(Boolean)
     .join(', ');
-  return character.nl.trim() ? `${tag}. ${character.nl.trim()}` : tag;
+  return character.nl.trim() ? `${tag}. ${character.nl.trim()}${tail}` : `${tag}${tail}`;
 }
 
 /**
  * 负面完整 prompt = 配方绑定值 → 渠道覆盖值(undesiredContent)→ 模型官方负面词
  * (见 naiUndesiredContent)。想额外排除什么,往任一级的值里接即可。
+ * Medium Effort 例外:服务端锁定 Heavy 预设、忽略自定义负面,这里强制下发固定值
+ * (官方 client 同口径;发自定义值会被 RS_NAI_API_Request 实测拒绝/忽略)。
  */
 export function fullNegativePrompt(nai: NaiSettings): string {
+  if (isNaiMedium(nai.model)) return NAI_MEDIUM_UNDESIRED;
   return naiUndesiredContent(nai);
 }
 
@@ -383,14 +481,16 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   const negative = fullNegativePrompt(nai);
   const skipCfg = skipCfgAboveSigma(width, height, nai.model, nai.varietyBoost);
   const sampler = isNai5(nai.model) && !NAI_V5_SAMPLERS.has(nai.sampler) ? 'k_euler_ancestral' : nai.sampler;
+  // Medium Effort:固定 14 步 / Euler Ancestral / CFG Rescale 0,用户设置被忽略。
+  const medium = isNaiMedium(nai.model);
 
   const params: JsonObject = {
     params_version: isNai5(nai.model) ? 4 : 3,
     width,
     height,
     scale: nai.scale,
-    sampler,
-    steps: nai.steps,
+    sampler: medium ? NAI_MEDIUM_SAMPLER : sampler,
+    steps: medium ? NAI_MEDIUM_STEPS : nai.steps,
     n_samples: 1,
     // 提示词已由本地固定默认拼好；协议字段保持官方前端口径。
     ucPreset: 3,
@@ -400,7 +500,7 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     legacy: false,
     legacy_uc: false,
     add_original_image: true,
-    cfg_rescale: nai.cfgRescale,
+    cfg_rescale: medium ? 0 : nai.cfgRescale,
     noise_schedule: nai.noiseSchedule,
     skip_cfg_above_sigma: skipCfg,
     legacy_v3_extend: false,
@@ -421,9 +521,16 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   } else {
     // NAI4/4.5/V5: v4 caption structure; Vibe uses a model-specific cached encoding.
     params.reference_image_multiple_cached = [];
+    // 漫画页 V2 关闭对白上画时,characters 条目里的 Text 行/气泡指令同样剥除
+    // (Base 行已在 fullPositivePrompt 里剥过;这里兜底人物条目,行内 token 一并过滤)。
+    const stripComicCharText = nai.comicMode && nai.comicV2 && !nai.comicText;
     const charCaptions = naiSupportsCharacterPrompts(nai.model)
       ? (values.characters ?? []).map(character => ({
-          char_caption: characterCaption(character),
+          char_caption: characterCaption(
+            stripComicCharText
+              ? { ...character, tag: stripComicV2Tokens(stripComicText(character.tag)) }
+              : character,
+          ),
           centers: [{ x: 0.5, y: 0.5 }],
         }))
       : [];
@@ -436,6 +543,7 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     params.v4_negative_prompt = {
       caption: {
         base_caption: negative,
+        // Medium Effort 忽略逐人物负面(服务端锁定 Heavy);发空串与官方 client 同口径。
         char_captions: charCaptions.map(() => ({ char_caption: '', centers: [{ x: 0.5, y: 0.5 }] })),
       },
       legacy_uc: false,
@@ -671,27 +779,50 @@ export async function generateNaiImage(
   };
   // 只把「发请求 + 解包」包进重试:上面拼参数、读 vibe 数据的活是一次性的,
   // 重跑它们既白费功夫,也会把 vibe 缺编码的 toastr 警告重复弹出来。
+  // 生图请求本身加硬超时(NAI_TIMEOUT_MS):弱网/手机 WebView 下连接可能无限挂起,
+  // 没有超时时 UI 会永远停在「生图中」;超时按网络级失败(TypeError)参与既有重试,
+  // 外部取消(用户/队列)仍走 AbortError → 不重试,行为不变。
   const result = await runNaiWithRetry(
     async () => {
-      const resp = await fetch(naiEndpoint(nai.url, 'generate-image'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${nai.key.trim()}`,
-        },
-        body: JSON.stringify(body),
-        signal,
-      });
-      if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), NAI_TIMEOUT_MS);
+      const relayAbort = () => controller.abort(signal?.reason);
+      if (signal) {
+        if (signal.aborted) controller.abort(signal.reason);
+        else signal.addEventListener('abort', relayAbort, { once: true });
+      }
+      let resp: Response;
+      try {
+        resp = await fetch(naiEndpoint(nai.url, 'generate-image'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${nai.key.trim()}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!resp.ok) throw await naiHttpError(resp, 'NAI 生图失败');
 
-      const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
-      const format = filename.split('.').pop()?.toLowerCase() || 'png';
-      return {
-        url: `data:image/${format === 'jpg' ? 'jpeg' : format};base64,${base64}`,
-        filename: `nai-${Date.now()}.${format}`,
-        format,
-        revoke() {},
-      };
+        const { base64, filename } = unzipNaiImage(await resp.arrayBuffer());
+        const format = filename.split('.').pop()?.toLowerCase() || 'png';
+        return {
+          url: `data:image/${format === 'jpg' ? 'jpeg' : format};base64,${base64}`,
+          filename: `nai-${Date.now()}.${format}`,
+          format,
+          revoke() {},
+        };
+      } catch (error) {
+        // 内部超时中断且外部并未要求取消 → 转成网络级错误参与重试;
+        // 外部取消原样抛出(不重试),其余错误也原样抛。
+        if (isAbortError(error) && !signal?.aborted) {
+          throw new TypeError(`NAI 生图请求超时(${Math.round(NAI_TIMEOUT_MS / 60000)} 分钟),连接疑似挂起`);
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', relayAbort);
+      }
     },
     { signal, onRetry: opts.onRetry },
   );

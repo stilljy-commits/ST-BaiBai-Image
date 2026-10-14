@@ -16,6 +16,7 @@ import {
   encodeVibeImage,
   isBuiltinNaiArtist,
   isNai5,
+  isNaiMedium,
   naiDefaultQualityTags,
   naiDefaultUndesired,
   naiSamplers,
@@ -57,6 +58,8 @@ import { getContext } from '@/st/context';
 import {
   activeNaiArtist,
   activeNaiEndpoint,
+  COMIC_GUTTER_MODES,
+  COMIC_PANEL_STYLES,
   effectiveNai,
   isOfficialNaiEndpoint,
   newNaiArtist,
@@ -458,6 +461,13 @@ let vibeSeq = 0;
 const currentVibeKey = computed(() => vibeModelKey(settings.nai.model));
 const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
 const samplerOptions = computed(() => naiSamplers(settings.nai.model));
+
+/** 漫画页模式:分镜风格与留白方案下拉选项(来自设置常量,与规范注入同源)。 */
+const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.label }));
+const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
+const comicStyle = computed({ get: () => settings.nai.comicPanelStyle ?? 'eromanga', set: (value: string) => { settings.nai.comicPanelStyle = value; } });
+const comicGutter = computed({ get: () => settings.nai.comicGutter ?? 'bleed', set: (value: string) => { settings.nai.comicGutter = value; } });
+const comicExtraRules = computed({ get: () => settings.nai.comicExtraRules ?? '', set: (value: string) => { settings.nai.comicExtraRules = value; } });
 
 /** BbiSelect 的 modelValue 是 string,而 nai.model 是字面量联合;这层 get/set 只为搭桥。
  *  写入前对一遍 NAI_MODELS:下拉本就只发合法值,但少了这句类型断言就是空口无凭。 */
@@ -1204,6 +1214,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
         </div>
 
+        <p v-if="isNaiMedium(settings.nai.model)" class="bbi-field-hint">Medium 使用固定 14 步、Euler Ancestral、Rescale 0 和固定负面预设；下方步数等设置保留供 High 模型使用。</p>
         <div class="be-row be-row--nums">
           <div class="bbi-field">
             <div class="bbi-field-head">
@@ -1250,6 +1261,108 @@ async function removeVibe(vibe: NaiVibe) {
           <span class="bbi-field-label">Variety Boost(画面多样性,按尺寸自动计算)</span>
           <input v-model="settings.nai.varietyBoost" type="checkbox" class="bbi-checkbox" />
         </label>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">漫画页模式(单张图 = 一整页分格漫画,仅 V5 模型生效)</span>
+          <input
+            v-model="settings.nai.comicMode"
+            type="checkbox"
+            class="bbi-checkbox"
+            :disabled="!isNai5(settings.nai.model)"
+          />
+        </label>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          已开启:自动生图将输出整页漫画。V2 架构照常拼接画师串与质量词(对白上画时自动滤掉质量词里的 no text);
+          V1(@page 标记整页文本)不拼,防质量词落进页尾 @negative 段。
+          建议把竖屏分辨率调到 1024×1536 或更高,漫画页文字多、低分辨率会糊。关闭即恢复普通插图。
+        </p>
+
+        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
+          <span class="bbi-field-label">架构 V2(Base + 逐人物 Character Prompts,对齐 1.3.1 预设)</span>
+          <input
+            v-model="settings.nai.comicV2"
+            type="checkbox"
+            class="bbi-checkbox"
+          />
+        </label>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          V2(默认):页面布局进 Base 行,每个画格内每个可见人物单独一条 Character Prompt，页面与人物描述分开传递，避免混成一串。关闭则回退旧 V1(@page/@panel 标记整页文本)。
+          切换后下一张图生效,正文里的存量旧 tag 不受影响。
+        </p>
+
+        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
+          <span class="bbi-field-label">漫画页对白上画(关闭 = 纯视觉叙事,无文字气泡)</span>
+          <input v-model="settings.nai.comicText" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p v-if="settings.nai.comicMode && !settings.nai.comicText" class="bbi-field-hint">
+          已关闭:生成时不带 Text 对白与气泡指令,画面更干净,可减少文字渲染错误。画面构图仍按漫画分格。
+        </p>
+
+        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+          <span class="bbi-field-label">分镜风格</span>
+          <BbiSelect
+            v-model="comicStyle"
+            :options="comicStyleOptions"
+            aria-label="分镜风格"
+          />
+        </div>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          默认「本子肉感」:核心主画格 + 边角嵌入极近特写切入小格 + 边框顺身体曲线斜切。切换即改写生图规范里的风格块。
+        </p>
+
+        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+          <span class="bbi-field-label">留白方案</span>
+          <BbiSelect
+            v-model="comicGutter"
+            :options="comicGutterOptions"
+            aria-label="留白方案"
+          />
+        </div>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          默认「天地出血」:上下贴边、同行窄间距、跨行宽间距。控制页面边缘与画格间距的观感。
+        </p>
+
+        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
+          <span class="bbi-field-label">连续场景光影一致性(同场景同光源,转场才换)</span>
+          <input v-model="settings.nai.comicLighting" type="checkbox" class="bbi-checkbox" />
+        </label>
+
+        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
+          <span class="bbi-field-label">同人角色防夺舍(同人 RP 时开,原作标签进负面词)</span>
+          <input
+            v-model="settings.nai.comicAntiPossession"
+            type="checkbox"
+            class="bbi-checkbox"
+          />
+        </label>
+
+        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
+          <span class="bbi-field-label">NSFW 工程规则(迁移自 1.3.1,仅 NSFW 页生效)</span>
+          <input
+            v-model="settings.nai.comicNsfwRules"
+            type="checkbox"
+            class="bbi-checkbox"
+          />
+        </label>
+        <p v-if="settings.nai.comicMode && settings.nai.comicNsfwRules" class="bbi-field-hint">
+          已开启:分级为 NSFW 的页面按六项工程规则逐格检查——表情神态、标准体位术语、体液质感、
+          衣物脱卸边界、可见器官零件、骨盆挂载与支撑防穿模(防悬浮/穿模/吞人)。SFW 页不受影响。
+        </p>
+
+        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+          <span class="bbi-field-label">漫画模式附加规则(优先级最高,清空 = 不附加)</span>
+        </div>
+        <BbiTextarea
+          v-if="settings.nai.comicMode"
+          v-model="comicExtraRules"
+          :rows="6"
+          :max-rows="14"
+          mono
+          placeholder="自定义规则文本,追加在漫画规范末尾,与规范冲突时以本块为准"
+        />
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          默认含:女性胸部加强 + 男性面部弱化 + 分镜女性在场规则(每格必有女角色) + 特写切入格定位顺序(胸/臀/下体/腿/腰/脸)。可自由改写,改完下张图生效。
+        </p>
 
         <div class="bbi-num-row">
           <span class="bbi-field-label">同时出图数</span>
