@@ -1,15 +1,15 @@
-# 柏宝绘 · 流式重构版 0.4.7
+# 柏宝绘 · 流式重构版 0.4.8
 
 安装/更新链接：https://github.com/stilljy-commits/ST-BaiBai-Image
 
-所有数量范围统一每3个正式标记合批分析，取消小数量例外。5个标记按3＋2，9个按3＋3＋3，10个按3＋3＋3＋1；不足3个的尾批等正文结束后立即发送。数量范围控制整楼预算，NAI仍逐张生图。
+流式漫画V1/V2的中间规划改为简短决策摘要，完整分镜直接写入最终结果。合并重复格式说明，已有角色复用档案，不再逐人输出确认报告。
 
-修复草稿中的标记被提前派发或配错正文的问题：扫描排除草稿、思考、注释及配置的隐藏区块，正文清洗保留正式叙事及物理行号映射。日志区分合批、单张和文末补充，并记录合批失败类别。
+固定每3个正式标记合批，尾批不足3个等正文结束立即发送。完整漫画规范、通用规则和分镜风格、角色状态连续性、图片原位更新及浮层收尾保留；普通整楼、文末补图、插图模式和API参数保持。
 
-通用映画文法、完整分镜与质量检查、图片原位更新、浮层收尾和并发设置保留。失败隔离重试和文末补图仍可产生单张请求。
+离线三图样例中V2请求字符数减少约11%；这不是实测提速比例，真实速度与画面效果需要同条件对比。本次未主动调用真实tags或NAI接口。
 
-验证：70个测试文件，927项通过、3项原有跳过；类型检查与生产构建通过。真实API提速幅度尚未实测。
+验证：70个测试文件，929项通过、3项原有跳过；类型检查与生产构建通过。
 
-[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.7.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[c6da3f32b413b20e7f3daf812e6669ab2a8840b4](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/c6da3f32b413b20e7f3daf812e6669ab2a8840b4)。
+[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.8.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[fafdea5eb750c998867313caea1315abcab48564](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/fafdea5eb750c998867313caea1315abcab48564)。
 
 原作者及上游：[baibai-git/ST-BaiBai-Image](https://github.com/baibai-git/ST-BaiBai-Image)。
