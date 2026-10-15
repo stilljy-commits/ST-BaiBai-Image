@@ -194,7 +194,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
   const messages = await buildAutoTagMessages(analysisContext, analysisFloor,
-    { ...s.options, minImages: 1, maxImages: 1 }, memory, target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+    { ...s.options, minImages: 1, maxImages: 1 }, memory, target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment, 'fixed-markers');
   const preparedAt = performance.now(), promptChars = messages.reduce((total, message) => total + message.content.length, 0);
   let payload: Payload | undefined;
   let error: unknown;
@@ -234,7 +234,7 @@ async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
   const floor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[floor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: scanText };
   const messages = await buildAutoTagMessages(analysisContext, floor, { ...s.options, minImages: jobs.length, maxImages: jobs.length },
-    memory, batch.target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+    memory, batch.target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment, 'fixed-markers');
   const preparedAt = performance.now(), requestStart = preparedAt;
   const controller = new AbortController();
   const cancel = () => { if (s.controller.signal.aborted || jobs.every(job => job.controller.signal.aborted)) controller.abort(); };
@@ -345,7 +345,7 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
     return replaceMarkers(text, replacements);
   }, chatId, s.binding!.expectedSwipe, message));
   if (ok !== 'saved') { s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
-  s.completed = true; current = undefined; s.core.attach(attached); s.core.finishInput();
+  s.completed = true; current = undefined; updatePreview(s); s.core.attach(attached); s.core.finishInput();
   hydrateMessage(floor, ctx); void ensureFloorRendered(ctx, message, floor, chatId);
   log('stream:attached', { run: s.id, floor, slots: attached.length });
   void supplement(s, attached.length + parseImageTags(final).length).catch(error => {
@@ -412,11 +412,16 @@ async function supplement(s: Session, count: number): Promise<void> {
   log('stream:supplement', { added: added.length, total: count + added.length });
 }
 
+/** The preview belongs to prose streaming; inline slots take over once the floor is attached. */
+export function refreshStreamPreviews(): void {
+  for (const s of sessions.values()) updatePreview(s);
+}
 function updatePreview(s: Session): void {
-  if (!settings.autoTag.streamPreview) return;
-  const jobs = s.core.jobs.filter(job => job.result && !job.saved && job.phase !== 'cancelled');
   const id = `bbi-preview-${s.id}`;
   let host = document.getElementById(id);
+  if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen ||
+    !settings.autoTag.streamPreview || s.completed || !ownerValid(s)) { host?.remove(); return; }
+  const jobs = s.core.jobs.filter(job => job.result && !job.attached && !job.saved && job.phase !== 'cancelled');
   if (!jobs.length) { host?.remove(); return; }
   if (!host) {
     host = document.createElement('div'); host.id = id;

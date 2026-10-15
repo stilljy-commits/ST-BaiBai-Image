@@ -2,11 +2,40 @@ import { describe, it, expect } from 'vitest';
 import { prepareStreamBatch, splitStreamBatch } from './streamBatch';
 import { parseImagePlan } from './protocol';
 import { buildAutoTagMessages, captureAutoTagEnvironment, expandNlSections } from './prompt';
-import { settings, DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING, DEFAULT_NAI_COMIC_V2_SPEC, DEFAULT_NAI_COMIC_V2_THINKING } from '@/state/settings';
+import { settings, DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING, DEFAULT_NAI_COMIC_THINKING, DEFAULT_NAI_COMIC_V2_SPEC, DEFAULT_NAI_COMIC_V2_THINKING, DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR } from '@/state/settings';
 import type { STContext } from '@/st/context';
 const jobs=[{id:'a',input:{raw:'',intent:'门口',text:'她开门。\n<bbi_image><tag>old</tag></bbi_image>\n他递来钥匙。',prefix:'她穿白裙。',sourceLine:10}},
   {id:'b',input:{raw:'',intent:'出发',text:'他们离开车站。',prefix:'',sourceLine:20}}];
 describe('batched marker planning',()=>{
+  it.each([false,true])('uses fixed-marker page planning in comic V2=%s without dropping any other rules or facts',async(comicV2)=>{
+    const batch=prepareStreamBatch(jobs,['bbi_image']);
+    const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};
+    const environment=captureAutoTagEnvironment(profile);environment.backend='nai';Object.assign(environment.nai,{model:'nai-diffusion-5-full',comicMode:true,comicV2});
+    const ctx={chat:[{name:'Char',is_user:false,is_system:false,mes:'正文'}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
+    const options={...settings.autoTag,minImages:2,maxImages:2};
+    const ordinary=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment);
+    const marked=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment,'fixed-markers');
+    const oldThinking=comicV2?DEFAULT_NAI_COMIC_V2_THINKING:DEFAULT_NAI_COMIC_THINKING;
+    const index=ordinary.findIndex(message=>message.content===oldThinking);expect(index).toBeGreaterThan(-1);
+    expect(marked.filter((_,i)=>i!==index)).toEqual(ordinary.filter((_,i)=>i!==index));
+    const updated=marked[index].content;
+    expect(updated).toContain('E. 标记页规划');expect(updated).toContain('每个标记恰好一页');expect(updated).toContain('所属标记的可用 P 编号');
+    expect(updated).not.toContain('把目标正文按事件节拍切成');
+    const [shared,perPage]=oldThinking.split('E. 分页规划');
+    expect(updated.startsWith(shared)).toBe(true);
+    expect(updated.endsWith(perPage.slice(perPage.indexOf('\n\n第二层|逐页槽位块')))).toBe(true);
+    expect(marked.some(message=>message.content.includes(DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR))).toBe(true);
+  });
+  it('leaves illustration analysis unchanged when fixed markers are provided',async()=>{
+    const batch=prepareStreamBatch(jobs,['bbi_image']);
+    const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};
+    const environment=captureAutoTagEnvironment(profile);environment.backend='nai';environment.nai.comicMode=false;
+    const ctx={chat:[{name:'Char',is_user:false,is_system:false,mes:'正文'}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
+    const options={...settings.autoTag,minImages:2,maxImages:2};
+    const ordinary=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment);
+    const marked=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment,'fixed-markers');
+    expect(marked).toEqual(ordinary);
+  });
   it('shares global checks while retaining the complete comic V2 spec and thinking checklist',async()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
     const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};

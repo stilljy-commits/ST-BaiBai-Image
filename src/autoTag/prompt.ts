@@ -158,10 +158,19 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
  * 邻接绑定——共用一份 ComfyUI 口径的思维链会让它被要求填规范从未教过的东西。
  * webui 暂无专属规范,回落 comfy 那份(该后端尚未接入)。
  */
-function backendThinkingPrompt(options: AutoTagSettings, nlOn: boolean, naiCharPromptsOn: boolean, environment: AutoTagEnvironment): string {
+/** Marker tasks already have their scenes selected; open-ended selection remains for ordinary/supplemental analysis. */
+export type AutoTagPlanning = 'select-scenes' | 'fixed-markers';
+const FIXED_MARKER_PAGE_PLANNING = `E. 标记页规划
+   - 画面意图与页数已由本次标记给定,每个标记恰好一页;目标段落提供事实与连续状态,不要求把整段剧情全部画完,不再自由选图或重新切分图数。
+   - 以所属标记意图为本页核心,只组织表达它所需的画格;格数、分镜风格、人物与全部逐图检查仍按完整规范执行,不同标记不能合并或遗漏。
+   - position 仅在所属标记的可用 P 编号中选择:所需事实刚刚完整成立、且尚未切换到下一场景的位置。`;
+function backendThinkingPrompt(options: AutoTagSettings, nlOn: boolean, naiCharPromptsOn: boolean, environment: AutoTagEnvironment, planning: AutoTagPlanning): string {
   if (environment.backend === 'nai') {
     if (comicModeOn(naiCharPromptsOn, environment)) {
-      return environment.nai.comicV2 ? DEFAULT_NAI_COMIC_V2_THINKING : DEFAULT_NAI_COMIC_THINKING;
+      const thinking = environment.nai.comicV2 ? DEFAULT_NAI_COMIC_V2_THINKING : DEFAULT_NAI_COMIC_THINKING;
+      return planning === 'fixed-markers'
+        ? thinking.replace(/E\. 分页规划[\s\S]*?(?=\n\n第二层\|逐页槽位块)/, FIXED_MARKER_PAGE_PLANNING)
+        : thinking;
     }
     const template = naiCharPromptsOn
       ? (options.prompts?.naiV5Thinking ?? '').trim() || DEFAULT_NAI_V5_THINKING
@@ -210,6 +219,8 @@ export async function buildAutoTagMessages(
   /** 协议形态;runner 开跑时快照一份传进来,验收与收尾用同一份(缺省即时现算)。 */
   profile: AutoTagProfile = autoTagProfile(),
   environment: AutoTagEnvironment = captureAutoTagEnvironment(profile),
+  /** 流式标记已指定画面,只替换漫画清单的自由选图步骤;普通/文末补图保持默认。 */
+  planning: AutoTagPlanning = 'select-scenes',
 ): Promise<ChatMsg[]> {
   const target = context.chat[targetFloor];
   const preparedTarget =
@@ -435,7 +446,7 @@ ${characterRule}
   messages.push({ role: 'system', content: fixedContract });
   // 思维链:压在任务协议之后,要求模型先在 <thinking> 里过检查点再输出 JSON。
   // 解析端(protocol.ts)会先剥掉 think 块再取 JSON,二者配套;按后端取对应的那一份。
-  const thinking = backendThinkingPrompt(options, nlOn, naiCharPromptsOn, environment);
+  const thinking = backendThinkingPrompt(options, nlOn, naiCharPromptsOn, environment, planning);
   if (thinking) messages.push({ role: 'system', content: thinking });
   const libraryBlock = library?.trim() || `【角色固定外貌库】[system-maintained; currently empty]\n（当前为空，没有任何角色已建档。世界书、角色卡、柏宝书和正文只提供建档依据；未列在本区块中的正式角色必须通过 field:"new" 建档。）`;
   const taskBlock = taskNote?.trim() ? `${taskNote.trim()}\n\n` : '';

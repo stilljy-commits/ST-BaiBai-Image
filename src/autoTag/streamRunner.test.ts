@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
 vi.mock('@/st/context',()=>({getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
-vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile}}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a}]}));
+vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile}}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
 vi.mock('@/autoTag/charAnchors',()=>({resolveCharAnchors:(entries:any[])=>({text:JSON.stringify(entries),entries}),applyPositionedCharRefs:(text:string)=>({text,unknown:[]})}));
 vi.mock('@/state/charTags',()=>({CHAR_TAG_FIELDS:['sex','hair','eyes','fandom'],BBI_CHAR_EXTRA_KEY:'chars',charTagsBeforeFloor:()=>[],lockedCharTagNames:()=>new Set(),readCharTagFloorDelta:()=>null,makeCharTagFloorDelta:(x:any)=>x,recomputeCharTags:()=>{},createCharTagNewOp:(x:any,r:any)=>({...x,kind:'new',reason:r,at:Date.now()}),createCharTagSetOp:(name:any,field:any,value:any,reason:any)=>({kind:'set',name,field,value,reason,at:Date.now()}),emptyCharFields:()=>({}),applyCharTagOps:(entries:any[],ops:any[])=>[...entries,...ops.filter(op=>op.kind==='new').map(op=>({name:op.name,fields:op.fields,raw:op.raw,nl:op.nl,history:[]}))]}));
@@ -12,16 +12,24 @@ vi.mock('@/st/messageEdit',async importOriginal=>({ ...await importOriginal<type
 vi.mock('@/generate',()=>({captureGenerationSnapshot:()=>({backend:'nai',nai:{seed:42,model:'nai-diffusion-5-full'},status:{configured:true},comfy:{},orientation:'auto'}),decideSeed:()=>42,
   generateImage:(input:any,signal:any)=>new Promise(resolve=>h.images.push({input,signal,resolve}))}));
 import { settings } from '@/state/settings';
-import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions } from './streamRunner';
+import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews } from './streamRunner';
 import { saveImageResult } from '@/floor/storage';
 import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
-import { cancelStreamSlot } from '@/autoTag/streamState';
+import { cancelStreamSlot, retryStreamSlot, streamSlotState } from '@/autoTag/streamState';
 const flush=async()=>{for(let i=0;i<35;i++)await Promise.resolve();};
 const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥匙交接]';
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
 function finishAnalysis(index:number,count=1){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
   task.o.validate(JSON.stringify({images:Array.from({length:count},(_,i)=>({position:ids[i%ids.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
 function finishImage(index:number){h.images[index].resolve({result:{url:`data:image/png;base64,image${index}`,filename:'fake.png',revoke:vi.fn()},seed:42,size:'portrait',backend:'nai',charactersApplied:false,meta:{backend:'nai'}});}
+function previewDocument(){
+  const hosts=new Map<string,any>();
+  const element=()=>({id:'',style:{cssText:''},children:[] as any[],
+    appendChild(child:any){this.children.push(child);if(child.id)hosts.set(child.id,child);return child;},
+    replaceChildren(...children:any[]){this.children=children;},remove(){hosts.delete(this.id);}});
+  vi.stubGlobal('document',{getElementById:(id:string)=>hosts.get(id)??null,createElement:()=>element(),body:element(),querySelector:()=>({querySelector:()=>null})});
+  return hosts;
+}
 beforeEach(()=>{
   h.analyses=[];h.images=[];h.saveWait=null;vi.clearAllMocks();
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
@@ -33,6 +41,36 @@ beforeEach(()=>{
 });
 afterEach(()=>{cancelStreamSessions();vi.unstubAllGlobals();});
 describe('real stream runner integration with controlled external dependencies',()=>{
+  it('closes the streaming preview immediately when slots enter the story, even while uploads are blocked',async()=>{
+    const hosts=previewDocument();settings.autoTag.streamPreview=true;
+    beginStreamSession('A');feedStreamText(body);await flush();finishAnalysis(0);finishAnalysis(1);await flush();
+    finishImage(0);await flush();expect(hosts.size).toBe(1);
+    let release!:()=>void;h.saveWait=new Promise<void>(resolve=>{release=resolve;});
+    h.ctx.chat.push(ai(body));await reconcileStreamFloor(1,'A');await flush();
+    expect(hosts.size).toBe(0);
+    finishImage(1);await flush();expect(hosts.size).toBe(0);
+    release();await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);
+  });
+  it('does not leave a preview behind when an attached image fails to save, and preserves its inline retry state',async()=>{
+    const hosts=previewDocument();settings.autoTag.streamPreview=true;
+    const text='她开门。\n[img: 门口]';
+    beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();
+    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');
+    vi.mocked(saveImageResult).mockRejectedValueOnce(new Error('temporary storage failure'));
+    finishImage(0);await flush();expect(hosts.size).toBe(0);
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(1);
+    const slotId=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;
+    expect(streamSlotState(slotId)?.phase).toBe('error');expect(retryStreamSlot(slotId)).toBe(true);
+    await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);expect(hosts.size).toBe(0);
+  });
+  it('clears the preview when disabled and can restore it only while prose is still streaming',async()=>{
+    const hosts=previewDocument();settings.autoTag.streamPreview=true;
+    beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
+    expect(hosts.size).toBe(1);
+    settings.autoTag.streamPreview=false;refreshStreamPreviews();expect(hosts.size).toBe(0);
+    settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);
+    cancelStreamSessions();expect(hosts.size).toBe(0);
+  });
   it('reuses new fixed appearances in later requests without leaking later outfit updates into earlier segments',async()=>{
     settings.autoTag.streamAnalysisConcurrency=1;beginStreamSession('A');feedStreamText(body);await flush();
     const task=h.analyses[0];task.o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[
@@ -86,6 +124,18 @@ describe('real stream runner integration with controlled external dependencies',
     expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].options).toMatchObject({minImages:2,maxImages:2});
     finishAnalysis(1,2);finishAnalysis(0,3);await flush();expect(h.images).toHaveLength(5);expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
   });
+  it('uses fixed-marker planning for 1+2+2 at a 3-5 limit and does not run supplemental scene selection',async()=>{
+    Object.assign(settings.autoTag,{minImages:3,maxImages:5,streamAnalysisConcurrency:1});
+    const text=Array.from({length:5},(_,i)=>`事件${i}发生。\n[img: 画面${i}]`).join('\n');
+    beginStreamSession('A');feedStreamText(text);await flush();
+    expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0]).toMatchObject({options:{minImages:1,maxImages:1},planning:'fixed-markers'});
+    finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
+    expect(h.analyses[1].m[0]).toMatchObject({options:{minImages:2,maxImages:2},planning:'fixed-markers'});
+    finishAnalysis(1,2);await flush();expect(h.analyses).toHaveLength(3);
+    expect(h.analyses[2].m[0]).toMatchObject({options:{minImages:2,maxImages:2},planning:'fixed-markers'});
+    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');finishAnalysis(2,2);await flush();
+    expect(h.analyses).toHaveLength(3);expect(h.images).toHaveLength(5);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(5);
+  });
   it('falls back to individual requests when a paired response repeats the same marker',async()=>{
     settings.autoTag.maxImages=4;const text=Array.from({length:4},(_,i)=>`事件${i}。\n[img: 画面${i}]`).join('\n');
     beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();
@@ -124,6 +174,7 @@ describe('real stream runner integration with controlled external dependencies',
     const original=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;expect(h.analyses).toHaveLength(1);
     finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
     expect(h.analyses[1].m[0].options.minImages).toBe(1);expect(h.analyses[1].m[0].options.maxImages).toBe(1);
+    expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBeUndefined();
     finishAnalysis(1);await flush();const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(s=>s.slotId);
     expect(ids).toHaveLength(2);expect(ids).toContain(original);expect(h.images).toHaveLength(2);
   });
