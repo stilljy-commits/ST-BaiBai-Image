@@ -1,13 +1,13 @@
-# 柏宝绘 · 流式重构版 0.4.9
+# 柏宝绘 · 流式重构版 0.4.10
 
 安装/更新链接：https://github.com/stilljy-commits/ST-BaiBai-Image
 
-文末默认只补足最少张数；长段落补图改为可选开关，默认关闭。排除摘要、选项和变量更新，修复隐藏内容的等长空白触发额外补图的问题，保留原消息内容。
+新增「简单模式 / 标准模式」。NAI渠道开启漫画页模式后，在「漫画分析模式」选择；升级后默认保留标准模式，可随时切回。简单模式围绕核心事件直接写提示词，减少细部推敲，普通事件以2～3格为主；经典四格仍为四格，分镜风格、对白与自定义附加规则继续生效。
 
-图片按固定标记编号返回，不再选择插入段落；角色永久变化保留独立正文时序，旧格式响应兼容。固定每3个正式标记合批、短尾批、图片原位更新、浮层收尾和并发限制保留。模型、原生思考强度及NAI参数保持用户设置。
+V1/V2、角色库及变化时序、固定每3个标记合批、短尾批、图片原位更新与浮层收尾保留。进行中的流式轮次沿用开始时的模式。模型、思考强度及NAI参数沿用用户设置。
 
-验证：70个测试文件，936项通过、3项原有跳过；类型检查与生产构建通过。未主动调用真实tags或NAI接口，实际提速需要测试。本版尚未加入下一轮讨论中的画面精度简化。
+验证：72个测试文件，954项通过、3项原有跳过；类型检查与生产构建通过。8组离线提示词对照中，标准模式与0.4.9完全一致。未主动调用真实tags或NAI接口，实际速度和画面效果需要对照测试。
 
-[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.9.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[729a64e22f6bd9940f08d11499cde19b7d27057e](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/729a64e22f6bd9940f08d11499cde19b7d27057e)。
+[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.10.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[956a8dc6403e5103d74624421714c418c87d94e0](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/956a8dc6403e5103d74624421714c418c87d94e0)。
 
 原作者及上游：[baibai-git/ST-BaiBai-Image](https://github.com/baibai-git/ST-BaiBai-Image)。
