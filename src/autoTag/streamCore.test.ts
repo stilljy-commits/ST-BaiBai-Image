@@ -1,35 +1,66 @@
 import { describe, it, expect, vi } from 'vitest';
-import { StreamRun } from './streamCore';
+import { StreamRun, streamBatchSizes } from './streamCore';
 
 function deferred<T>() { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;}); return {promise,resolve}; }
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 const input={raw:'[img: 门口相见]',intent:'门口相见',text:'她打开门。',prefix:'',sourceLine:0};
 describe('streamed task lifetime',()=>{
-  it('starts the first markers immediately and reduces a ten-marker backlog to six requests within the same concurrency limit',async()=>{
+  it('waits for a fixed third and analyzes ten markers as 3,3,4 within the request limit',async()=>{
     const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
     let running=0,peak=0;const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});peak=Math.max(peak,++running);return task.promise.finally(()=>running--);};
     const generate=vi.fn(async(p:string)=>p);
     const run=new StreamRun<string,string>('paired',10,2,true,{analyze:async job=>(await start([job]))[0],analyzeBatch:start,
       generate,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
-    const jobs=Array.from({length:10},()=>run.add(input)!);run.attach(jobs);
-    expect(requests.map(r=>r.jobs.length)).toEqual([1,1]);
-    for(let i=0;i<6;i++){expect(requests[i]).toBeDefined();requests[i].task.resolve(requests[i].jobs.map(job=>job.id));await flush();}
-    await run.settled();expect(requests).toHaveLength(6);expect(peak).toBe(2);expect(generate).toHaveBeenCalledTimes(10);expect(jobs.every(job=>job.saved)).toBe(true);
+    const jobs=[run.add(input)!,run.add(input)!];expect(requests).toHaveLength(0);
+    jobs.push(run.add(input)!);expect(requests.map(r=>r.jobs.length)).toEqual([3]);
+    for(let i=3;i<10;i++)jobs.push(run.add(input)!);run.attach(jobs);
+    expect(requests.map(r=>r.jobs.length)).toEqual([3,3]);
+    for(let i=0;i<3;i++){expect(requests[i]).toBeDefined();requests[i].task.resolve(requests[i].jobs.map(job=>job.id));await flush();}
+    await run.settled();expect(requests.map(r=>r.jobs.length)).toEqual([3,3,4]);expect(peak).toBe(2);expect(generate).toHaveBeenCalledTimes(10);expect(jobs.every(job=>job.saved)).toBe(true);
   });
   it('does not generate or save a cancelled member of a pair while its neighbor still completes',async()=>{
-    const first=deferred<string>(), pair=deferred<string[]>(), generate=vi.fn(async(p:string)=>p);
-    const run=new StreamRun<string,string>('cancel-pair',3,1,true,{analyze:()=>first.promise,analyzeBatch:()=>pair.promise,
+    const pair=deferred<string[]>(), generate=vi.fn(async(p:string)=>p);
+    const run=new StreamRun<string,string>('cancel-pair',6,1,true,{analyze:async()=>'single',analyzeBatch:()=>pair.promise,
       generate,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
-    const jobs=Array.from({length:3},()=>run.add(input)!);run.attach(jobs);first.resolve('first');await flush();run.cancelJob(jobs[1]);
-    pair.resolve(['cancelled','neighbor']);await run.settled();expect(generate.mock.calls.map(c=>c[0])).toEqual(['first','neighbor']);
-    expect(jobs[1].saved).toBe(false);expect(jobs[1].phase).toBe('cancelled');expect(jobs[2].saved).toBe(true);
+    const jobs=Array.from({length:2},()=>run.add(input)!);run.attach(jobs);run.cancelJob(jobs[0]);
+    pair.resolve(['cancelled','neighbor']);await run.settled();expect(generate.mock.calls.map(c=>c[0])).toEqual(['neighbor']);
+    expect(jobs[0].saved).toBe(false);expect(jobs[0].phase).toBe('cancelled');expect(jobs[1].saved).toBe(true);
   });
   it('falls back through the original queue, preserving identities and the request limit',async()=>{
     const first=deferred<string>();let running=0,peak=0;const record=async(p:string)=>{peak=Math.max(peak,++running);await Promise.resolve();running--;return p;};
     const single=vi.fn(job=>job.ordinal===0?first.promise:record(job.id));const batch=vi.fn(async()=>{throw Error('invalid batch');});
-    const run=new StreamRun<string,string>('fallback',3,1,true,{analyze:single,analyzeBatch:batch,generate:async p=>p,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
-    const jobs=Array.from({length:3},()=>run.add(input)!);run.attach(jobs);first.resolve('first');await run.settled();
-    expect(batch).toHaveBeenCalledOnce();expect(single).toHaveBeenCalledTimes(3);expect(peak).toBe(1);expect(jobs.map(job=>job.id)).toEqual(['fallback_0','fallback_1','fallback_2']);expect(jobs.every(job=>job.saved)).toBe(true);
+    const run=new StreamRun<string,string>('fallback',4,1,true,{analyze:single,analyzeBatch:batch,generate:async p=>p,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
+    const jobs=Array.from({length:4},()=>run.add(input)!);run.attach(jobs);first.resolve('first');await run.settled();
+    expect(batch).toHaveBeenCalledOnce();expect(single).toHaveBeenCalledTimes(4);expect(peak).toBe(1);expect(jobs.map(job=>job.id)).toEqual(['fallback_0','fallback_1','fallback_2','fallback_3']);expect(jobs.every(job=>job.saved)).toBe(true);
+  });
+  it.each([[0,[]],[1,[1]],[2,[1,1]],[3,[1,1,1]],[8,[2,3,3]],[10,[3,3,4]],[11,[3,4,4]]])('balances a capacity of %s without zero-size parts', (capacity,sizes)=>{
+    expect(streamBatchSizes(capacity as number)).toEqual(sizes);
+  });
+  it('flushes a short first part when the story ends instead of leaving it waiting forever',async()=>{
+    const batch=vi.fn(async jobs=>jobs.map((job:any)=>job.id));
+    const run=new StreamRun<string,string>('short',10,1,false,{analyze:async job=>job.id,analyzeBatch:batch,generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}});
+    run.add(input);run.add(input);await flush();expect(batch).not.toHaveBeenCalled();
+    run.finishInput();await run.analysisSettled();expect(batch).toHaveBeenCalledOnce();expect(batch.mock.calls[0][0]).toHaveLength(2);expect(run.jobs.every(job=>job.phase==='pending')).toBe(true);
+  });
+  it('keeps three fixed parts after story completion and does not wait for NAI before starting the next analysis',async()=>{
+    const image=deferred<string>(),requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
+    const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});return task.promise;};
+    const run=new StreamRun<string,string>('serial',10,1,true,{analyze:async job=>(await start([job]))[0],analyzeBatch:start,
+      generate:()=>image.promise,commit:async job=>!!job.result,changed:()=>{},release:()=>{}});
+    const jobs=Array.from({length:10},()=>run.add(input)!);run.attach(jobs);run.finishInput();
+    expect(requests.map(r=>r.jobs.length)).toEqual([3]);
+    requests[0].task.resolve(requests[0].jobs.map(job=>job.id));await flush();
+    expect(requests.map(r=>r.jobs.length)).toEqual([3,3]);expect(jobs[0].phase).toBe('generating');
+    requests[1].task.resolve(requests[1].jobs.map(job=>job.id));await flush();
+    requests[2].task.resolve(requests[2].jobs.map(job=>job.id));await run.analysisSettled();
+    expect(requests.map(r=>r.jobs.length)).toEqual([3,3,4]);expect(run.working).toBe(true);expect(jobs.every(job=>job.payload)).toBe(true);
+    image.resolve('image');await run.settled();expect(jobs.every(job=>job.saved)).toBe(true);
+  });
+  it('releases a waiting part after cancellations and permits an immediate manual analysis retry',async()=>{
+    let fail=true;const single=vi.fn(async job=>{if(fail)throw Error('retry');return job.id;});
+    const run=new StreamRun<string,string>('retry-part',10,1,false,{analyze:single,analyzeBatch:async jobs=>jobs.map(job=>job.id),generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}});
+    const a=run.add(input)!,b=run.add(input)!;run.cancelJob(a);run.finishInput();await run.analysisSettled();expect(b.phase).toBe('error');
+    fail=false;run.retry(b);await run.analysisSettled();expect(single).toHaveBeenCalledTimes(2);expect(b.phase).toBe('pending');
   });
   it('attaches without waiting for analysis, then saves the same late task once',async()=>{
     const analysis=deferred<string>(),image=deferred<string>();

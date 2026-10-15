@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settings } from '@/state/settings';
-import { bindMarkerInjection, ensureMarkerInRequest, markerRuleText } from './markerInjection';
+import { bindMarkerInjection, ensureMarkerInRequest, markerRuleText, markerCountRuleText } from './markerInjection';
 
 let handlers: Map<string, (...args: unknown[]) => unknown>;
 const setPrompt = vi.fn();
@@ -17,6 +17,21 @@ beforeEach(() => {
 afterEach(() => { emit('end'); vi.unstubAllGlobals(); });
 
 describe('marker injection into actual story requests', () => {
+  it('reuses legacy worldbook instructions while making the frozen count override density, exactly once',()=>{
+    emit('start','normal',{},false);
+    const legacy='【正文配图标记规则(柏宝绘,写正文时必须执行)】\n约每300~600字一个标记\n本楼配图数量控制在2~10张之间\n[img: 中文意图]';
+    const book={role:'system',content:legacy},prefill={role:'assistant',content:'开场'};
+    const request={prompt:[book,{role:'user',content:'继续'},prefill]};
+    emit('send',request,false);emit('send',request,false);
+    expect(request.prompt).toHaveLength(4);expect(request.prompt[0]).toBe(book);expect(book.content).toBe(legacy);
+    expect(request.prompt[2]).toEqual({role:'system',content:markerCountRuleText(2,4)});expect(request.prompt[3]).toBe(prefill);
+    expect(request.prompt[2].content).toContain('每多少字一个标记');expect(request.prompt[2].content).toContain('不是独立数量要求');
+  });
+  it('treats equal bounds as an exact count and never asks a zero-minimum floor to invent events',()=>{
+    expect(markerCountRuleText(10,10)).toContain('必须恰好 10 个标记');
+    expect(markerCountRuleText(0,4)).toContain('没有值得绘制的事件可以不放标记');
+    expect(markerCountRuleText(3,10)).toContain('不要求接近上限 10');
+  });
   it.each(['prompt', 'messages'])('restores registration and adds missing rules to the actual %s payload', field => {
     emit('start', 'normal', {}, false);
     expect(setPrompt.mock.calls.at(-1)?.[1]).toContain('2~4');

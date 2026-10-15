@@ -2,11 +2,21 @@ import { describe, it, expect } from 'vitest';
 import { prepareStreamBatch, splitStreamBatch } from './streamBatch';
 import { parseImagePlan } from './protocol';
 import { buildAutoTagMessages, captureAutoTagEnvironment, expandNlSections } from './prompt';
-import { settings, DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING } from '@/state/settings';
+import { settings, DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING, DEFAULT_NAI_COMIC_V2_SPEC, DEFAULT_NAI_COMIC_V2_THINKING } from '@/state/settings';
 import type { STContext } from '@/st/context';
 const jobs=[{id:'a',input:{raw:'',intent:'门口',text:'她开门。\n<bbi_image><tag>old</tag></bbi_image>\n他递来钥匙。',prefix:'她穿白裙。',sourceLine:10}},
   {id:'b',input:{raw:'',intent:'出发',text:'他们离开车站。',prefix:'',sourceLine:20}}];
-describe('paired marker planning',()=>{
+describe('batched marker planning',()=>{
+  it('shares global checks while retaining the complete comic V2 spec and thinking checklist',async()=>{
+    const batch=prepareStreamBatch(jobs,['bbi_image']);
+    const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};
+    const environment=captureAutoTagEnvironment(profile);environment.backend='nai';environment.nai.model='nai-diffusion-5-full';environment.nai.comicMode=true;environment.nai.comicV2=true;
+    const ctx={chat:[{name:'Char',is_user:false,is_system:false,mes:'正文'}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
+    const messages=await buildAutoTagMessages(ctx,0,{...settings.autoTag,minImages:2,maxImages:2},null,batch.target,'角色库',batch.instructions,profile,environment);
+    expect(messages.some(message=>message.content.includes(DEFAULT_NAI_COMIC_V2_SPEC))).toBe(true);
+    expect(messages.some(message=>message.content===DEFAULT_NAI_COMIC_V2_THINKING)).toBe(true);
+    expect(batch.instructions).toContain('只统一执行一次');expect(batch.instructions).toContain('全部逐图自检');expect(batch.instructions).toContain('保留必要复核与纠错');
+  });
   it('keeps the complete model spec, thinking and facts in the real prompt builder',async()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
     const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};
@@ -30,5 +40,10 @@ describe('paired marker planning',()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
     const plan=parseImagePlan(JSON.stringify({images:[{position:'P1',tag:'a'},{position:'P2',tag:'b'}],changes:[]}),batch.target.segments,2,2);
     expect(()=>splitStreamBatch(plan,batch)).toThrow(/重复|错配/);
+  });
+  it('keeps independent owners in a three-marker part with reversed results',()=>{
+    const batch=prepareStreamBatch([...jobs,{id:'c',input:{raw:'',intent:'到家',text:'她推开家门。',prefix:'',sourceLine:30}}],['bbi_image']);
+    const plan=parseImagePlan(JSON.stringify({images:[{position:'P4',tag:'home'},{position:'P3',tag:'leave'},{position:'P2',tag:'keys'}],changes:[]}),batch.target.segments,3,3);
+    expect(splitStreamBatch(plan,batch).map(image=>image.tag)).toEqual(['keys','leave','home']);
   });
 });

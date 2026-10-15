@@ -16,7 +16,7 @@ export interface StreamJob<P, R> {
 }
 export interface StreamDependencies<P, R> {
   analyze: (job: StreamJob<P, R>) => Promise<P>;
-  /** Only already queued neighbors are paired; the first available marker never waits. */
+  /** Each fixed third is analyzed together, with one independent result per marker. */
   analyzeBatch?: (jobs: StreamJob<P, R>[]) => Promise<P[]>;
   batchFailed?: (jobs: StreamJob<P, R>[], error: unknown) => void;
   generate: (payload: P, job: StreamJob<P, R>) => Promise<R>;
@@ -24,6 +24,14 @@ export interface StreamDependencies<P, R> {
   changed: (job: StreamJob<P, R>) => void;
   release: (result: R) => void;
   idle?: () => void;
+}
+
+/** Reserve at most three balanced, consecutive parts; a remainder belongs to later parts. */
+export function streamBatchSizes(capacity: number): number[] {
+  const total = Number.isFinite(capacity) ? Math.max(0, Math.floor(capacity)) : 0;
+  const parts = Math.min(3, total);
+  return Array.from({ length: parts }, (_, index) =>
+    Math.floor((index + 1) * total / parts) - Math.floor(index * total / parts));
 }
 
 /** Analysis, rendering and persistence have separate lifetimes. DOM never starts jobs. */
@@ -37,6 +45,9 @@ export class StreamRun<P, R> {
   private committed = new Map<string, number>();
   private generating = new Set<string>();
   private singles = new Set<string>();
+  private inputFinished = false;
+  private batchIndex = 0;
+  private analysisWaiters = new Set<() => void>();
   constructor(readonly id: string, readonly max: number, readonly concurrency: number,
     readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>) {}
 
@@ -58,9 +69,18 @@ export class StreamRun<P, R> {
   cancelJob(job: StreamJob<P, R>): void {
     job.controller.abort(); job.phase = 'cancelled';
     if (job.result) { this.dependencies.release(job.result); job.result = undefined; }
-    this.dependencies.changed(job); this.dependencies.idle?.();
+    this.dependencies.changed(job); this.pump(); this.dependencies.idle?.();
   }
   cancel(): void { this.stopped = true; this.queue = []; for (const job of this.jobs) this.cancelJob(job); }
+
+  /** Story completion releases a short final part, without waiting for images or uploads. */
+  finishInput(): void { this.inputFinished = true; this.pump(); }
+
+  /** Supplemental analysis shares the analysis limit, rather than waiting for NAI tasks. */
+  async analysisSettled(): Promise<void> {
+    if (!this.analyzing && !this.queue.length) return;
+    await new Promise<void>(resolve => this.analysisWaiters.add(resolve));
+  }
 
   retry(job: StreamJob<P, R>): void {
     if (this.stopped || job.saved || this.generating.has(job.id) || this.commits.has(job.id) || job.phase === 'analyzing') return;
@@ -68,7 +88,7 @@ export class StreamRun<P, R> {
     job.createdAt = performance.now();
     if (job.result) { job.phase = 'saving'; this.touch(job); }
     else if (job.payload) this.startGeneration(job);
-    else { job.phase = 'analyzing'; this.queue.push(job); this.touch(job); this.pump(); }
+    else { job.phase = 'analyzing'; this.singles.add(job.id); this.queue.push(job); this.touch(job); this.pump(); }
   }
 
   get working(): boolean { return this.active.size > 0 || this.queue.length > 0; }
@@ -85,16 +105,19 @@ export class StreamRun<P, R> {
   private pump(): void {
     while (!this.stopped && this.analyzing < this.concurrency && this.queue.length) {
       this.queue = this.queue.filter(job => !job.controller.signal.aborted);
-      const job = this.queue.shift();
-      if (!job) break;
-      const jobs = [job];
-      if (this.dependencies.analyzeBatch && !this.singles.has(job.id) && this.queue[0] && !this.singles.has(this.queue[0].id)) {
-        jobs.push(this.queue.shift()!);
-      }
+      if (!this.queue.length) break;
+      const single = !this.dependencies.analyzeBatch || this.singles.has(this.queue[0].id);
+      const target = single ? 1 : streamBatchSizes(this.max)[this.batchIndex] ?? this.queue.length;
+      // A failed part retries through single requests; do not consume the next part's quota.
+      const retryAt = this.queue.findIndex(item => this.singles.has(item.id));
+      const available = retryAt > 0 ? retryAt : this.queue.length;
+      if (!single && available < target && !this.inputFinished && retryAt < 0) break;
+      const jobs = this.queue.splice(0, Math.min(target, available));
+      if (!single) this.batchIndex++;
       this.analyzing++;
       this.track((async () => {
         try {
-          const payloads = jobs.length === 1 ? [await this.dependencies.analyze(job)] : await this.dependencies.analyzeBatch!(jobs);
+          const payloads = jobs.length === 1 ? [await this.dependencies.analyze(jobs[0])] : await this.dependencies.analyzeBatch!(jobs);
           if (payloads.length !== jobs.length) throw new Error('批量分析未覆盖所有标记');
           for (let i = 0; i < jobs.length; i++) {
             const item = jobs[i];
@@ -113,6 +136,10 @@ export class StreamRun<P, R> {
         }
         finally { this.analyzing--; this.pump(); }
       })());
+    }
+    if (!this.analyzing && !this.queue.length) {
+      for (const resolve of this.analysisWaiters) resolve();
+      this.analysisWaiters.clear();
     }
   }
   private startGeneration(job: StreamJob<P, R>): void {

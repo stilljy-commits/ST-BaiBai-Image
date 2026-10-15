@@ -527,7 +527,7 @@ export interface AutoTagSettings {
   streamGen?: boolean;
   /** 流式出图的浮层预览(默认关)。开启后流式期间在屏幕角落浮层显示已生成的缩略图。 */
   streamPreview?: boolean;
-  /** 流式分段分析的并发上限(1~4,默认 2):同时几个标记的副API分析在飞。 */
+  /** 流式分段分析的并发上限(1~4,默认 2):同时几批副API分析在飞；每批是一段。 */
   streamAnalysisConcurrency?: number;
   streamWorldBook?: string;
   /** 可编辑提示词集(破限/后端规范/思维链);空串 = 回落内置默认。 */
