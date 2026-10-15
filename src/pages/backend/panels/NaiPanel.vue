@@ -467,6 +467,11 @@ const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 /** 漫画页模式:分镜风格与留白方案下拉选项(来自设置常量,与规范注入同源)。 */
 const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.label }));
 const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
+const comicAnalysisOptions = [{ value: 'standard', label: '标准模式' }, { value: 'simple', label: '简单模式' }];
+const comicAnalysisMode = computed({
+  get: () => settings.nai.comicAnalysisMode ?? 'standard',
+  set: (value: string) => { settings.nai.comicAnalysisMode = value === 'simple' ? 'simple' : 'standard'; },
+});
 const comicStyle = computed({ get: () => settings.nai.comicPanelStyle ?? 'eromanga', set: (value: string) => { settings.nai.comicPanelStyle = value; } });
 const comicGutter = computed({ get: () => settings.nai.comicGutter ?? 'bleed', set: (value: string) => { settings.nai.comicGutter = value; } });
 const selectedComicStyle = computed(() => resolveComicPanelStyle(comicStyle.value));
@@ -1281,6 +1286,20 @@ async function removeVibe(vibe: NaiVibe) {
           建议把竖屏分辨率调到 1024×1536 或更高,漫画页文字多、低分辨率会糊。关闭即恢复普通插图。
         </p>
 
+        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+          <span class="bbi-field-label">漫画分析模式</span>
+          <BbiSelect v-model="comicAnalysisMode" :options="comicAnalysisOptions" aria-label="漫画分析模式" />
+        </div>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+          {{ comicAnalysisMode === 'simple'
+            ? '简单模式：围绕核心事件生成提示词，普通事件以2～3格为主，减少细部姿态、服装部件和光源推敲。人物身份、核心动作、所选分镜风格与对白设置继续生效，经典四格仍为四格。'
+            : '标准模式：沿用完整的分镜、细节与连续性要求。升级后默认保留此模式，可随时切回。' }}
+          切换从下一次分析生效；进行中的流式轮次沿用开始时的模式，已有提示词和图片保持原样。模型、思考强度和NAI生图参数沿用你的设置。
+        </p>
+        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'simple'" class="bbi-field-hint">
+          自定义附加规则及已开启的工程规则仍生效；其中要求的细节越多，提速空间越有限。
+        </p>
+
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">
           <span class="bbi-field-label">架构 V2(Base + 逐人物 Character Prompts,对齐 1.3.1 预设)</span>
           <input
@@ -1303,7 +1322,7 @@ async function removeVibe(vibe: NaiVibe) {
         </p>
 
         <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          通用映画文法始终启用，负责阅读顺序、景别、空间与动作连续性；下方选择叠加的分镜风格。原“通用映画”选项改称“仅通用规则”，表示不叠加特定风格。
+          两种分析模式都保留阅读顺序、景别与核心事件连续性；简单模式精简细部要求。下方选择叠加的分镜风格；“仅通用规则”表示不叠加特定风格。
         </p>
         <div v-if="settings.nai.comicMode" class="bbi-num-row">
           <span class="bbi-field-label">附加分镜风格</span>

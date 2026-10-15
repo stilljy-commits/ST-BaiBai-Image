@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
 vi.mock('@/st/context',()=>({getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
-vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile}}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning}]}));
+vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
 vi.mock('@/autoTag/charAnchors',()=>({resolveCharAnchors:(entries:any[])=>({text:JSON.stringify(entries),entries}),applyPositionedCharRefs:(text:string)=>({text,unknown:[]})}));
 vi.mock('@/state/charTags',()=>({CHAR_TAG_FIELDS:['sex','hair','eyes','fandom'],BBI_CHAR_EXTRA_KEY:'chars',charTagsBeforeFloor:()=>[],lockedCharTagNames:()=>new Set(),readCharTagFloorDelta:()=>null,makeCharTagFloorDelta:(x:any)=>x,recomputeCharTags:()=>{},createCharTagNewOp:(x:any,r:any)=>({...x,kind:'new',reason:r,at:Date.now()}),createCharTagSetOp:(name:any,field:any,value:any,reason:any)=>({kind:'set',name,field,value,reason,at:Date.now()}),emptyCharFields:()=>({}),applyCharTagOps:(entries:any[],ops:any[])=>[...entries,...ops.filter(op=>op.kind==='new').map(op=>({name:op.name,fields:op.fields,raw:op.raw,nl:op.nl,history:[]}))]}));
@@ -35,7 +35,7 @@ beforeEach(()=>{
   h.analyses=[];h.images=[];h.saveWait=null;vi.clearAllMocks();
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
-  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;
+  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';
   Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
@@ -46,6 +46,29 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  it('keeps simple mode for all batches in a run and uses a changed setting on the next run',async()=>{
+    Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:'simple'});
+    Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});
+    beginStreamSession('A');settings.nai.comicAnalysisMode='standard';
+    feedStreamText(story(6));await flush();
+    expect(h.analyses[0].m[0].analysisMode).toBe('simple');
+    expect(h.analyses[0].m[0].note).toContain('细节按简单模式取舍');
+    expect(h.analyses[0].m[0].note).not.toContain('全部逐图自检');
+    finishAnalysis(0);await flush();finishAnalysis(1);await flush();await attachStory(story(6));
+    expect(h.analyses.map(task=>task.m[0].options.maxImages)).toEqual([3,3]);
+    expect(h.analyses[1].m[0].analysisMode).toBe('simple');
+    expect(h.images).toHaveLength(6);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(6);
+    h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续'});
+    beginStreamSession('A');feedStreamText(story(3));await flush();
+    expect(h.analyses[2].m[0].analysisMode).toBe('standard');
+    expect(h.analyses[2].m[0].note).toContain('全部逐图自检');
+  });
+  it('keeps simple instructions for a short single-image tail',async()=>{
+    Object.assign(settings.nai,{comicMode:true,comicV2:false,comicAnalysisMode:'simple'});
+    beginStreamSession('A');feedStreamText(story(1));await flush();expect(h.analyses).toHaveLength(0);
+    await attachStory(story(1));expect(h.analyses[0].m[0].note).toContain('细节按简单模式取舍');
+    finishAnalysis(0);await flush();expect(h.images).toHaveLength(1);
+  });
   it.each([1,2,3,5])('waits for story completion when fewer than three markers arrive at limit %s',async(maxImages)=>{
     settings.autoTag.maxImages=maxImages;const text=story(Math.min(2,maxImages));
     beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(0);

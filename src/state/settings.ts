@@ -301,6 +301,8 @@ export interface NaiSettings extends BackendConn {
    * 两套协议互斥;切换后下一张图生效,正文里的存量旧 tag 不受影响。
    */
   comicV2?: boolean;
+  /** 漫画提示词分析精度。旧配置默认 standard；simple 简化画面决策，不改变出图参数。 */
+  comicAnalysisMode?: 'standard' | 'simple';
   /**
    * 漫画页对白上画(comicMode 开启时生效)。开启 = Text/气泡指令正常输出;
    * 关闭 = 页面纯视觉叙事,不写 Text、不画文字——发送端会剥掉模型仍写出的
@@ -1599,6 +1601,7 @@ function naiDefaults(): NaiSettings {
     normalizeRefStrength: true,
     comicMode: false,
     comicV2: true,
+    comicAnalysisMode: 'standard',
     comicText: true,
     comicPanelStyle: 'eromanga',
     comicGutter: 'bleed',
@@ -2132,6 +2135,7 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       typeof o.normalizeRefStrength === 'boolean' ? o.normalizeRefStrength : def.normalizeRefStrength,
     comicMode: typeof o.comicMode === 'boolean' ? o.comicMode : def.comicMode,
     comicV2: typeof o.comicV2 === 'boolean' ? o.comicV2 : def.comicV2,
+    comicAnalysisMode: o.comicAnalysisMode === 'simple' ? 'simple' : 'standard',
     comicText: typeof o.comicText === 'boolean' ? o.comicText : def.comicText,
     comicPanelStyle:
       COMIC_PANEL_STYLES.find(s => s.id === o.comicPanelStyle)?.id ?? def.comicPanelStyle,

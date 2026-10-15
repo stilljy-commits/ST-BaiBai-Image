@@ -114,7 +114,8 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
     });
   const s: Session = { ...state, core };
   sessions.set(s.id, s); current = s; log('stream:begin', { run: s.id, chatId, minImages: state.options.minImages,
-    maxImages: state.options.maxImages, batchSizes: streamBatchSizes(core.max), analysisConcurrency: core.concurrency });
+    maxImages: state.options.maxImages, batchSizes: streamBatchSizes(core.max), analysisConcurrency: core.concurrency,
+    analysisMode: simpleComicAnalysis(s) ? 'simple' : 'standard' });
 }
 
 /** Cancel only runs belonging to a chat that is no longer active. */
@@ -158,6 +159,14 @@ const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
 角色卡、世界书、柏宝书、此前正文提供完整设定与连续性依据；段外出现但未进入本次目标段落的角色，不在本请求补建档，不追加 changes，也不用反复盘点其此前是否漏建档。
 目标段内的正式角色即使不入画，也照原规则检查建档；固定外貌库里已列出的角色直接复用，不重复 new。本楼其他流式任务已确认的首次建档会加入该库，固定外貌本楼全程有效。临时服装、动作等仍以对应目标段落事实为准，不把后文临时状态提前套用。
 一张指 images 数组的一个元素；漫画模式下是一整页漫画，不是一个画格。图片 position 照抄任务给出的 M 编号,插入点由插件处理;正文 P 编号只用于角色变化时序与必要的 statePosition。漫画页内画格用主格、右上小格等空间称呼区分。`;
+function simpleComicAnalysis(s: Session): boolean {
+  return s.profile.mode !== 'illustration' && s.promptEnvironment.nai?.comicAnalysisMode === 'simple';
+}
+function analysisScope(s: Session): string {
+  return simpleComicAnalysis(s)
+    ? '【当前流式任务范围】目标正文仅指本批带P编号的段落；只为这些段落选图和检查角色建档。角色卡、世界书、记忆与此前正文仅作参考。已建档角色直接复用，段外角色不补建档，不把后文状态提前套用。一张图是一整页漫画。'
+    : STREAM_ANALYSIS_SCOPE;
+}
 function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
   const floor = s.binding?.floor ?? s.referenceFloor;
   const entries = charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
@@ -192,11 +201,11 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
 async function analyze(s: Session, job: Job): Promise<Payload> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
-  const batch = prepareStreamBatch([job], s.stripTags), target = batch.target;
+  const batch = prepareStreamBatch([job], s.stripTags, simpleComicAnalysis(s)), target = batch.target;
   const anchors = analysisAnchors(s);
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
-  const note = `${STREAM_ANALYSIS_SCOPE}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
+  const note = `${analysisScope(s)}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
   const analysisContext = { ...getContext()!, chat: [...getContext()!.chat] };
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
@@ -231,12 +240,12 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
 async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
-  const batch = prepareStreamBatch(jobs, s.stripTags);
+  const batch = prepareStreamBatch(jobs, s.stripTags, simpleComicAnalysis(s));
   const anchors = analysisAnchors(s);
   const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, scanText, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(jobs[0].input.prefix, jobs[0].input.text);
-  const note = `${STREAM_ANALYSIS_SCOPE}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
+  const note = `${analysisScope(s)}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
   const ctx = getContext()!;
   const analysisContext = { ...ctx, chat: [...ctx.chat] };
   const floor = s.binding?.floor ?? s.referenceFloor;

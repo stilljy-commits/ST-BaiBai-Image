@@ -3,7 +3,7 @@ import type { ImagePlan } from '@/autoTag/protocol';
 import type { StreamJob } from '@/autoTag/streamCore';
 
 /** Renumber positions across targets while keeping every source line and its owner. */
-export function prepareStreamBatch(jobs: Pick<StreamJob<unknown, unknown>, 'id' | 'input'>[], stripTags: string[]) {
+export function prepareStreamBatch(jobs: Pick<StreamJob<unknown, unknown>, 'id' | 'input'>[], stripTags: string[], simple = false) {
   const owners = new Map<string, string>();
   const markerTargets = new Map<string, { position: string; positions: string[] }>();
   const groups: { jobId: string; markerId: string; intent: string; positions: string[] }[] = [];
@@ -22,7 +22,9 @@ export function prepareStreamBatch(jobs: Pick<StreamJob<unknown, unknown>, 'id' 
     markerTargets.set(markerId, { position: positions.at(-1)!, positions });
   }
   const target: PreparedTargetText = { segments, promptText: segments.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n') };
-  const instructions = `本次为 ${groups.length} 个独立配图标记分别规划图片。每个标记恰好一张，不能把不同标记合并成一张图或漫画页，也不能遗漏、重复任一标记。每张完整遵守全部生图规范。共享检查（事实与连续状态、角色清点与建档、服装时间线、时代与世界观）覆盖本请求全部目标段落，只统一执行一次；每个标记分别完成事件、页面布局、逐格动作、人物条目和全部逐图自检，不重复整套共享判断。已确认的共享事实复用结论；保留必要复核与纠错，不反复整串预写、抄写 Base 或人物 tag 草稿。漫画模式下一张是一整页，格数按漫画规范决定。images[].position 直接照抄所属标记的 M 编号，插件负责插入位置，不再挑选或比较正文 P 编号；输出顺序不限。正文 P 编号仅供 changes 的变化时序使用。如同一标记段内发生永久外貌变化且画面时点早于段末，才额外用 statePosition 指明该画面对应的 P 编号；其余图片省略该字段。\n` +
+  const instructions = (simple
+    ? `本批有${groups.length}个独立标记，每个标记恰好一整页漫画，直接输出最终JSON。人物建档与连续状态共享检查一次，细节按简单模式取舍。图片position照抄所属M编号；正文P编号只供角色变化时序和必要的statePosition。\n`
+    : `本次为 ${groups.length} 个独立配图标记分别规划图片。每个标记恰好一张，不能把不同标记合并成一张图或漫画页，也不能遗漏、重复任一标记。每张完整遵守全部生图规范。共享检查（事实与连续状态、角色清点与建档、服装时间线、时代与世界观）覆盖本请求全部目标段落，只统一执行一次；每个标记分别完成事件、页面布局、逐格动作、人物条目和全部逐图自检，不重复整套共享判断。已确认的共享事实复用结论；保留必要复核与纠错，不反复整串预写、抄写 Base 或人物 tag 草稿。漫画模式下一张是一整页，格数按漫画规范决定。images[].position 直接照抄所属标记的 M 编号，插件负责插入位置，不再挑选或比较正文 P 编号；输出顺序不限。正文 P 编号仅供 changes 的变化时序使用。如同一标记段内发生永久外貌变化且画面时点早于段末，才额外用 statePosition 指明该画面对应的 P 编号；其余图片省略该字段。\n`) +
     groups.map(group => `标记 ${group.markerId}：「${group.intent}」；对应正文：${group.positions.join('、')}；图片 position 固定填 "${group.markerId}"。`).join('\n');
   return { target, owners, groups, markerTargets, instructions };
 }
