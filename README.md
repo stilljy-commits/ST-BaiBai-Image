@@ -10,8 +10,8 @@ A～B由正文模型在范围内选择实际数量，插件限制上限并按需
 
 [修改与数量规则说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.3.md)。
 
-验证：69个测试文件，884项通过、3项原有跳过；类型检查与生产构建通过。本次未主动调用真实tags API或NAI，首张与整楼耗时需更新后实测。
+验证：69个测试文件，885项通过、3项原有跳过；类型检查与生产构建通过。本次未主动调用真实tags API或NAI，首张与整楼耗时需更新后实测。
 
-main是酒馆发布文件；完整源码在codex/stream-rebuild。源码提交：[8981107566d2f370b391aaca8f01d26c3d31070c](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/8981107566d2f370b391aaca8f01d26c3d31070c)。
+main是酒馆发布文件；完整源码在codex/stream-rebuild。源码提交：[6a3dfcfe32e31a6f0485b585570a77f64400386a](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/6a3dfcfe32e31a6f0485b585570a77f64400386a)。
 
 原作者及上游：[baibai-git/ST-BaiBai-Image](https://github.com/baibai-git/ST-BaiBai-Image)。
