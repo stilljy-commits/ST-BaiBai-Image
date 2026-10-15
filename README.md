@@ -1,17 +1,17 @@
-# 柏宝绘 · 流式重构版 0.4.3
+# 柏宝绘 · 流式重构版 0.4.4
 
 安装/更新链接：https://github.com/stilljy-commits/ST-BaiBai-Image
 
-按最多图片数固定分三段分析：最多10张为3、3、4。每段收齐即开始，正文结束提交不足一段的剩余标记。分析并发为1时依次处理，NAI拿到tags后独立出图；正文结束显示已完成图片和在途位置，后到图片继续原位补齐。
+分镜下拉框原本会更新发送规则，但说明写死为默认方案。本版让分镜与留白说明随选择更新，并说明流式一轮开始时固定方案、下一轮采用新选择。
 
-A～B由正文模型在范围内选择实际数量，插件限制上限并按需补足下限；想固定10张可设A=B=10。世界书的“每多少字一标记”是分布建议，数量范围优先。发送前补充本轮数量约束，原世界书文件和密度仍按已有编辑/同步流程处理。
+对照1.3.1原始方案，恢复经典四格的均衡四格、轻松日常的规整松弛节拍、喜剧日常的规整画格与表情对切；V1/V2的规范和思考检查不再强迫这三类使用“单一主格占半页以上”。其他风格保留现有核心规则。
 
-共享检查在每批目标内统一完成，各图构图、人物条目和自检完整保留。文末补图等当前tags分析收尾，遵守分析并发，复用已确认人物档案。沿用0.4.2已验证的图片原位更新流程。
+保留0.4.3的固定三段分析、数量范围优先于字数密度，以及0.4.2的图片原位更新。
 
-[修改与数量规则说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.3.md)。
+八种分镜区别、四种留白及生效时机：[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.4.md)。已有图片需重新分析提示词后再生成，沿用旧tags重绘仍是旧构图。
 
-验证：69个测试文件，885项通过、3项原有跳过；类型检查与生产构建通过。本次未主动调用真实tags API或NAI，首张与整楼耗时需更新后实测。
+验证：70个测试文件，908项通过、3项原有跳过；类型检查和生产构建通过。覆盖八种分镜×V1/V2、四种留白、流式快照与下一轮新选择、未启用漫画或非V5模型、均衡风格规则一致性。未主动调用真实tags API或NAI，不将请求内容验证等同于实图效果保证。
 
-main是酒馆发布文件；完整源码在codex/stream-rebuild。源码提交：[6a3dfcfe32e31a6f0485b585570a77f64400386a](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/6a3dfcfe32e31a6f0485b585570a77f64400386a)。
+main是酒馆发布文件；完整源码在codex/stream-rebuild。源码提交：[7cc9e660c347c9471f208091f511f0036464f28d](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/7cc9e660c347c9471f208091f511f0036464f28d)。
 
 原作者及上游：[baibai-git/ST-BaiBai-Image](https://github.com/baibai-git/ST-BaiBai-Image)。
