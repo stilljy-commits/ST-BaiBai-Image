@@ -16,7 +16,7 @@ export interface StreamJob<P, R> {
 }
 export interface StreamDependencies<P, R> {
   analyze: (job: StreamJob<P, R>) => Promise<P>;
-  /** Each fixed third is analyzed together, with one independent result per marker. */
+  /** Each group of three is analyzed together, with one independent result per marker. */
   analyzeBatch?: (jobs: StreamJob<P, R>[]) => Promise<P[]>;
   batchFailed?: (jobs: StreamJob<P, R>[], error: unknown) => void;
   generate: (payload: P, job: StreamJob<P, R>) => Promise<R>;
@@ -26,12 +26,10 @@ export interface StreamDependencies<P, R> {
   idle?: () => void;
 }
 
-/** Reserve at most three balanced, consecutive parts; a remainder belongs to later parts. */
+/** Expected sizes at full capacity; incomplete groups are dispatched only when input ends. */
 export function streamBatchSizes(capacity: number): number[] {
   const total = Number.isFinite(capacity) ? Math.max(0, Math.floor(capacity)) : 0;
-  const parts = Math.min(3, total);
-  return Array.from({ length: parts }, (_, index) =>
-    Math.floor((index + 1) * total / parts) - Math.floor(index * total / parts));
+  return Array.from({ length: Math.ceil(total / 3) }, (_, index) => Math.min(3, total - index * 3));
 }
 
 /** Analysis, rendering and persistence have separate lifetimes. DOM never starts jobs. */
@@ -46,7 +44,6 @@ export class StreamRun<P, R> {
   private generating = new Set<string>();
   private singles = new Set<string>();
   private inputFinished = false;
-  private batchIndex = 0;
   private analysisWaiters = new Set<() => void>();
   constructor(readonly id: string, readonly max: number, readonly concurrency: number,
     readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>) {}
@@ -116,13 +113,12 @@ export class StreamRun<P, R> {
       this.queue = this.queue.filter(job => !job.controller.signal.aborted);
       if (!this.queue.length) break;
       const single = !this.dependencies.analyzeBatch || this.singles.has(this.queue[0].id);
-      const target = single ? 1 : streamBatchSizes(this.max)[this.batchIndex] ?? this.queue.length;
+      const target = single ? 1 : 3;
       // A failed part retries through single requests; do not consume the next part's quota.
       const retryAt = this.queue.findIndex(item => this.singles.has(item.id));
       const available = retryAt > 0 ? retryAt : this.queue.length;
       if (!single && available < target && !this.inputFinished && retryAt < 0) break;
       const jobs = this.queue.splice(0, Math.min(target, available));
-      if (!single) this.batchIndex++;
       this.analyzing++;
       this.track((async () => {
         try {

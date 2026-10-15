@@ -9,6 +9,7 @@
  * 本文件刻意不引任何 DOM / SillyTavern / 设置依赖,可在 node 下直接单测。
  */
 import { MARKER_REGEX_SOURCE } from '@/autoTag/markerSyntax';
+import { maskStreamStorySource } from '@/autoTag/clean';
 
 export interface StreamMarker {
   /** 标记在全文中的起始下标。 */
@@ -24,17 +25,21 @@ export interface StreamMarker {
 const MARKER_REGEX = new RegExp(MARKER_REGEX_SOURCE, 'g');
 
 /** 找出全文里所有完整标记,按出现顺序返回。 */
-export function findMarkers(text: string): StreamMarker[] {
+export function findMarkers(text: string, stripTags: string[] = []): StreamMarker[] {
   const source = String(text ?? '');
   if (!source) return [];
+  return scanVisibleMarkers(source,maskStreamStorySource(source,stripTags));
+}
+function scanVisibleMarkers(source: string, visible: string): StreamMarker[] {
   const markers: StreamMarker[] = [];
   MARKER_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = MARKER_REGEX.exec(source)) !== null) {
+  while ((m = MARKER_REGEX.exec(visible)) !== null) {
     if (m[0].length === 0) {
       MARKER_REGEX.lastIndex++;
       continue;
     }
+    if(source.slice(m.index,m.index+m[0].length)!==m[0])continue;
     markers.push({
       index: m.index,
       raw: m[0],
@@ -61,8 +66,12 @@ export class MarkerScanner {
   private readonly seen = new Set<string>();
 
   /** 喂入一次 STREAM_TOKEN_RECEIVED 给的累积全文(不是增量)。 */
-  feed(cumulativeText: string): StreamMarker[] {
-    const all = findMarkers(cumulativeText);
+  feed(cumulativeText: string, stripTags: string[] = []): StreamMarker[] {
+    return this.take(findMarkers(cumulativeText,stripTags));
+  }
+
+  /** Reuse the segment scan from the same token event instead of masking the whole story again. */
+  take(all: StreamMarker[]): StreamMarker[] {
     const fresh: StreamMarker[] = [];
     for (const marker of all) {
       const key = `${marker.index} ${marker.raw}`;
@@ -90,8 +99,8 @@ export function stripMarkers(text: string): string {
  * 把第 i 个标记替换成 replacements[i];replacements[i] 为 null/undefined 时删除该标记。
  * 长度不齐时,多余的标记一律删除(不留裸文本)。
  */
-export function replaceMarkers(text: string, replacements: Array<string | null | undefined>): string {
-  const markers = findMarkers(text);
+export function replaceMarkers(text: string, replacements: Array<string | null | undefined>, stripTags: string[] = []): string {
+  const markers = findMarkers(text,stripTags);
   if (!markers.length) return text;
   let out = '';
   let cursor = 0;
@@ -109,12 +118,15 @@ export function replaceMarkers(text: string, replacements: Array<string | null |
  * 切出每个标记的"目标正文段":上一个标记结束(或全文开头)到本标记开始之间的文本,
  * 外加标记本身。段与标记一一对应,顺序一致——主模型已经替我们把叙事节拍切好了。
  */
-export function markerSegments(text: string): Array<{ marker: StreamMarker; segment: string }> {
-  const markers = findMarkers(text);
-  const out: Array<{ marker: StreamMarker; segment: string }> = [];
+export function markerSegments(text: string, stripTags: string[] = []): Array<{ marker: StreamMarker; segment: string; sourceLine: number }> {
+  const visible=maskStreamStorySource(text,stripTags);
+  const markers = scanVisibleMarkers(text,visible);
+  const out: Array<{ marker: StreamMarker; segment: string; sourceLine: number }> = [];
   let prevEnd = 0;
   for (const marker of markers) {
-    out.push({ marker, segment: text.slice(prevEnd, marker.index).trim() });
+    const raw=visible.slice(prevEnd,marker.index),leading=raw.match(/^\s*/)?.[0].length??0;
+    const sourceLine=(text.slice(0,prevEnd+leading).match(/\r\n|\r|\n/g)||[]).length;
+    out.push({ marker, segment: raw.replace(/[^\S\r\n]+$/gm,'').trim(), sourceLine });
     prevEnd = marker.end;
   }
   return out;
@@ -125,11 +137,12 @@ export function markerSegments(text: string): Array<{ marker: StreamMarker; segm
  * 分段分析靠它延续服装/在场/道具状态。截尾到 maxChars(保留靠后的部分,
  * 因为越靠近本标记的正文对画面状态影响越大)。
  */
-export function prefixBefore(text: string, markerIndex: number, maxChars: number): string {
-  const markers = findMarkers(text);
+export function prefixBefore(text: string, markerIndex: number, maxChars: number, stripTags: string[] = []): string {
+  const visible=maskStreamStorySource(text,stripTags);
+  const markers = scanVisibleMarkers(text,visible);
   const marker = markers[markerIndex];
   if (!marker) return '';
-  const prefix = text.slice(0, marker.index);
+  const prefix = visible.slice(0, marker.index).replace(/[^\S\r\n]+$/gm,'').trimStart();
   if (prefix.length <= maxChars) return prefix;
   const cut = prefix.slice(prefix.length - maxChars);
   // 从第一个换行切起,避免半截句

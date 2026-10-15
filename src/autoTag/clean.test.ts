@@ -46,6 +46,12 @@ describe('stripCustomTags', () => {
 });
 
 describe('prompt body cleaning', () => {
+  it('excludes draft notes and unwraps multiple actual-story sections without discarding their facts',()=>{
+    const text='<draft>先规划甲画面。\n[img: 计划]</draft>\n<now_plot>\n第一段真实叙事。\n</now_plot>\n<draft_notes>再次规划。</draft_notes>\n<now_plot>\n第二段真实叙事。\n</now_plot>';
+    expect(prepareTargetText(text,[]).segments.map(segment=>[segment.text,segment.sourceLine])).toEqual([['第一段真实叙事。',3],['第二段真实叙事。',7]]);
+    expect(cleanHistoryText(text,[])).not.toMatch(/规划|draft|now_plot/);
+    expect(cleanHistoryText(text,[])).toContain('第一段真实叙事。');expect(cleanHistoryText(text,[])).toContain('第二段真实叙事。');
+  });
   const source = `状态栏
 <think>不可见思维</think>
 <bbs_start>2026/8/16 10:00</bbs_start>

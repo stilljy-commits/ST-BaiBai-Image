@@ -19,8 +19,8 @@ import { cancelStreamSlot, retryStreamSlot, streamSlotState } from '@/autoTag/st
 const flush=async()=>{for(let i=0;i<35;i++)await Promise.resolve();};
 const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥匙交接]';
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
-function finishAnalysis(index:number,count=1){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
-  task.o.validate(JSON.stringify({images:Array.from({length:count},(_,i)=>({position:ids[i%ids.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
+function finishAnalysis(index:number,count?:number){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
+  task.o.validate(JSON.stringify({images:Array.from({length:count ?? task.m[0].options.maxImages},(_,i)=>({position:ids[i%ids.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
 function finishImage(index:number){h.images[index].resolve({result:{url:`data:image/png;base64,image${index}`,filename:'fake.png',revoke:vi.fn()},seed:42,size:'portrait',backend:'nai',charactersApplied:false,meta:{backend:'nai'}});}
 function previewDocument(){
   const hosts=new Map<string,any>();
@@ -40,194 +40,187 @@ beforeEach(()=>{
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
 });
 afterEach(()=>{cancelStreamSessions();vi.unstubAllGlobals();});
-describe('real stream runner integration with controlled external dependencies',()=>{
-  it('closes the streaming preview immediately when slots enter the story, even while uploads are blocked',async()=>{
-    const hosts=previewDocument();settings.autoTag.streamPreview=true;
-    beginStreamSession('A');feedStreamText(body);await flush();finishAnalysis(0);finishAnalysis(1);await flush();
-    finishImage(0);await flush();expect(hosts.size).toBe(1);
-    let release!:()=>void;h.saveWait=new Promise<void>(resolve=>{release=resolve;});
-    h.ctx.chat.push(ai(body));await reconcileStreamFloor(1,'A');await flush();
-    expect(hosts.size).toBe(0);
-    finishImage(1);await flush();expect(hosts.size).toBe(0);
-    release();await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);
+const story=(count:number)=>Array.from({length:count},(_,i)=>`事件${i}发生。\n[img: 画面${i}]`).join('\n');
+async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();}
+async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
+
+describe('real stream runner with fixed groups of three',()=>{
+  it.each([1,2,3,5])('waits for story completion when fewer than three markers arrive at limit %s',async(maxImages)=>{
+    settings.autoTag.maxImages=maxImages;const text=story(Math.min(2,maxImages));
+    beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(0);
+    await attachStory(text);expect(h.analyses).toHaveLength(1);
+    expect(h.analyses[0].m[0].options).toMatchObject({minImages:Math.min(2,maxImages),maxImages:Math.min(2,maxImages)});
+    finishAnalysis(0);await flush();expect(h.images).toHaveLength(Math.min(2,maxImages));
   });
-  it('does not leave a preview behind when an attached image fails to save, and preserves its inline retry state',async()=>{
+  it('uses 3+2 for a 3-5 range and does not dispatch its short tail before story completion',async()=>{
+    Object.assign(settings.autoTag,{minImages:3,maxImages:5,streamAnalysisConcurrency:1});
+    beginStreamSession('A');feedStreamText(story(2));await flush();expect(h.analyses).toHaveLength(0);
+    feedStreamText(story(3));await flush();expect(h.analyses[0].m[0].options.maxImages).toBe(3);
+    finishAnalysis(0);await flush();feedStreamText(story(5));await flush();expect(h.analyses).toHaveLength(1);
+    await attachStory(story(5));expect(h.analyses[1].m[0].options).toMatchObject({minImages:2,maxImages:2});
+    finishAnalysis(1);await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(5);
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(5);
+  });
+  it('starts at the third marker at a 5-21 range and analyzes nine as 3+3+3',async()=>{
+    Object.assign(settings.autoTag,{minImages:5,maxImages:21,streamAnalysisConcurrency:1});
+    beginStreamSession('A');feedStreamText(story(2));await flush();expect(h.analyses).toHaveLength(0);
+    feedStreamText(story(3));await flush();expect(h.analyses[0].o.source).toBe('流式配图 · 合并3张');
+    feedStreamText(story(9));finishAnalysis(0);await flush();finishAnalysis(1);await flush();
+    expect(h.analyses.map(task=>task.m[0].options.maxImages)).toEqual([3,3,3]);
+    await attachStory(story(9));finishAnalysis(2);await flush();
+    expect(h.analyses).toHaveLength(3);expect(h.images).toHaveLength(9);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(9);
+  });
+  it('never starts on draft markers or reuses a draft segment for an identical final marker',async()=>{
+    settings.autoTag.maxImages=21;
+    const draft='<draft>\n'+Array.from({length:3},(_,i)=>`草稿计划${i}。\n[img: 画面${i}]`).join('\n')+'\n';
+    beginStreamSession('A');feedStreamText(draft);await flush();expect(h.analyses).toHaveLength(0);
+    const text=draft+'</draft>\n<now_plot>\n'+story(3)+'\n</now_plot>';
+    feedStreamText(text);await flush();expect(h.analyses).toHaveLength(1);
+    expect(h.analyses[0].m[0].content).not.toMatch(/草稿|now_plot/);
+    for(let i=0;i<3;i++)expect(h.analyses[0].m[0].content).toContain(`事件${i}发生。`);
+    finishAnalysis(0);await flush();await attachStory(text);
+    expect(h.ctx.chat[1].mes.startsWith(draft+'</draft>')).toBe(true);
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(h.analyses).toHaveLength(1);
+  });
+  it('closes the streaming preview at attachment while uploads are blocked and keeps late images inline',async()=>{
+    const hosts=previewDocument();settings.autoTag.streamPreview=true;settings.autoTag.maxImages=3;
+    beginStreamSession('A');feedStreamText(story(3));await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
+    expect(hosts.size).toBe(1);let release!:()=>void;h.saveWait=new Promise<void>(resolve=>{release=resolve;});
+    await attachStory(story(3));expect(hosts.size).toBe(0);
+    finishImage(1);finishImage(2);await flush();expect(hosts.size).toBe(0);
+    release();await flush();expect(saveImageResult).toHaveBeenCalledTimes(3);
+  });
+  it('preserves inline saving retry without leaving a preview when storage fails',async()=>{
     const hosts=previewDocument();settings.autoTag.streamPreview=true;
-    const text='她开门。\n[img: 门口]';
-    beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');
+    await pendingStory(story(1));finishAnalysis(0);await flush();
     vi.mocked(saveImageResult).mockRejectedValueOnce(new Error('temporary storage failure'));
     finishImage(0);await flush();expect(hosts.size).toBe(0);
-    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(1);
-    const slotId=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;
-    expect(streamSlotState(slotId)?.phase).toBe('error');expect(retryStreamSlot(slotId)).toBe(true);
+    const slot=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;
+    expect(streamSlotState(slot)?.phase).toBe('error');expect(retryStreamSlot(slot)).toBe(true);
     await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);expect(hosts.size).toBe(0);
   });
-  it('clears the preview when disabled and can restore it only while prose is still streaming',async()=>{
-    const hosts=previewDocument();settings.autoTag.streamPreview=true;
-    beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
-    expect(hosts.size).toBe(1);
-    settings.autoTag.streamPreview=false;refreshStreamPreviews();expect(hosts.size).toBe(0);
-    settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);
-    cancelStreamSessions();expect(hosts.size).toBe(0);
+  it('clears a disabled preview and restores it only during prose streaming',async()=>{
+    const hosts=previewDocument();settings.autoTag.streamPreview=true;settings.autoTag.maxImages=3;
+    beginStreamSession('A');feedStreamText(story(3));await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
+    expect(hosts.size).toBe(1);settings.autoTag.streamPreview=false;refreshStreamPreviews();expect(hosts.size).toBe(0);
+    settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);cancelStreamSessions();expect(hosts.size).toBe(0);
   });
-  it('reuses new fixed appearances in later requests without leaking later outfit updates into earlier segments',async()=>{
-    settings.autoTag.streamAnalysisConcurrency=1;beginStreamSession('A');feedStreamText(body);await flush();
-    const task=h.analyses[0];task.o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[
+  it('reuses immutable new profiles in the next batch without carrying later temporary outfits backwards',async()=>{
+    Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});
+    beginStreamSession('A');feedStreamText(story(6));await flush();
+    h.analyses[0].o.validate(JSON.stringify({images:[1,2,3].map(i=>({position:`P${i}`,tag:`scene${i}`})),changes:[
       {name:'小雪',field:'new',fields:{sex:'1girl',hair:'silver hair',eyes:'red eyes'},position:'P1',reason:'first appearance'},
       {name:'小雪',field:'outfit',value:'red coat',position:'P1',reason:'temporary outfit'},
-    ]}));task.resolve();await flush();
-    expect(h.analyses).toHaveLength(2);const next=h.analyses[1].m[0];
-    expect(next.library).toContain('silver hair');expect(next.library).toContain('red eyes');expect(next.library).not.toContain('red coat');
-    expect(next.note).toContain('段外出现但未进入本次目标段落');expect(next.note).toContain('正式角色即使不入画');
+    ]}));h.analyses[0].resolve();await flush();
+    expect(h.analyses[1].m[0].library).toContain('silver hair');expect(h.analyses[1].m[0].library).not.toContain('red coat');
+    expect(h.analyses[1].m[0].note).toContain('段外出现但未进入本次目标段落');
   });
-  it('does not abort a paired neighbor when cancelling one card, but aborts when both are cancelled',async()=>{
-    settings.autoTag.maxImages=4;const text=Array.from({length:4},(_,i)=>`事件${i}。\n[img: 画面${i}]`).join('\n');
-    beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();
-    const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent), task=h.analyses[2];
-    expect(cancelStreamSlot(slots[2].slotId)).toBe(true);expect(task.o.signal.aborted).toBe(false);
-    expect(cancelStreamSlot(slots[3].slotId)).toBe(true);expect(task.o.signal.aborted).toBe(true);
-    task.reject(new DOMException('cancelled','AbortError'));await flush();expect(h.analyses).toHaveLength(3);expect(h.images).toHaveLength(1);
+  it('aborts a shared short-tail request only when all its member slots are cancelled',async()=>{
+    await pendingStory();const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent),task=h.analyses[0];
+    expect(cancelStreamSlot(slots[0].slotId)).toBe(true);expect(task.o.signal.aborted).toBe(false);
+    expect(cancelStreamSlot(slots[1].slotId)).toBe(true);expect(task.o.signal.aborted).toBe(true);
+    task.reject(new DOMException('cancelled','AbortError'));await flush();expect(h.images).toHaveLength(0);
   });
-  it('keeps the host message DOM intact when late tags and images finish, including character metadata',async()=>{
-    const text='她开门。\n[img: 门口]';beginStreamSession('A');feedStreamText(text);await flush();
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
-    const task=h.analyses[0];task.o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway',characters:[],size:'portrait'}],
-      changes:[{name:'她',field:'new',fields:{sex:'1girl',hair:'black hair',eyes:'blue eyes'},position:'P1',reason:'first appearance'}]}));task.resolve();await flush();
-    const saves=h.ctx.saveChat.mock.calls.length, ops=JSON.stringify(h.ctx.chat[1].extra.chars);
-    expect(ops).toContain('black hair');expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
-    finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalledOnce();
+  it('keeps the host DOM and character metadata intact when late tags and an image finish',async()=>{
+    await pendingStory(story(1));expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
+    h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway',characters:[],size:'portrait'}],
+      changes:[{name:'她',field:'new',fields:{sex:'1girl',hair:'black hair',eyes:'blue eyes'},position:'P1',reason:'first appearance'}]}));
+    h.analyses[0].resolve();await flush();const saves=h.ctx.saveChat.mock.calls.length,ops=JSON.stringify(h.ctx.chat[1].extra.chars);
+    expect(ops).toContain('black hair');finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalledOnce();
     expect(h.ctx.saveChat).toHaveBeenCalledTimes(saves);expect(JSON.stringify(h.ctx.chat[1].extra.chars)).toBe(ops);
     expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();expect(h.ctx.eventSource.emit.mock.calls).toHaveLength(2);
   });
-  it('analyzes fixed thirds, maps reversed output to the right slots and keeps floor completion immediate',async()=>{
-    settings.autoTag.maxImages=6;
-    const text=Array.from({length:6},(_,i)=>`事件${i}发生。\n[img: 画面${i}]`).join('\n');
-    beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(2);
-    finishAnalysis(0,2);await flush();expect(h.analyses).toHaveLength(3);expect(h.analyses[2].m[0].options).toMatchObject({minImages:2,maxImages:2});
-    const task=h.analyses[2];task.o.validate(JSON.stringify({images:[{position:'P2',tag:'sixth',size:'portrait'},{position:'P1',tag:'fifth',size:'portrait'}],changes:[]}));task.resolve();await flush();
-    expect(h.images.slice(2).map((image:any)=>image.input.prompt)).toEqual(['fifth','sixth']);
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
-    expect(slots).toHaveLength(6);expect(slots.filter(slot=>slot.pending)).toHaveLength(2);
-    finishImage(3);await flush();expect(vi.mocked(saveImageResult).mock.calls[0][7]?.slotId).toBe(slots[5].slotId);
-    finishAnalysis(1,2);await flush();expect(h.analyses).toHaveLength(3);expect(h.images).toHaveLength(6);
+  it('maps reversed batch results and out-of-order image completion to their original slots',async()=>{
+    settings.autoTag.maxImages=3;beginStreamSession('A');feedStreamText(story(3));await flush();
+    h.analyses[0].o.validate(JSON.stringify({images:[{position:'P3',tag:'third'},{position:'P1',tag:'first'},{position:'P2',tag:'second'}],changes:[]}));
+    h.analyses[0].resolve();await flush();expect(h.images.map(image=>image.input.prompt)).toEqual(['first','second','third']);
+    await attachStory(story(3));const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
+    finishImage(2);await flush();expect(vi.mocked(saveImageResult).mock.calls[0][7]?.slotId).toBe(slots[2].slotId);
+    expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
   });
-  it('starts at the third marker for a ten-image limit and flushes a short remaining part at story completion',async()=>{
-    settings.autoTag.maxImages=10;
-    const text=(n:number)=>Array.from({length:n},(_,i)=>`事件${i}发生。\n[img: 画面${i}]`).join('\n');
-    beginStreamSession('A');feedStreamText(text(2));await flush();expect(h.analyses).toHaveLength(0);
-    feedStreamText(text(3));await flush();expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0].options).toMatchObject({minImages:3,maxImages:3});
-    feedStreamText(text(5));await flush();expect(h.analyses).toHaveLength(1);
-    h.ctx.chat.push(ai(text(5)));await reconcileStreamFloor(1,'A');await flush();
-    const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);expect(slots).toHaveLength(5);expect(slots.every(slot=>slot.pending)).toBe(true);
-    expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].options).toMatchObject({minImages:2,maxImages:2});
-    finishAnalysis(1,2);finishAnalysis(0,3);await flush();expect(h.images).toHaveLength(5);expect(h.ctx.updateMessageBlock).toHaveBeenCalledOnce();
+  it('allows a later analysis batch to complete first while retaining slot identities',async()=>{
+    settings.autoTag.maxImages=6;beginStreamSession('A');feedStreamText(story(6));await flush();expect(h.analyses).toHaveLength(2);
+    await attachStory(story(6));const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
+    finishAnalysis(1);await flush();finishImage(0);await flush();
+    expect(vi.mocked(saveImageResult).mock.calls[0][7]?.slotId).toBe(slots[3].slotId);
+    finishAnalysis(0);await flush();expect(h.images).toHaveLength(6);expect(h.analyses).toHaveLength(2);
   });
-  it('uses fixed-marker planning for 1+2+2 at a 3-5 limit and does not run supplemental scene selection',async()=>{
-    Object.assign(settings.autoTag,{minImages:3,maxImages:5,streamAnalysisConcurrency:1});
-    const text=Array.from({length:5},(_,i)=>`事件${i}发生。\n[img: 画面${i}]`).join('\n');
-    beginStreamSession('A');feedStreamText(text);await flush();
-    expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0]).toMatchObject({options:{minImages:1,maxImages:1},planning:'fixed-markers'});
-    finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
-    expect(h.analyses[1].m[0]).toMatchObject({options:{minImages:2,maxImages:2},planning:'fixed-markers'});
-    finishAnalysis(1,2);await flush();expect(h.analyses).toHaveLength(3);
-    expect(h.analyses[2].m[0]).toMatchObject({options:{minImages:2,maxImages:2},planning:'fixed-markers'});
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');finishAnalysis(2,2);await flush();
-    expect(h.analyses).toHaveLength(3);expect(h.images).toHaveLength(5);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(5);
+  it('falls back only a malformed batch through individual requests without bypassing concurrency',async()=>{
+    Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});
+    beginStreamSession('A');feedStreamText(story(6));await flush();const task=h.analyses[0];
+    expect(()=>task.o.validate(JSON.stringify({images:[1,2,3].map(()=>({position:'P1',tag:'wrong'})),changes:[]}))).toThrow(/重复/);
+    task.reject(new Error('invalid batch'));await flush();expect(h.analyses).toHaveLength(2);
+    for(let i=1;i<=3;i++){expect(h.analyses[i].m[0].options.maxImages).toBe(1);finishAnalysis(i);await flush();}
+    expect(h.analyses).toHaveLength(5);expect(h.analyses[4].m[0].options.maxImages).toBe(3);
+    finishAnalysis(4);await flush();expect(h.images).toHaveLength(6);
   });
-  it('falls back to individual requests when a paired response repeats the same marker',async()=>{
-    settings.autoTag.maxImages=4;const text=Array.from({length:4},(_,i)=>`事件${i}。\n[img: 画面${i}]`).join('\n');
-    beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();
-    const task=h.analyses[2];expect(()=>task.o.validate(JSON.stringify({images:[{position:'P1',tag:'a'},{position:'P1',tag:'b'}],changes:[]}))).toThrow(/重复/);
-    task.reject(Error('invalid batch'));await flush();expect(h.analyses).toHaveLength(4);expect(h.analyses[3].m[0].options.maxImages).toBe(1);
-    finishAnalysis(3);await flush();finishAnalysis(4);finishAnalysis(1);await flush();expect(h.images).toHaveLength(4);
+  it('reserves every final pending slot before analysis returns',async()=>{
+    await pendingStory();const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
+    expect(slots).toHaveLength(2);expect(slots.every(slot=>slot.pending)).toBe(true);expect(slots[0].slotId).not.toBe(slots[1].slotId);
+    finishAnalysis(0);await flush();finishImage(1);await flush();expect(vi.mocked(saveImageResult).mock.calls[0][7]?.slotId).toBe(slots[1].slotId);
+    finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);
+    expect(parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(slot=>slot.slotId)).toEqual(slots.map(slot=>slot.slotId));
   });
-  it('starts analysis without an AI floor and reserves every final slot while tags are pending',async()=>{
-    beginStreamSession('A');feedStreamText(body);await flush();expect(h.analyses).toHaveLength(2);expect(h.ctx.chat).toHaveLength(1);
-    h.ctx.chat.push(ai(body));await reconcileStreamFloor(1,'A');const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
-    expect(slots).toHaveLength(2);expect(slots.every(s=>s.pending)).toBe(true);expect(slots[0].slotId).not.toBe(slots[1].slotId);
-    finishAnalysis(1);await flush();finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalledOnce();
-    expect(vi.mocked(saveImageResult).mock.calls[0][7]?.slotId).toBe(slots[1].slotId);
-    finishAnalysis(0);await flush();finishImage(1);await flush();expect(saveImageResult).toHaveBeenCalledTimes(2);
-    expect(parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(s=>s.slotId)).toEqual(slots.map(s=>s.slotId));
+  it('writes tags without generating images when automatic image generation is disabled',async()=>{
+    settings.autoTag.autoGenerate=false;await pendingStory();finishAnalysis(0);await flush();
+    expect(h.images).toHaveLength(0);expect(saveImageResult).not.toHaveBeenCalled();
+    expect(parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).every(slot=>!slot.pending&&!!slot.tag)).toBe(true);
   });
-  it('returns final text without waiting for ready image uploads',async()=>{
-    let release!:()=>void;h.saveWait=new Promise<void>(resolve=>{release=resolve;});
-    beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
-    h.ctx.chat.push(ai('她开门。\n[img: 门口]'));await reconcileStreamFloor(1,'A');
-    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(1);await flush();expect(saveImageResult).toHaveBeenCalledOnce();release();await flush();
+  it('shares one budget across repeated cumulative feeds and identical intentions',async()=>{
+    const text='第一处相见。\n[img: 相见]\n第二处相见。\n[img: 相见]\n第三处相见。\n[img: 相见]';
+    beginStreamSession('A');feedStreamText(text);feedStreamText(text);await flush();expect(h.analyses).toHaveLength(0);
+    await attachStory(text);expect(h.analyses).toHaveLength(1);finishAnalysis(0);await flush();
+    const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);expect(slots).toHaveLength(2);expect(new Set(slots.map(slot=>slot.slotId)).size).toBe(2);
+    expect(h.ctx.chat[1].mes).not.toContain('[img:');expect(h.images).toHaveLength(2);
   });
-  it('does not send images when automatic generation is off',async()=>{
-    settings.autoTag.autoGenerate=false;beginStreamSession('A');feedStreamText(body);await flush();finishAnalysis(0);finishAnalysis(1);await flush();
-    h.ctx.chat.push(ai(body));await reconcileStreamFloor(1,'A');await flush();expect(h.images).toHaveLength(0);expect(saveImageResult).not.toHaveBeenCalled();
-  });
-  it('has a single budget and does not duplicate cumulative token feeds or repeated intentions',async()=>{
-    const repeated='第一处相见。\n[img: 相见]\n第二处相见。\n[img: 相见]\n第三处相见。\n[img: 相见]';
-    beginStreamSession('A');feedStreamText(repeated);feedStreamText(repeated);await flush();expect(h.analyses).toHaveLength(2);
-    h.ctx.chat.push(ai(repeated));await reconcileStreamFloor(1,'A');const slots=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent);
-    expect(slots).toHaveLength(2);expect(new Set(slots.map(s=>s.slotId)).size).toBe(2);expect(h.ctx.chat[1].mes).not.toContain('[img: 相见]\n第三');
-  });
-  it('only supplements missing slots and preserves existing streamed identity',async()=>{
-    Object.assign(settings.autoTag,{minImages:2,maxImages:2,streamAnalysisConcurrency:1});const one='她打开门。\n[img: 门口]\n他拿出钥匙。\n两人离开车站。';
-    beginStreamSession('A');feedStreamText(one);await flush();h.ctx.chat.push(ai(one));await reconcileStreamFloor(1,'A');await flush();
-    const original=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;expect(h.analyses).toHaveLength(1);
-    finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
-    expect(h.analyses[1].m[0].options.minImages).toBe(1);expect(h.analyses[1].m[0].options.maxImages).toBe(1);
+  it('supplements only missing slots after marker analysis and shares newly established profiles',async()=>{
+    Object.assign(settings.autoTag,{minImages:2,maxImages:5,streamAnalysisConcurrency:1});
+    const text='小雪开门。\n[img: 门口]\n小雪把钥匙交给他。';await pendingStory(text);
+    const original=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;
+    h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[{name:'小雪',field:'new',fields:{sex:'1girl',hair:'silver hair',eyes:'red eyes'},position:'P1',reason:'first appearance'}]}));
+    h.analyses[0].resolve();await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
+    expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:4});expect(h.analyses[1].m[0].library).toContain('silver hair');
     expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBeUndefined();
-    finishAnalysis(1);await flush();const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(s=>s.slotId);
-    expect(ids).toHaveLength(2);expect(ids).toContain(original);expect(h.images).toHaveLength(2);
+    expect(h.analyses[1].o.source).toBe('流式配图 · 文末补充');finishAnalysis(1,1);await flush();
+    const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(slot=>slot.slotId);expect(ids).toHaveLength(2);expect(ids).toContain(original);
   });
-  it('passes newly established profiles to supplemental analysis without waiting for image generation',async()=>{
-    Object.assign(settings.autoTag,{minImages:2,maxImages:2,streamAnalysisConcurrency:1});
-    const text='小雪开门。\n[img: 门口]\n小雪把钥匙交给他。';beginStreamSession('A');feedStreamText(text);await flush();
-    h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();expect(h.analyses).toHaveLength(1);
-    const task=h.analyses[0];task.o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[{name:'小雪',field:'new',fields:{sex:'1girl',hair:'silver hair',eyes:'red eyes'},position:'P1',reason:'first appearance'}]}));task.resolve();await flush();
-    expect(h.images).toHaveLength(1);expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].library).toContain('silver hair');
-    expect(saveImageResult).not.toHaveBeenCalled();finishAnalysis(1);await flush();expect(h.images).toHaveLength(2);
-  });
-  it('cannot save a late image into a different chat',async()=>{
-    beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();finishAnalysis(0);await flush();
-    h.ctx.chat.push(ai('她开门。\n[img: 门口]'));await reconcileStreamFloor(1,'A');h.ctx.getCurrentChatId=()=> 'B';cancelStreamSessions('B');
+  it('does not save a late image into another chat',async()=>{
+    await pendingStory(story(1));finishAnalysis(0);await flush();h.ctx.getCurrentChatId=()=> 'B';cancelStreamSessions('B');
     finishImage(0);await flush();expect(saveImageResult).not.toHaveBeenCalled();
   });
-  it('leaves a previous completed floor running when a new generation begins in the same chat',async()=>{
-    beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();finishAnalysis(0);await flush();
-    h.ctx.chat.push(ai('她开门。\n[img: 门口]'));await reconcileStreamFloor(1,'A');beginStreamSession('A');
-    finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalledOnce();expect(vi.mocked(saveImageResult).mock.calls[0][0]).toBe(1);
+  it('keeps a completed floor running when the next prose generation begins in the same chat',async()=>{
+    await pendingStory(story(1));finishAnalysis(0);await flush();beginStreamSession('A');finishImage(0);await flush();
+    expect(saveImageResult).toHaveBeenCalledOnce();expect(vi.mocked(saveImageResult).mock.calls[0][0]).toBe(1);
   });
-  it('replaces a rewritten final marker without stale jobs consuming the image budget',async()=>{
-    settings.autoTag.maxImages=1;beginStreamSession('A');feedStreamText('她开门。\n[img: 开门]');await flush();finishAnalysis(0);await flush();
-    h.ctx.chat.push(ai('她开门。\n[img: 门口相见]'));await reconcileStreamFloor(1,'A');await flush();
-    expect(h.analyses).toHaveLength(2);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(1);
-    finishImage(0);await flush();expect(saveImageResult).not.toHaveBeenCalled();
-    finishAnalysis(1);await flush();finishImage(1);await flush();expect(saveImageResult).toHaveBeenCalledOnce();
+  it('frees rewritten final markers without generating a stale image or losing surviving batch members',async()=>{
+    settings.autoTag.maxImages=3;beginStreamSession('A');feedStreamText(story(3));await flush();
+    const final=story(3).replace('[img: 画面2]','[img: 重写画面]');await attachStory(final);expect(h.analyses).toHaveLength(2);
+    finishAnalysis(0);finishAnalysis(1);await flush();expect(h.images).toHaveLength(3);
+    for(let i=0;i<3;i++)finishImage(i);await flush();expect(saveImageResult).toHaveBeenCalledTimes(3);
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);
   });
-  it('counts existing images against the whole-floor limit when continuing a response',async()=>{
-    settings.autoTag.maxImages=2;const existing='<bbi_image><tag>old scene</tag><size>portrait</size></bbi_image>';
-    h.ctx.chat.push(ai('原文。\n'+existing));beginStreamSession('A','continue');feedStreamText('续写。\n[img: 续写一]\n后续。\n[img: 续写二]');await flush();
-    expect(h.analyses).toHaveLength(1);h.ctx.chat[1].mes+='\n续写。\n[img: 续写一]\n后续。\n[img: 续写二]';await reconcileStreamFloor(1,'A');
+  it('counts existing images against the whole-floor limit when continuing prose',async()=>{
+    const existing='<bbi_image><tag>old scene</tag><size>portrait</size></bbi_image>';
+    h.ctx.chat.push(ai('原文。\n'+existing));beginStreamSession('A','continue');const more='续写。\n[img: 续写一]\n后续。\n[img: 续写二]';
+    feedStreamText(more);await flush();expect(h.analyses).toHaveLength(0);h.ctx.chat[1].mes+='\n'+more;
+    await reconcileStreamFloor(1,'A');await flush();expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0].options.maxImages).toBe(1);
     expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);expect(h.ctx.chat[1].mes).toContain(existing);
   });
-  it('applies the frozen language and orientation settings to model output',async()=>{
-    h.profile.lockedSize='landscape';beginStreamSession('A');feedStreamText('她开门。\n[img: 门口]');await flush();
-    h.profile.nl=true;h.profile.lockedSize=null;
+  it('uses frozen language and orientation settings for late model results',async()=>{
+    h.profile.lockedSize='landscape';await pendingStory(story(1));h.profile.nl=true;h.profile.lockedSize=null;
     h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway',nl:'Unexpected natural language',size:'portrait',characters:[{name:'她',tag:'girl, opening door',nl:'Extra description'}]}],changes:[]}));
-    h.analyses[0].resolve();await flush();
-    expect(h.images[0].input).toMatchObject({nl:'',size:'landscape',characters:[{name:'她',tag:'girl, opening door',nl:''}]});
+    h.analyses[0].resolve();await flush();expect(h.images[0].input).toMatchObject({nl:'',size:'landscape',characters:[{name:'她',tag:'girl, opening door',nl:''}]});
   });
-  it('analyzes an uncovered long tail within the remaining budget even when the minimum is zero',async()=>{
-    const text='她开门。\n[img: 门口]\n'+('两人走过街道并进入车站。'.repeat(100));
-    beginStreamSession('A');feedStreamText(text);await flush();h.ctx.chat.push(ai(text));await reconcileStreamFloor(1,'A');await flush();
-    expect(h.analyses).toHaveLength(1);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);const tail=h.analyses[1].m[0];
-    expect(tail.options).toMatchObject({minImages:0,maxImages:1});expect(tail.content).toContain('进入车站');expect(tail.content).not.toContain('她开门');
-    finishAnalysis(1);await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);
+  it('analyzes an uncovered long tail without duplicating the already illustrated opening',async()=>{
+    settings.autoTag.maxImages=5;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(100);
+    await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
+    expect(h.analyses[1].m[0].options).toMatchObject({minImages:0,maxImages:4});expect(h.analyses[1].m[0].content).toContain('进入车站');
+    expect(h.analyses[1].m[0].content).not.toContain('她开门');finishAnalysis(1,1);await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);
   });
-  it('keeps the full current target and earlier facts without repeating the current target in the task note',async()=>{
-    const text='她穿白裙，持钥匙。\n[img: 钥匙]\n她用钥匙推开车站的门。\n[img: 推门]';
-    beginStreamSession('A');feedStreamText(text);await flush();
-    const request=h.analyses[1].m[0];
-    expect(request.content).toContain('她用钥匙推开车站的门。');expect(request.note).toContain('她穿白裙，持钥匙。');
-    expect(request.note).not.toContain('她用钥匙推开车站的门。');expect(h.analyses).toHaveLength(2);
+  it('keeps earlier continuity facts without repeating the complete current batch in its task note',async()=>{
+    Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});
+    const text='她穿白裙，持钥匙。\n[img: 钥匙]\n她走过街道。\n[img: 街道]\n她来到车站。\n[img: 车站]\n她用钥匙推开车站的门。\n[img: 推门]\n他跟上来。\n[img: 同行]\n两人入内。\n[img: 入内]';
+    beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();const request=h.analyses[1].m[0];
+    expect(request.content).toContain('她用钥匙推开车站的门。');expect(request.note).toContain('她穿白裙，持钥匙。');expect(request.note).not.toContain('她用钥匙推开车站的门。');
   });
 });

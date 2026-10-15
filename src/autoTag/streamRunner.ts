@@ -1,6 +1,6 @@
 import { requestCompletion, requestViaMainApi, type ChatMsg } from '@/api/client';
 import { buildAutoTagMessages, captureAutoTagEnvironment, type AutoTagEnvironment } from '@/autoTag/prompt';
-import { prepareTargetText, type PreparedTargetText } from '@/autoTag/clean';
+import { maskStreamStorySource, prepareTargetText, type PreparedTargetText } from '@/autoTag/clean';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import { applyPositionedCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
 import { MarkerScanner, markerSegments, prefixBefore, replaceMarkers, findMarkers, contextWithoutRepeatedTarget } from '@/autoTag/markers';
@@ -29,6 +29,7 @@ interface Session {
   id: string; chatId: string; context: STContext; referenceFloor: number;
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
+  stripTags: string[];
   promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText;
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
   controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; changeOps: Map<string, CharTagAutoOp>; completed: boolean; supplementDone: boolean;
@@ -81,6 +82,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const state: Omit<Session, 'core'> = {
     id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
     scanner: new MarkerScanner(), options: jsonCopy(settings.autoTag),
+    stripTags: [...settings.excludes.customStripTags,'bbi_image'],
     generation: captureGenerationSnapshot(), profile: captureRenderProfile(settings.nai, settings.defaultBackend),
     promptEnvironment: captureAutoTagEnvironment(), existingCount: type === 'continue' ? parseImageTags(ctx.chat.at(-1)?.mes ?? '').length : 0,
     continuing: type === 'continue', baselineOps: [],
@@ -91,7 +93,11 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
     state.options.autoGenerate, {
       analyze: job => analyze(s, job),
       analyzeBatch: jobs => analyzeBatch(s, jobs),
-      batchFailed: jobs => log('stream:batch-fallback', { jobs: jobs.map(job => job.id), reason: '批量分析未通过，按原单张流程重试' }),
+      batchFailed: (jobs,error) => {
+        const message=error instanceof Error?error.message:'';
+        const code=/少于|图片数|图片数量/.test(message)?'image-count':/position|可选位置|P编号/.test(message)?'position':/标记/.test(message)?'marker-ownership':/JSON|数组|tag/.test(message)?'response-format':'request-failed';
+        log('stream:batch-fallback', { jobs: jobs.map(job => job.id), batchSize:jobs.length, code, reason: '批量分析未通过，按原单张流程重试' });
+      },
       generate: async (payload, job) => {
         const start = performance.now();
         const output = await generateImage({ prompt: payload.image.tag, nl: payload.image.nl,
@@ -131,20 +137,19 @@ export function invalidateStreamOwners(): void {
 export function feedStreamText(text: string): void {
   const s = current;
   if (!s || !ownerValid(s) || !settings.autoTag.streamGen || !settings.enabled || !settings.autoTag.enabled) return;
-  const all = markerSegments(text);
-  for (const marker of s.scanner.feed(text)) {
+  const all = markerSegments(text,s.stripTags);
+  for (const marker of s.scanner.take(all.map(segment=>segment.marker))) {
     const ordinal = all.findIndex(item => item.marker.index === marker.index && item.marker.raw === marker.raw);
-    const previousEnd = ordinal > 0 ? all[ordinal - 1].marker.end : 0;
-    const leading = text.slice(previousEnd, marker.index).match(/^\s*/)?.[0].length ?? 0;
-    const job = s.core.add({ raw: marker.raw, intent: marker.intent, text: all[ordinal]?.segment ?? marker.intent,
-      prefix: prefixBefore(text, ordinal, 6000), sourceLine: text.slice(0, previousEnd + leading).split('\n').length - 1 });
+    const segment=all[ordinal];if(!segment)continue;
+    const job = s.core.add({ raw: marker.raw, intent: marker.intent, text: segment.segment,
+      prefix: prefixBefore(text, ordinal, 6000,s.stripTags), sourceLine: segment.sourceLine });
     if (job) log('stream:dispatch', { run: s.id, job: job.id, withoutFloor: true });
   }
 }
 
-async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void): Promise<void> {
-  if (s.channel) await requestCompletion(s.channel, messages, { signal, source: '流式配图', validate });
-  else await requestViaMainApi(messages, { signal, source: '流式配图', validate });
+async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图'): Promise<void> {
+  if (s.channel) await requestCompletion(s.channel, messages, { signal, source, validate });
+  else await requestViaMainApi(messages, { signal, source, validate });
 }
 const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
 本楼仍指整条消息；当前请求的「目标正文」仅指下方带 P 编号的段落。图片规划和首次建档检查都只处理这些目标段落中的角色。
@@ -185,7 +190,7 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
 async function analyze(s: Session, job: Job): Promise<Payload> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
-  const target = prepareTargetText(job.input.text || job.input.intent, [...settings.excludes.customStripTags, 'bbi_image']);
+  const target = prepareTargetText(job.input.text || job.input.intent, s.stripTags);
   const anchors = analysisAnchors(s);
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
@@ -208,7 +213,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
         const image = plan.images[0];
         payload = { image: { ...image, sourceLine: image.sourceLine + job.input.sourceLine, renderProfile: s.profile },
           changes: plan.changes.map(change => ({ ...change, sourceLine: change.sourceLine + job.input.sourceLine })) };
-      });
+      },'流式配图 · 单张');
       log('stream:analysis-timing', { job: job.id, queueMs: Math.round(start-job.createdAt), prepareMs: Math.round(preparedAt-start),
         apiMs: Math.round(performance.now()-requestStart), attempt: attempt+1, promptChars, responseChars, removedDuplicateChars: job.input.prefix.length-prefix.length, ok: !!payload });
       if (payload) return payload;
@@ -223,7 +228,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
 async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
-  const batch = prepareStreamBatch(jobs, [...settings.excludes.customStripTags, 'bbi_image']);
+  const batch = prepareStreamBatch(jobs, s.stripTags);
   const anchors = analysisAnchors(s);
   const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, scanText, s.context.name1);
@@ -249,7 +254,7 @@ async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
       splitStreamBatch(parsed, batch); // Check ownership before mutating the shared appearance library.
       const plan = preparePlan(s, parsed, anchors);
       payloads = splitStreamBatch(plan, batch).map(image => ({ image: { ...image, renderProfile: s.profile }, changes: plan.changes }));
-    });
+    },`流式配图 · 合并${jobs.length}张`);
     if (!payloads) throw new Error('批量分析未返回有效图片');
     return payloads;
   } finally {
@@ -314,14 +319,16 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   if (!settings.autoTag.streamGen) return false;
   const ctx = getContext(), message = ctx?.chat[floor];
   if (!ctx || ctx.getCurrentChatId() !== chatId || !message || message.is_user) return false;
-  const final = message.mes, segments = markerSegments(final);
+  const final = message.mes;
+  const stripTags=current?.chatId===chatId?current.stripTags:[...settings.excludes.customStripTags,'bbi_image'];
+  const segments = markerSegments(final,stripTags);
   if (!segments.length) { if (current && current.chatId === chatId) stopCurrentStream(); return false; }
   if (!current || current.chatId !== chatId) beginStreamSession(chatId);
   const s = current; if (!s || s.completed) return false;
   s.binding = { floor, message, swipeId: swipe(message) ?? 0, expectedSwipe: swipe(message) };
   const baseline = readCharTagFloorDelta(message);
   s.baselineOps = baseline?.swipe === s.binding.swipeId ? baseline.ops : [];
-  s.body = final; s.prepared = prepareTargetText(final, [...settings.excludes.customStripTags, 'bbi_image']);
+  s.body = final; s.prepared = prepareTargetText(final,s.stripTags);
   const unused = [...s.core.jobs]; const attached: Job[] = [];
   const matched = segments.map(seg => {
     const index = unused.findIndex(job => job.input.raw === seg.marker.raw && job.phase !== 'cancelled');
@@ -331,18 +338,16 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   for (const job of unused) s.core.cancelJob(job);
   const replacements = segments.map((seg, i) => {
     let job = matched[i];
-    const start = i ? segments[i-1].marker.end : 0;
-    const leading = final.slice(start, seg.marker.index).match(/^\s*/)?.[0].length ?? 0;
     if (!job) job = s.core.add({ raw: seg.marker.raw, intent: seg.marker.intent, text: seg.segment,
-      prefix: prefixBefore(final, i, 6000), sourceLine: final.slice(0, start + leading).split('\n').length - 1 }) ?? undefined;
+      prefix: prefixBefore(final, i, 6000,s.stripTags), sourceLine: seg.sourceLine }) ?? undefined;
     if (!job) return null;
     attached.push(job); const tag = tagFor(s, job); s.written.set(job.id, tag); return tag;
   });
   // Reserve every accepted slot before awaiting uploads or any image task.
   const ok = await serial(s, () => applyMessageText(floor, text => {
-    const liveMarkers = findMarkers(text);
+    const liveMarkers = findMarkers(text,s.stripTags);
     if (liveMarkers.length !== segments.length || liveMarkers.some((marker, i) => marker.raw !== segments[i].marker.raw)) return null;
-    return replaceMarkers(text, replacements);
+    return replaceMarkers(text, replacements,s.stripTags);
   }, chatId, s.binding!.expectedSwipe, message));
   if (ok !== 'saved') { s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
   s.completed = true; current = undefined; updatePreview(s); s.core.attach(attached); s.core.finishInput();
@@ -359,7 +364,7 @@ async function supplement(s: Session, count: number): Promise<void> {
   const capacity = Math.max(0, s.options.maxImages - count);
   const needed = Math.max(0, s.options.minImages - count);
   if (!capacity || !s.prepared || !s.body || !s.binding || !ownerValid(s)) return;
-  const segments = markerSegments(s.body), tail = s.body.slice(segments.at(-1)?.marker.end ?? 0);
+  const segments = markerSegments(s.body,s.stripTags), tail = maskStreamStorySource(s.body,s.stripTags).slice(segments.at(-1)?.marker.end ?? 0);
   const longGap = tail.length > 1200 || segments.some(segment => segment.segment.length > 1200);
   if (!needed && !longGap) return;
   // A separate completion here used to bypass the configured analysis concurrency and
@@ -391,7 +396,7 @@ async function supplement(s: Session, count: number): Promise<void> {
     for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
       if (controller.signal.aborted) return;
       try {
-        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, capacity), anchors); });
+        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, capacity), anchors); },'流式配图 · 文末补充');
         if (plan) break;
       } catch (error) { lastError = error; }
     }
@@ -402,7 +407,7 @@ async function supplement(s: Session, count: number): Promise<void> {
     { image: { ...image, renderProfile: s.profile }, changes: plan!.changes })).filter((job): job is Job => !!job);
   for (const job of added) job.payload!.image.slotId = job.id;
   const ok = await serial(s, () => applyMessageText(s.binding!.floor, text => {
-    const rebased = rebaseImagePositions(text, full.segments, added.map(job=>job.payload!.image), [...settings.excludes.customStripTags, 'bbi_image']);
+    const rebased = rebaseImagePositions(text, full.segments, added.map(job=>job.payload!.image), s.stripTags);
     return rebased ? injectImageTags(text, rebased.images.map(image => ({ ...image, renderProfile: s.profile }))) : null;
   }, s.chatId, s.binding!.expectedSwipe, s.binding!.message));
   if (ok !== 'saved') { for (const job of added) s.core.cancelJob(job); throw new Error(`补图位置写入失败：${ok}`); }

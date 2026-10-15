@@ -6,6 +6,8 @@ import { MARKER_REGEX_SOURCE } from '@/autoTag/markerSyntax';
  */
 
 const RE_THINK_BLOCK = /<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi;
+const RE_DRAFT_BLOCK = /<(draft(?:_notes)?)(?=[\s>])[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const RE_STORY_WRAPPER = /<\/?now_plot(?=[\s/>])[^>]*>/gi;
 const RE_START = /<bbs_start\b[^>]*>([\s\S]*?)<\/bbs_start>/gi;
 const RE_END = /<bbs_end\b[^>]*>([\s\S]*?)<\/bbs_end>/gi;
 
@@ -71,6 +73,8 @@ function clampToStoryBody(
     : tags;
   let s = String(mes ?? '')
     .replace(RE_THINK_BLOCK, noiseReplacement)
+    .replace(RE_DRAFT_BLOCK, noiseReplacement)
+    .replace(RE_STORY_WRAPPER, noiseReplacement)
     .replace(/<!--[\s\S]+?-->/g, noiseReplacement)
     .replace(/<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi, noiseReplacement);
   s = replaceCustomTags(s, customTags, noiseReplacement);
@@ -186,6 +190,8 @@ function retainedLineText(source: string, line: SourceLineRange, ranges: Removal
 function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
   const noise: RemovalRange[] = [
     ...rangesForRegex(source, RE_THINK_BLOCK),
+    ...rangesForRegex(source, RE_DRAFT_BLOCK),
+    ...rangesForRegex(source, RE_STORY_WRAPPER),
     ...rangesForRegex(source, /<!--[\s\S]+?-->/g),
     ...rangesForRegex(source, /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi),
   ];
@@ -243,4 +249,32 @@ export function prepareTargetText(mes: string, tags: string[]): PreparedTargetTe
 /** 不带位置标记的目标清洗结果，供调试/测试查看。 */
 export function cleanTargetText(mes: string, tags: string[]): string {
   return prepareTargetText(mes, tags).segments.map(segment => segment.text).join('\n\n');
+}
+
+/** Preserve offsets while hiding non-story blocks, including an unfinished streaming block. */
+export function maskStreamStorySource(mes: string, tags: string[] = []): string {
+  const source=String(mes??'');
+  const hidden=new Set(['think','draft','draft_notes','horae','bbs_items','bbs_vars',...tags.map(tag=>tag.toLowerCase())]);
+  const canonical=(tag:string)=>tag.toLowerCase()==='thinking'?'think':/^horae/i.test(tag)?'horae':tag.toLowerCase();
+  const stack:string[]=[];
+  const ranges=targetRemovalRanges(source,tags);
+  const comments=rangesForRegex(source,/<!--[\s\S]*?(?:-->|$)/g);
+  let start=-1;
+  const tokens=/<(\/?)([^\s/>]+)(?=[\s/>])[^>]*>/g;
+  for(const match of source.matchAll(tokens)){
+    if(comments.some(range=>match.index!>=range.start&&match.index!<range.end))continue;
+    const tag=canonical(match[2]);if(!hidden.has(tag))continue;
+    if(!match[1]){
+      if(/\/\s*>$/.test(match[0])){ranges.push({start:match.index!,end:match.index!+match[0].length});continue;}
+      if(!stack.length)start=match.index!;
+      stack.push(tag);
+    }else{
+      const index=stack.lastIndexOf(tag);if(index<0)continue;
+      stack.length=index;
+      if(!stack.length){ranges.push({start,end:match.index!+match[0].length});start=-1;}
+    }
+  }
+  if(start>=0)ranges.push({start,end:source.length});
+  ranges.push(...comments);
+  return maskedSource(source,ranges);
 }
