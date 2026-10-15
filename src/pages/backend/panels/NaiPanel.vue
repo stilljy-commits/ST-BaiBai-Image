@@ -1302,12 +1302,15 @@ async function removeVibe(vibe: NaiVibe) {
           已关闭:生成时不带 Text 对白与气泡指令,画面更干净,可减少文字渲染错误。画面构图仍按漫画分格。
         </p>
 
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          通用映画文法始终启用，负责阅读顺序、景别、空间与动作连续性；下方选择叠加的分镜风格。原“通用映画”选项改称“仅通用规则”，表示不叠加特定风格。
+        </p>
         <div v-if="settings.nai.comicMode" class="bbi-num-row">
-          <span class="bbi-field-label">分镜风格</span>
+          <span class="bbi-field-label">附加分镜风格</span>
           <BbiSelect
             v-model="comicStyle"
             :options="comicStyleOptions"
-            aria-label="分镜风格"
+            aria-label="附加分镜风格"
           />
         </div>
         <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
