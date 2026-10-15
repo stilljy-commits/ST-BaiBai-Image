@@ -40,6 +40,13 @@ describe('自动 tag 图片数量范围迁移', () => {
     const autoTag = await hydrateWithAutoTag(undefined);
     expect(autoTag.minImages).toBe(0);
     expect(autoTag.maxImages).toBe(2);
+    expect(autoTag.streamGapSupplement).toBe(false);
+  });
+
+  it('旧配置默认不额外补长段落，显式开启的设置仍保留', async () => {
+    expect((await hydrateWithAutoTag({maxImages:5})).streamGapSupplement).toBe(false);
+    vi.resetModules();
+    expect((await hydrateWithAutoTag({maxImages:5,streamGapSupplement:true})).streamGapSupplement).toBe(true);
   });
 
   it('把下限夹进 0～上限,并保证上限至少为 1', async () => {

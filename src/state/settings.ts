@@ -527,6 +527,8 @@ export interface AutoTagSettings {
   streamGen?: boolean;
   /** 流式出图的浮层预览(默认关)。开启后流式期间在屏幕角落浮层显示已生成的缩略图。 */
   streamPreview?: boolean;
+  /** 达到数量下限后仍补画未覆盖的长正文段落。默认关，避免额外分析等待。 */
+  streamGapSupplement?: boolean;
   /** 流式分段分析的并发上限(1~4,默认 2):同时几批副API分析在飞；每批是一段。 */
   streamAnalysisConcurrency?: number;
   streamWorldBook?: string;
@@ -1651,6 +1653,7 @@ function defaults(): ImageSettings {
       autoGenerate: true,
       streamGen: false,
       streamPreview: false,
+      streamGapSupplement: false,
       streamAnalysisConcurrency: 2,
       streamWorldBook: '',
       prompts: {
@@ -2273,6 +2276,8 @@ function normalize(raw: unknown): ImageSettings {
     streamWorldBook: typeof rt.streamWorldBook === 'string' ? rt.streamWorldBook : '',
     streamPreview:
       typeof rt.streamPreview === 'boolean' ? rt.streamPreview : d.autoTag.streamPreview,
+    streamGapSupplement:
+      typeof rt.streamGapSupplement === 'boolean' ? rt.streamGapSupplement : d.autoTag.streamGapSupplement,
     streamAnalysisConcurrency:
       typeof rt.streamAnalysisConcurrency === 'number' && Number.isFinite(rt.streamAnalysisConcurrency)
         ? Math.min(4, Math.max(1, Math.floor(rt.streamAnalysisConcurrency)))

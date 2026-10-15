@@ -20,7 +20,8 @@ const flush=async()=>{for(let i=0;i<35;i++)await Promise.resolve();};
 const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥匙交接]';
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
 function finishAnalysis(index:number,count?:number){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
-  task.o.validate(JSON.stringify({images:Array.from({length:count ?? task.m[0].options.maxImages},(_,i)=>({position:ids[i%ids.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
+  const markers=[...task.m[0].note.matchAll(/图片 position 固定填 "(M\d+)"/g)].map((m:any)=>m[1]);const positions=markers.length?markers:ids;
+  task.o.validate(JSON.stringify({images:Array.from({length:count ?? task.m[0].options.maxImages},(_,i)=>({position:positions[i%positions.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
 function finishImage(index:number){h.images[index].resolve({result:{url:`data:image/png;base64,image${index}`,filename:'fake.png',revoke:vi.fn()},seed:42,size:'portrait',backend:'nai',charactersApplied:false,meta:{backend:'nai'}});}
 function previewDocument(){
   const hosts=new Map<string,any>();
@@ -35,7 +36,7 @@ beforeEach(()=>{
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;
-  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2});
+  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
 });
@@ -179,7 +180,7 @@ describe('real stream runner with fixed groups of three',()=>{
     const original=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId;
     h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[{name:'小雪',field:'new',fields:{sex:'1girl',hair:'silver hair',eyes:'red eyes'},position:'P1',reason:'first appearance'}]}));
     h.analyses[0].resolve();await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
-    expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:4});expect(h.analyses[1].m[0].library).toContain('silver hair');
+    expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:1});expect(h.analyses[1].m[0].library).toContain('silver hair');
     expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBeUndefined();
     expect(h.analyses[1].o.source).toBe('流式配图 · 文末补充');finishAnalysis(1,1);await flush();
     const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(slot=>slot.slotId);expect(ids).toHaveLength(2);expect(ids).toContain(original);
@@ -212,10 +213,30 @@ describe('real stream runner with fixed groups of three',()=>{
     h.analyses[0].resolve();await flush();expect(h.images[0].input).toMatchObject({nl:'',size:'landscape',characters:[{name:'她',tag:'girl, opening door',nl:''}]});
   });
   it('analyzes an uncovered long tail without duplicating the already illustrated opening',async()=>{
-    settings.autoTag.maxImages=5;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(100);
+    settings.autoTag.maxImages=5;settings.autoTag.streamGapSupplement=true;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(140);
     await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
     expect(h.analyses[1].m[0].options).toMatchObject({minImages:0,maxImages:4});expect(h.analyses[1].m[0].content).toContain('进入车站');
     expect(h.analyses[1].m[0].content).not.toContain('她开门');finishAnalysis(1,1);await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);
+  });
+  it('does not add an optional long-gap request after the minimum is already met by default',async()=>{
+    settings.autoTag.maxImages=5;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(140);
+    await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(1);
+  });
+  it('ignores long metadata and its markers even with optional gap filling enabled',async()=>{
+    Object.assign(settings.autoTag,{maxImages:6,streamGapSupplement:true});
+    const metadata='<summary>\n'+('已经叙述过的摘要。'.repeat(220))+'\n[img: 摘要伪标记]\n</summary>\n<action>\n[img: 选项伪标记]\n</action>\n<UpdateVariable>\n'+('变量更新。'.repeat(220))+'\n</UpdateVariable>';
+    const text=story(3)+'\n两人结束散步。\n'+metadata;
+    beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(1);
+    await attachStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(1);
+    expect(h.images).toHaveLength(3);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);
+    expect(h.ctx.chat[1].mes).toContain(metadata);
+  });
+  it('excludes metadata from required supplements and keeps the caller request exactly at the missing minimum',async()=>{
+    Object.assign(settings.autoTag,{minImages:2,maxImages:5});
+    const text='她开门。\n[img: 门口]\n两人来到广场。\n<summary>摘要不得选图。</summary>\n<UpdateVariable>变量不得选图。</UpdateVariable>';
+    await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
+    expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:1});
+    expect(h.analyses[1].m[0].content).toContain('来到广场');expect(h.analyses[1].m[0].content).not.toMatch(/摘要不得|变量不得/);
   });
   it('keeps earlier continuity facts without repeating the complete current batch in its task note',async()=>{
     Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});

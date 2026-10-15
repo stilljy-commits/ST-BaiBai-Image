@@ -38,6 +38,9 @@ export interface ImagePlan {
   changes: CharChange[];
 }
 
+/** Images use a fixed marker ID; story P IDs remain available for state-change timing. */
+export type MarkerTargets = ReadonlyMap<string, { position: string; positions: readonly string[] }>;
+
 /** AI 输出的单条角色变更(宽松形状;解析后字段全部合法才保留)。 */
 export interface CharChange {
   name: string;
@@ -193,6 +196,7 @@ export function parseImagePlan(
   segments: TargetSegment[],
   minImages: number,
   maxImages: number,
+  markerTargets?: MarkerTargets,
 ): ImagePlan {
   const parsed = parseObject(raw);
   if (!Array.isArray(parsed.images)) throw new Error('AI 返回的 JSON 缺少 images 数组');
@@ -210,7 +214,11 @@ export function parseImagePlan(
       throw new Error(`images[${index}] 必须是对象`);
     }
     const entry = item as Record<string, unknown>;
-    const position = sanitizePosition(entry.position ?? entry.id, index);
+    const rawPosition = typeof (entry.position ?? entry.id) === 'string' ? String(entry.position ?? entry.id).trim().toUpperCase() : '';
+    const marker = markerTargets?.get(rawPosition);
+    if (markerTargets && /^M\d+$/.test(rawPosition) && !marker) throw new Error(`images[${index}] 标记编号不存在`);
+    const position = sanitizePosition(marker ? entry.statePosition ?? marker.position : entry.position ?? entry.id, index);
+    if (marker && !marker.positions.includes(position)) throw new Error(`images[${index}].statePosition 超出所属标记正文`);
     const sourceLine = positions.get(position);
     if (sourceLine === undefined) {
       throw new Error(`images[${index}].position=${position} 不在目标正文可选位置中`);

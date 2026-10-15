@@ -35,6 +35,8 @@ interface Session {
   controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; changeOps: Map<string, CharTagAutoOp>; completed: boolean; supplementDone: boolean;
 }
 const sessions = new Map<string, Session>();
+// Output metadata is excluded from scene discovery without editing the user's message.
+const STREAM_NON_STORY_TAGS = ['summary', 'action', 'UpdateVariable', 'JSONPatch', 'Analysis', 'statusplaceholder', 'CONTEXT_options', 'CONTEXT_conception', 'thought'];
 let current: Session | undefined;
 const log = (event: string, detail: unknown) => console.info(`[BBI][AutoTagDebug] ${event}`, JSON.stringify(detail));
 const swipe = (message: STMessage) => Array.isArray(message.swipes) ? (message.swipe_id ?? 0) : null;
@@ -82,7 +84,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const state: Omit<Session, 'core'> = {
     id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
     scanner: new MarkerScanner(), options: jsonCopy(settings.autoTag),
-    stripTags: [...settings.excludes.customStripTags,'bbi_image'],
+    stripTags: [...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS],
     generation: captureGenerationSnapshot(), profile: captureRenderProfile(settings.nai, settings.defaultBackend),
     promptEnvironment: captureAutoTagEnvironment(), existingCount: type === 'continue' ? parseImageTags(ctx.chat.at(-1)?.mes ?? '').length : 0,
     continuing: type === 'continue', baselineOps: [],
@@ -155,7 +157,7 @@ const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
 本楼仍指整条消息；当前请求的「目标正文」仅指下方带 P 编号的段落。图片规划和首次建档检查都只处理这些目标段落中的角色。
 角色卡、世界书、柏宝书、此前正文提供完整设定与连续性依据；段外出现但未进入本次目标段落的角色，不在本请求补建档，不追加 changes，也不用反复盘点其此前是否漏建档。
 目标段内的正式角色即使不入画，也照原规则检查建档；固定外貌库里已列出的角色直接复用，不重复 new。本楼其他流式任务已确认的首次建档会加入该库，固定外貌本楼全程有效。临时服装、动作等仍以对应目标段落事实为准，不把后文临时状态提前套用。
-一张指 images 数组的一个元素；漫画模式下是一整页漫画，不是一个画格。正文 P 编号只用于选择插入位置；漫画页内画格用主格、右上小格等空间称呼区分，不把页内格号当作正文插入位置。`;
+一张指 images 数组的一个元素；漫画模式下是一整页漫画，不是一个画格。图片 position 照抄任务给出的 M 编号,插入点由插件处理;正文 P 编号只用于角色变化时序与必要的 statePosition。漫画页内画格用主格、右上小格等空间称呼区分。`;
 function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
   const floor = s.binding?.floor ?? s.referenceFloor;
   const entries = charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
@@ -190,11 +192,11 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
 async function analyze(s: Session, job: Job): Promise<Payload> {
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
-  const target = prepareTargetText(job.input.text || job.input.intent, s.stripTags);
+  const batch = prepareStreamBatch([job], s.stripTags), target = batch.target;
   const anchors = analysisAnchors(s);
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
-  const note = `${STREAM_ANALYSIS_SCOPE}\n本次只分析以下剧情段，为标记「${job.input.intent}」规划恰好一张图。画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
+  const note = `${STREAM_ANALYSIS_SCOPE}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
   const analysisContext = { ...getContext()!, chat: [...getContext()!.chat] };
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
@@ -209,10 +211,11 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
     try {
       await completion(s, messages, job.controller.signal, raw => {
         responseChars = raw.length;
-        const plan = preparePlan(s, parseImagePlan(raw, target.segments, 1, 1), anchors);
+        const parsed = parseImagePlan(raw, target.segments, 1, 1, batch.markerTargets);
+        splitStreamBatch(parsed, batch);
+        const plan = preparePlan(s, parsed, anchors);
         const image = plan.images[0];
-        payload = { image: { ...image, sourceLine: image.sourceLine + job.input.sourceLine, renderProfile: s.profile },
-          changes: plan.changes.map(change => ({ ...change, sourceLine: change.sourceLine + job.input.sourceLine })) };
+        payload = { image: { ...image, renderProfile: s.profile }, changes: plan.changes };
       },'流式配图 · 单张');
       log('stream:analysis-timing', { job: job.id, queueMs: Math.round(start-job.createdAt), prepareMs: Math.round(preparedAt-start),
         apiMs: Math.round(performance.now()-requestStart), attempt: attempt+1, promptChars, responseChars, removedDuplicateChars: job.input.prefix.length-prefix.length, ok: !!payload });
@@ -250,7 +253,7 @@ async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
   try {
     await completion(s, messages, controller.signal, raw => {
       responseChars = raw.length;
-      const parsed = parseImagePlan(raw, batch.target.segments, jobs.length, jobs.length);
+      const parsed = parseImagePlan(raw, batch.target.segments, jobs.length, jobs.length, batch.markerTargets);
       splitStreamBatch(parsed, batch); // Check ownership before mutating the shared appearance library.
       const plan = preparePlan(s, parsed, anchors);
       payloads = splitStreamBatch(plan, batch).map(image => ({ image: { ...image, renderProfile: s.profile }, changes: plan.changes }));
@@ -320,7 +323,7 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   const ctx = getContext(), message = ctx?.chat[floor];
   if (!ctx || ctx.getCurrentChatId() !== chatId || !message || message.is_user) return false;
   const final = message.mes;
-  const stripTags=current?.chatId===chatId?current.stripTags:[...settings.excludes.customStripTags,'bbi_image'];
+  const stripTags=current?.chatId===chatId?current.stripTags:[...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS];
   const segments = markerSegments(final,stripTags);
   if (!segments.length) { if (current && current.chatId === chatId) stopCurrentStream(); return false; }
   if (!current || current.chatId !== chatId) beginStreamSession(chatId);
@@ -328,7 +331,7 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   s.binding = { floor, message, swipeId: swipe(message) ?? 0, expectedSwipe: swipe(message) };
   const baseline = readCharTagFloorDelta(message);
   s.baselineOps = baseline?.swipe === s.binding.swipeId ? baseline.ops : [];
-  s.body = final; s.prepared = prepareTargetText(final,s.stripTags);
+  s.body = final; s.prepared = prepareTargetText(maskStreamStorySource(final,s.stripTags),s.stripTags);
   const unused = [...s.core.jobs]; const attached: Job[] = [];
   const matched = segments.map(seg => {
     const index = unused.findIndex(job => job.input.raw === seg.marker.raw && job.phase !== 'cancelled');
@@ -364,9 +367,13 @@ async function supplement(s: Session, count: number): Promise<void> {
   const capacity = Math.max(0, s.options.maxImages - count);
   const needed = Math.max(0, s.options.minImages - count);
   if (!capacity || !s.prepared || !s.body || !s.binding || !ownerValid(s)) return;
+  if (!needed && !s.options.streamGapSupplement) return;
+  const visibleLength = (text: string) => text.replace(/\s/g, '').length;
   const segments = markerSegments(s.body,s.stripTags), tail = maskStreamStorySource(s.body,s.stripTags).slice(segments.at(-1)?.marker.end ?? 0);
-  const longGap = tail.length > 1200 || segments.some(segment => segment.segment.length > 1200);
+  const longTail = visibleLength(tail) > 1200;
+  const longGap = s.options.streamGapSupplement && (longTail || segments.some(segment => visibleLength(segment.segment) > 1200));
   if (!needed && !longGap) return;
+  const maximum = s.options.streamGapSupplement ? capacity : needed;
   // A separate completion here used to bypass the configured analysis concurrency and
   // rebuild profiles while streamed requests were still running. NAI stays independent.
   await s.core.analysisSettled();
@@ -375,14 +382,14 @@ async function supplement(s: Session, count: number): Promise<void> {
   // Prefer uncovered tail/long spans. If count is below min, all narrative may supply a distinct missing moment.
   const tailStart = s.body.slice(0, segments.at(-1)?.marker.end ?? 0).split('\n').length - 1;
   const starts = [0]; for (let i = 0; i < s.body.length; i++) if (s.body[i] === '\n') starts.push(i + 1);
-  const gaps = segments.flatMap((segment, i) => segment.segment.length > 1200
+  const gaps = segments.flatMap((segment, i) => visibleLength(segment.segment) > 1200
     ? [{ start: i ? segments[i-1].marker.end : 0, end: Math.max(0, segment.marker.index - 600) }] : []);
   const candidates = needed ? full.segments : full.segments.filter(segment =>
-    (tail.length > 1200 && segment.sourceLine >= tailStart) || gaps.some(gap => starts[segment.sourceLine] >= gap.start && starts[segment.sourceLine] < gap.end));
+    (longTail && segment.sourceLine >= tailStart) || gaps.some(gap => starts[segment.sourceLine] >= gap.start && starts[segment.sourceLine] < gap.end));
   if (!candidates.length) return;
   const target = { segments: candidates, promptText: candidates.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n') };
   const priorImages = parseImageTags(s.body).map(raw => parseImageTagContent(raw).tag.slice(0, 300)).join('；');
-  const note = `文末补充配图：已接受 ${count} 张，最多补 ${capacity} 张，至少补 ${needed} 张。已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。`;
+  const note = `文末补充配图：已接受 ${count} 张，最多补 ${maximum} 张，至少补 ${needed} 张。已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
   const controller = s.controller;
   let plan: ReturnType<typeof parseImagePlan> | undefined;
   let lastError: unknown;
@@ -391,12 +398,12 @@ async function supplement(s: Session, count: number): Promise<void> {
     const entries = charTagsBeforeFloor(s.binding!.floor + 1), known = new Set(entries.map(entry => entry.name));
     const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
     const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames());
-    const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: capacity },
+    const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: maximum },
       readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
     for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
       if (controller.signal.aborted) return;
       try {
-        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, capacity), anchors); },'流式配图 · 文末补充');
+        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, maximum), anchors); },'流式配图 · 文末补充');
         if (plan) break;
       } catch (error) { lastError = error; }
     }

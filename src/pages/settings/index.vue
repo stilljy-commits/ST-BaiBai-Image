@@ -700,7 +700,7 @@ async function confirmUpdate() {
         <p class="bbi-field-hint">
           开启后自动给正文模型添加配图标记规则，发送前检查是否已包含规则；已挂同类世界书时复用已有规则。主模型在正文里放 [img: 意图] 标记,
           所有数量范围都固定每3个正式标记合批分析，不再按上限分段。例如9个标记按3、3、3分析，5个按3、2分析；剩余不足3个的标记在正文结束时立即提交，
-          并显示已完成图片和在途位置，后到图片继续完成；文末只补不足或空档。主模型在最少/最多范围内选择实际数量，数量范围优先于世界书的字数密度。
+          并显示已完成图片和在途位置，后到图片继续完成；文末默认只补足最少张数。主模型在最少/最多范围内选择实际数量，数量范围优先于世界书的字数密度。
           关闭则完整回退「正文结束→全量分析」路径;主模型没放标记时也会自动回退。
         </p>
 
@@ -709,6 +709,12 @@ async function confirmUpdate() {
           <input v-model="settings.autoTag.streamPreview" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">只影响流式期间的显示,不动正文;关闭没有任何副作用。</p>
+
+        <label class="bbi-switch-row">
+          <span class="bbi-field-label">补画未配图的长段落(可选)</span>
+          <input v-model="settings.autoTag.streamGapSupplement" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">默认关闭，正文结束后只补足最少张数。开启后还会检查未覆盖的长正文并分析补图，可能增加等待；摘要、选项和变量更新不参与。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">流式分段分析并发</span>

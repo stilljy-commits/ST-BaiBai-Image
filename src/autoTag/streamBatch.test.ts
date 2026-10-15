@@ -18,9 +18,10 @@ describe('batched marker planning',()=>{
     const oldThinking=comicV2?DEFAULT_NAI_COMIC_V2_THINKING:DEFAULT_NAI_COMIC_THINKING;
     const index=ordinary.findIndex(message=>message.content===oldThinking);expect(index).toBeGreaterThan(-1);
     const contractIndex=ordinary.findIndex(message=>message.content.startsWith('你是严谨的剧情画面规划'));
-    expect(marked.filter((_,i)=>i!==index&&i!==contractIndex)).toEqual(ordinary.filter((_,i)=>i!==index&&i!==contractIndex));
+    const specIndex=ordinary.findIndex(message=>message.content.includes(comicV2?DEFAULT_NAI_COMIC_V2_SPEC:DEFAULT_NAI_COMIC_SPEC));
+    expect(marked.filter((_,i)=>![index,contractIndex,specIndex].includes(i))).toEqual(ordinary.filter((_,i)=>![index,contractIndex,specIndex].includes(i)));
     const updated=marked[index].content;
-    expect(updated).toContain('每个标记恰好一页');expect(updated).toContain('所属标记的可用 P 编号');
+    expect(updated).toContain('每个标记恰好一页');expect(updated).toContain('所属标记的 M 编号');
     expect(updated).not.toContain('把目标正文按事件节拍切成');
     expect(updated).not.toContain('第二层|逐页槽位块');
     expect(updated).toContain('不再输出整套角色名单');
@@ -28,7 +29,8 @@ describe('batched marker planning',()=>{
     expect(updated).toContain('不把后文状态提前套用');
     expect(updated).toContain('完整分镜直接写入最终 JSON');
     expect(updated).toContain('全部逐图自检与必要纠错');
-    expect(marked.some(message=>message.content.includes(comicV2?DEFAULT_NAI_COMIC_V2_SPEC:DEFAULT_NAI_COMIC_SPEC))).toBe(true);
+    const withoutRouting=(text:string)=>text.replace(/^- position:.*$/m,'').replaceAll('"position":"P2"','"position":"_"').replaceAll('"position":"M1"','"position":"_"');
+    expect(withoutRouting(marked[specIndex].content)).toBe(withoutRouting(ordinary[specIndex].content));
     expect(marked.some(message=>message.content.includes(DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR))).toBe(true);
     const contract=marked[contractIndex].content;
     expect(contract).not.toContain('再选图');
@@ -36,7 +38,8 @@ describe('batched marker planning',()=>{
     // The format example and maintenance rules remain exact, except that archive hits
     // are decisions rather than a mandatory written proof for every known character.
     const sample=(content:string)=>JSON.parse(content.match(/格式固定为：\n([^\n]+)\n/)![1]);
-    expect(sample(contract)).toEqual(sample(ordinary[contractIndex].content));
+    expect(sample(contract).images[0].position).toBe('M1');
+    expect({...sample(contract).images[0],position:'P2'}).toEqual(sample(ordinary[contractIndex].content).images[0]);
     const maintenance=(content:string)=>content.slice(content.indexOf('7. 角色状态与 changes：')).split('\n').filter(line=>!line.includes('“已建档”只能按'));
     expect(maintenance(contract)).toEqual(maintenance(ordinary[contractIndex].content));
     expect(contract).toContain('含不入画者');
@@ -59,11 +62,11 @@ describe('batched marker planning',()=>{
     expect(JSON.stringify(sample.characters)).not.toMatch(/Text:|speech bubble/i);
     expect(sample.characters).toHaveLength(comicV2?2:0);
     // A brief summary does not interfere with the parser or the permanent-change timeline.
-    const plan=parseImagePlan('<thinking>沿用已知状态。</thinking>'+JSON.stringify({images:[{...sample,position:'P3'},{...sample,position:'P2'}],changes:[{name:'小雪',field:'hair',value:'short red hair',position:'P2'}]}),batch.target.segments,2,2);
+    const plan=parseImagePlan('<thinking>沿用已知状态。</thinking>'+JSON.stringify({images:[{...sample,position:'M2'},{...sample,position:'M1'}],changes:[{name:'小雪',field:'hair',value:'short red hair',position:'P2'}]}),batch.target.segments,2,2,batch.markerTargets);
     expect(splitStreamBatch(plan,batch).map(image=>image.sourceLine)).toEqual([12,20]);
     expect(plan.changes[0].sourceLine).toBe(12);
   });
-  it('leaves illustration analysis unchanged when fixed markers are provided',async()=>{
+  it('keeps illustration specifications and thinking while using fixed image routing',async()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
     const profile={nl:false,naiCharPrompts:true,lockedSize:'portrait' as const};
     const environment=captureAutoTagEnvironment(profile);environment.backend='nai';environment.nai.comicMode=false;
@@ -71,7 +74,9 @@ describe('batched marker planning',()=>{
     const options={...settings.autoTag,minImages:2,maxImages:2};
     const ordinary=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment);
     const marked=await buildAutoTagMessages(ctx,0,options,null,batch.target,'角色库',batch.instructions,profile,environment,'fixed-markers');
-    expect(marked).toEqual(ordinary);
+    const keep=(messages:typeof ordinary)=>messages.filter(message=>!message.content.startsWith('你是严谨的剧情画面规划'));
+    expect(keep(marked)).toEqual(keep(ordinary));
+    expect(marked.some(message=>message.content.includes('images[].position 必须直接照抄'))).toBe(true);
   });
   it('shares global checks while retaining the complete comic V2 spec and thinking checklist',async()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
@@ -111,5 +116,25 @@ describe('batched marker planning',()=>{
     const batch=prepareStreamBatch([...jobs,{id:'c',input:{raw:'',intent:'到家',text:'她推开家门。',prefix:'',sourceLine:30}}],['bbi_image']);
     const plan=parseImagePlan(JSON.stringify({images:[{position:'P4',tag:'home'},{position:'P3',tag:'leave'},{position:'P2',tag:'keys'}],changes:[]}),batch.target.segments,3,3);
     expect(splitStreamBatch(plan,batch).map(image=>image.tag)).toEqual(['keys','leave','home']);
+  });
+  it('routes reversed fixed markers without selecting a paragraph and keeps earlier state timing independent',()=>{
+    const batch=prepareStreamBatch(jobs,['bbi_image']);
+    const plan=parseImagePlan(JSON.stringify({images:[{position:'M2',tag:'leave'},{position:'M1',statePosition:'P1',tag:'before haircut'}],changes:[{name:'她',field:'hair',value:'short red hair',position:'P2'}]}),batch.target.segments,2,2,batch.markerTargets);
+    expect(splitStreamBatch(plan,batch).map(image=>[image.tag,image.sourceLine])).toEqual([['before haircut',10],['leave',20]]);
+    expect(plan.changes[0].sourceLine).toBe(12);
+  });
+  it('rejects unknown marker IDs and state positions belonging to another marker',()=>{
+    const batch=prepareStreamBatch(jobs,['bbi_image']);
+    for(const image of [{position:'M9',tag:'unknown'},{position:'M1',statePosition:'P3',tag:'wrong time'}]){
+      expect(()=>parseImagePlan(JSON.stringify({images:[image]}),batch.target.segments,1,2,batch.markerTargets)).toThrow(/标记/);
+    }
+  });
+  it('rejects duplicate fixed IDs and maps a single marker to absolute physical lines only once',()=>{
+    const batch=prepareStreamBatch([jobs[0]],['bbi_image']);
+    const plan=parseImagePlan(JSON.stringify({images:[{position:'M1',tag:'end of marker'}]}),batch.target.segments,1,1,batch.markerTargets);
+    expect(plan.images[0].sourceLine).toBe(12);
+    const multi=prepareStreamBatch(jobs,[]);
+    const duplicate=parseImagePlan(JSON.stringify({images:[{position:'M1',tag:'a'},{position:'M1',tag:'b'}]}),multi.target.segments,2,2,multi.markerTargets);
+    expect(()=>splitStreamBatch(duplicate,multi)).toThrow(/重复/);
   });
 });
