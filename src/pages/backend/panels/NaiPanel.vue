@@ -60,6 +60,8 @@ import {
   activeNaiEndpoint,
   COMIC_GUTTER_MODES,
   COMIC_PANEL_STYLES,
+  resolveComicPanelStyle,
+  resolveComicGutterMode,
   effectiveNai,
   isOfficialNaiEndpoint,
   newNaiArtist,
@@ -467,6 +469,8 @@ const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.l
 const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
 const comicStyle = computed({ get: () => settings.nai.comicPanelStyle ?? 'eromanga', set: (value: string) => { settings.nai.comicPanelStyle = value; } });
 const comicGutter = computed({ get: () => settings.nai.comicGutter ?? 'bleed', set: (value: string) => { settings.nai.comicGutter = value; } });
+const selectedComicStyle = computed(() => resolveComicPanelStyle(comicStyle.value));
+const selectedComicGutter = computed(() => resolveComicGutterMode(comicGutter.value));
 const comicExtraRules = computed({ get: () => settings.nai.comicExtraRules ?? '', set: (value: string) => { settings.nai.comicExtraRules = value; } });
 
 /** BbiSelect 的 modelValue 是 string,而 nai.model 是字面量联合;这层 get/set 只为搭桥。
@@ -1287,7 +1291,7 @@ async function removeVibe(vibe: NaiVibe) {
         </label>
         <p v-if="settings.nai.comicMode" class="bbi-field-hint">
           V2(默认):页面布局进 Base 行,每个画格内每个可见人物单独一条 Character Prompt，页面与人物描述分开传递，避免混成一串。关闭则回退旧 V1(@page/@panel 标记整页文本)。
-          切换后下一张图生效,正文里的存量旧 tag 不受影响。
+          新生成的提示词采用切换后的架构；进行中的流式轮次沿用开始时的选择，正文里的存量旧 tag 保留原样。
         </p>
 
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">
@@ -1306,8 +1310,11 @@ async function removeVibe(vibe: NaiVibe) {
             aria-label="分镜风格"
           />
         </div>
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+          {{ selectedComicStyle.description }}
+        </p>
         <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          默认「本子肉感」:核心主画格 + 边角嵌入极近特写切入小格 + 边框顺身体曲线斜切。切换即改写生图规范里的风格块。
+          新生成的提示词采用当前分镜与留白方案；正在进行的流式轮次沿用开始时的选择，切换后从下一轮生效。已有图片需重新分析提示词再重绘，才能采用新的分镜。
         </p>
 
         <div v-if="settings.nai.comicMode" class="bbi-num-row">
@@ -1318,8 +1325,8 @@ async function removeVibe(vibe: NaiVibe) {
             aria-label="留白方案"
           />
         </div>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          默认「天地出血」:上下贴边、同行窄间距、跨行宽间距。控制页面边缘与画格间距的观感。
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+          {{ selectedComicGutter.description }}
         </p>
 
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">
@@ -1361,7 +1368,7 @@ async function removeVibe(vibe: NaiVibe) {
           placeholder="自定义规则文本,追加在漫画规范末尾,与规范冲突时以本块为准"
         />
         <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          默认含:女性胸部加强 + 男性面部弱化 + 分镜女性在场规则(每格必有女角色) + 特写切入格定位顺序(胸/臀/下体/腿/腰/脸)。可自由改写,改完下张图生效。
+          默认含:女性胸部加强 + 男性面部弱化 + 分镜女性在场规则(每格必有女角色) + 特写切入格定位顺序(胸/臀/下体/腿/腰/脸)。可自由改写，后续新生成的提示词采用修改后的规则；进行中的流式轮次沿用开始时的选择。
         </p>
 
         <div class="bbi-num-row">

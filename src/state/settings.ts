@@ -310,7 +310,7 @@ export interface NaiSettings extends BackendConn {
   /**
    * 漫画页分镜风格(comicMode 开启时生效)。取值见 COMIC_PANEL_STYLES 的 id;
    * 默认 eromanga(本子肉感)。风格块由 buildComicAddenda 注入规范,
-   * 通用映画硬规则(主格/每格大小不同/景别/位置称呼)是规范底座,任何风格都生效。
+   * 通用映画规则(主次/景别/位置称呼)是底座；四格与日常按所选风格保留均衡分格例外。
    */
   comicPanelStyle?: string;
   /**
@@ -1103,7 +1103,7 @@ Text: 该人物本格对白原句(无对白则省略)
 ━━━ 三、分镜规则 ━━━
 1. 每页只写一个 @page;@panel 按日漫阅读顺序(从右到左、先上后下)编号 P1、P2…;角色编号**全页统一**:按首次入画顺序定为 C1、C2、C3…,此后每格复用同一编号(同一角色在 P1 是 @character C1,在 P2、P3 仍是 @character C1)——V5 靠编号识别跨格同人,换格重编号会加重串脸。
 2. @non_character、Text、@negative 没有内容时整段直接省略,不写空段。
-3. 页面形态:普通分格页写 comic;整页单格写 full page comic。画格数量以 2～6 格为主;主格承载本页核心事件,面积应占页面一半以上,**主格不必等于 P1**(P 编号是阅读顺序,主格是面积与戏剧重心)。除「经典四格」风格外,禁止把每页套成均匀四格,各画格大小应有变化。**位置称呼系统**:为每格确定一个本页内可区分的「位置+大小」称呼(如右上小格/左侧纵长格/底部通栏主格),页面布局、画格描述与人物段使用同一空间称呼,不让同一称呼指向两个不同画格;写入 <image> 时位置改写成英文完整句,例如 This is the small panel in the upper right of the page.
+3. 页面形态:普通分格页写 comic;整页单格写 full page comic。画格数量以 2～6 格为主;强调型分镜的主格承载本页核心事件、面积应占页面一半以上,**主格不必等于 P1**(P 编号是阅读顺序,主格是面积与戏剧重心)。经典四格采用均衡四格;轻松日常、喜剧日常优先规整节拍,这三类不强制主格过半。其余风格禁止把每页套成均匀四格,各画格大小应有变化。**位置称呼系统**:为每格确定一个本页内可区分的「位置+大小」称呼(如右上小格/左侧纵长格/底部通栏主格),页面布局、画格描述与人物段使用同一空间称呼,不让同一称呼指向两个不同画格;写入 <image> 时位置改写成英文完整句,例如 This is the small panel in the upper right of the page.
 4. **@page 的全局视觉标签必须包含 high complexity**(V5 官方复杂度标签,细节密度显著提升);只有刻意追求极简/留白风格的页面才降为 medium complexity。追求极华丽演出时可写 ultra complexity。
 5. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情。
 6. 环境延续:连续页共享同一场景时,后续页的环境描述可以简化,但光源方向与时间必须保持一致。
@@ -1118,49 +1118,57 @@ Text: 该人物本格对白原句(无对白则省略)
 
 /**
  * 漫画页分镜风格(comicPanelStyle 的可选值)。rule 文本会作为「五、分镜风格与画面执行」
- * 的风格块注入规范;通用映画硬规则在规范底座(第三节)里,任何风格都生效。
+ * 的风格块注入规范;通用规则在规范底座中,四格与日常保留均衡分格例外。
  * 文案借鉴 1.3.1 预设的七套分镜文法 + 通用映画文法。
  */
-export const COMIC_PANEL_STYLES: ReadonlyArray<{ id: string; label: string; rule: string }> = [
+export const COMIC_PANEL_STYLES: ReadonlyArray<{ id: string; label: string; description: string; rule: string }> = [
   {
     id: 'eromanga',
     label: '本子肉感(默认)',
+    description: '大主格展示核心互动，边角嵌入局部或神态特写，斜切边框贴合人物动势；重点是大画面与细节切入的对照。',
     rule: '本子肉感分镜:每页必设一处核心主画格,完整呈现互动全貌与肢体纠缠;在大格边角紧贴嵌入极近特写切入小格(close-up, cut-in),收束视觉焦点至神态与接触点;画格边框顺应卧躺或交缠的身体线条作动态斜切(The panel border follows the curve of the body.)。画格大小与形状写成英文完整句,例如 The main panel fills most of the page.',
   },
   {
     id: 'universal',
     label: '通用映画',
+    description: '像电影剪辑一样安排远、中、近景：交代环境、呈现互动、突出反应与细节。版式随事件变化，不固定格数。',
     rule: '通用映画分镜:以演出目的选景别——远景交代空间、中景呈现互动、近景突出细节;主格是面积与戏剧重心,不必等于 P1;连续反应镜头可沿用相同景别;时间变化或转场时安排环境建立画面,宏大环境可给大格或整页单格。',
   },
   {
     id: 'shounen',
     label: '少年热血',
+    description: '放大核心动作，配合斜切大格、速度线与冲击线，让视线快速跳转；适合动作高潮和强烈对抗。',
     rule: '少年热血分镜:核心动势格显著扩大(大通栏或斜切大格占半页以上);相邻画格强对撞,至少两格大角度不规则斜切边框;视线激烈跳跃,动作与冲击力优先于背景;绘图词用 motion lines, speed lines, emphasis lines。画格大小与形状写成英文完整句,例如 The main panel takes up more than half of the page. Adjacent panels have sharp diagonal borders.',
   },
   {
     id: 'seinen',
     label: '悬疑推理',
+    description: '横向长格、眼神与线索特写交替出现，用克制的节奏和停顿积累悬念，再突出关键揭示。',
     rule: '悬疑分镜:宽画幅横向长视线格;节奏凝重克制,多层级微表情与眼神阴影特写(close-up, shaded face);强调细节物证与视线错落,制造屏息压迫感;戏剧性停顿只通过画格数量、大小与节奏落实,不写入 <image>。画格形状写成英文完整句,例如 A wide horizontal panel stretches across the page.',
   },
   {
     id: 'yonkoma',
     label: '经典四格',
-    rule: '经典四格分镜:每页四格按起承转合排布(铺垫→发展→转折→收束),格与格大小可微调但结构规整;最后一格承载笑点或结论的定格时刻。',
+    description: '固定四格，通常等宽纵向排列，按起、承、转、合推进；各格大小均衡，最后一格收束或落下笑点。',
+    rule: '经典四格分镜:每页严格四格,以等宽矩形的垂直四格或清晰阶梯布局按起承转合排布(铺垫→发展→转折→收束),大小均衡、结构规整;不套用主格面积过半要求。最后一格承载笑点或结论的定格时刻。',
   },
   {
     id: 'shoujo',
     label: '恋爱少女',
+    description: '以花卉、蕾丝和光点组织柔和画框，常用纵长人物格与表情特写；人物可越出画框，突出情绪与氛围。',
     rule: '装饰系少女分镜:画格边框以花卉、蔓藤、羽毛、蕾丝等装饰纹样替代直线(ornate border, lace border);格间散花与光点粒子填充(falling petals);人物可溢出画格与装饰元素交织(outside border);竖向全身构图多用,强调姿态优雅;情绪高点以无框满版装饰格承载,装饰密度随情绪浓度升降。',
   },
   {
     id: 'slice',
     label: '轻松日常',
-    rule: '轻松日常分镜:小格为主、节奏轻快;环境格与生活细节小格穿插,情绪松弛;重要瞬间偶用一格放大的定格,其余保持均匀温和的推进。',
+    description: '规整、稳定的横向画格，留出松弛的阅读节奏；通过日常细节与轻微表情变化推进，少用斜切和重叠。',
+    rule: '轻松日常分镜:规整横向画格为主、间距宽松均匀,按铺垫→铺垫→反应落差的松弛三拍推进;角色细微表情与生活细节是视觉锚点。避免倾斜格和重叠格,画格边界清晰稳定,不强制单一主格面积过半;重要瞬间可适度放大,其余保持温和自然的节拍。',
   },
   {
     id: 'comedy',
     label: '喜剧日常',
-    rule: '喜剧日常分镜:夸张表情特写格与反应格连续快速切换,节奏跳跃;「吐槽→装傻」的往返用两格对切呈现;笑点格可放大并加 emphasis lines 强调。',
+    description: '画格方正规整，靠正常表情与夸张反应、装傻与吐槽的快速交替制造笑点；背景简洁，重视对话节奏。',
+    rule: '喜剧日常分镜:画格方正规整、排布清晰,以适中偏多的画格组织起承转结和紧凑吐槽链条;正常表情与夸张反应快速交替,装傻→吐槽的往返用对切呈现。背景简洁或省略,人物站位与视线关系清楚,喜剧可读性优先;不靠跳跃格形抢节奏,不强制单一主格面积过半,笑点格可适度放大并用 emphasis lines 强调。',
   },
 ];
 
@@ -1168,25 +1176,29 @@ export const COMIC_PANEL_STYLES: ReadonlyArray<{ id: string; label: string; rule
  * 漫画页留白方案(comicGutter 的可选值)。rule 注入规范的「五、分镜风格与画面执行」。
  * 文案对应 1.3.1 预设的四套留白文法。
  */
-export const COMIC_GUTTER_MODES: ReadonlyArray<{ id: string; label: string; rule: string }> = [
+export const COMIC_GUTTER_MODES: ReadonlyArray<{ id: string; label: string; description: string; rule: string }> = [
   {
     id: 'bleed',
     label: '天地出血(默认)',
+    description: '画面上下贴页边；同行画格靠近，跨行留出较宽间距，关键画格可延伸到某一侧页边。',
     rule: '留白与出血(天地出血):天头地脚贴边无白边;同行画格用超窄紧凑间距(瞬时连续),跨行用宽间距(时间呼吸停顿);关键格允许单侧出血,并在 <image> 中用英文完整句写明出血方向,例如 The key panel bleeds off the right edge of the page.',
   },
   {
     id: 'boxed',
     label: '全封闭内枠',
+    description: '四周保留均匀外白边，画格收在安全内框中，像规整的漫画单行本页面。',
     rule: '留白与出血(全封闭内枠):经典单行本规整内陷,四周保留均匀白边安全内框;在 @page 页面基础词写 white border,可补英文完整句,例如 Every panel sits inside an even white margin.',
   },
   {
     id: 'fullbleed',
     label: '沉浸全出血',
+    description: '画面向四周延伸至页边，不留外白边；内部用清楚的分隔线或构图边界区分画格。',
     rule: '留白与出血(沉浸全出血):全画格向四周极限延伸至画布边缘,无边框全出血;相邻画格通过清晰分隔线或可辨的构图边界区分;在 @page 描述全页沉浸式全出血,例如 Every panel extends to the edges of the page with no margin.',
   },
   {
     id: 'ink',
     label: '纯黑线无白边',
+    description: '画格紧贴，外侧和格间都不留白色缝隙，用粗黑墨线分隔，页面更紧凑。',
     rule: '留白与出血(纯黑线):全幅零白留白,画格与画格之间无白色缝隙,画布边缘无外白边,完全由粗黑墨线密着切分;在 @page 写 black border,画格分隔写成英文完整句,例如 The panels touch each other and are separated only by thick black lines.',
   },
 ];
@@ -1224,16 +1236,20 @@ export const DEFAULT_COMIC_NSFW_RULES = `━━━ NSFW 工程规则(仅分级�
  * 漫画页模式规范附加块(A1~A4):风格/留白/色彩/光影/道具场景一致性/防夺舍。
  * 追加在 DEFAULT_NAI_COMIC_SPEC 之后,构成完整规范。
  */
+export function resolveComicPanelStyle(id?: string) {
+  return COMIC_PANEL_STYLES.find(style => style.id === id) ?? COMIC_PANEL_STYLES[0];
+}
+export function resolveComicGutterMode(id?: string) {
+  return COMIC_GUTTER_MODES.find(gutter => gutter.id === id) ?? COMIC_GUTTER_MODES[0];
+}
 export function buildComicAddenda(nai: {
   comicPanelStyle?: string;
   comicGutter?: string;
   comicLighting?: boolean;
   comicAntiPossession?: boolean;
 }): string {
-  const style =
-    COMIC_PANEL_STYLES.find(s => s.id === nai.comicPanelStyle) ?? COMIC_PANEL_STYLES[0];
-  const gutter =
-    COMIC_GUTTER_MODES.find(g => g.id === nai.comicGutter) ?? COMIC_GUTTER_MODES[0];
+  const style = resolveComicPanelStyle(nai.comicPanelStyle);
+  const gutter = resolveComicGutterMode(nai.comicGutter);
   const lines: string[] = [];
   lines.push('');
   lines.push('━━━ 五、分镜风格与画面执行 ━━━');
@@ -1302,7 +1318,7 @@ E. 分页规划
    - 每页的 tag 都是完整 <image>...</image> 页文本,且 @page、每个 @panel、每个 @character 标记都实际存在、各自独占一行(JSON 里写成 \\n)——任何标记被省略或并入上一行都是致命错误。
    - 有且只有一个 @page,@panel 按日漫阅读顺序编号,每个可见人物都有 @character 段,库中角色外貌逐字照抄;**同人角色的 @character 段首是 fandom 身份 tag**(库中 fields.fandom 逐字),不是的话立即改对。
    - nl 全部为空字符串,characters 全部为空数组,negative 全部为空字符串,size 遵循任务协议的画幅规则，未锁方向时用 portrait。
-   - 每格景别只写一个且容纳该格核心动作;主格承载本页核心事件且面积过半。
+   - 每格景别只写一个且容纳该格核心动作;主次与所选风格一致:经典四格均衡四格,轻松日常和喜剧日常优先规整节拍;其他风格的主格承载本页核心事件且面积过半。
    - 对白原句保留原文与标点,归属人物正确;无文字的段没有写 Text:。
    - 剧情事实可追溯到正文,没有编造人物、动作或道具;页数与张数设定一致;建档与 changes 已完成。`;
 
@@ -1342,7 +1358,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 5. 条目 nl:恒为空字符串 ""。
 
 ━━━ 四、分镜与页面规则 ━━━
-1. 画格数量以 2~6 格为主;主格承载本页核心事件、面积过半,**主格不必是阅读顺序第一格**;除「经典四格」风格外,禁止把每页套成均匀四格,各画格大小应有变化。
+1. 画格数量以 2~6 格为主;强调型分镜的主格承载本页核心事件、面积过半,**主格不必是阅读顺序第一格**;经典四格采用均衡四格,轻松日常、喜剧日常优先规整节拍,这三类不强制主格过半。其余风格禁止把每页套成均匀四格,各画格大小应有变化。
 2. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情;特写切入小格(close-up, cut-in)按风格块执行,切入格的人物同样写一条 Character Prompt。
 3. 剧情事实(在场人物、动作、道具、事件)严格以正文为准,不得编造;镜头、构图、光影、氛围、画格布局由你主动补全——正文没写不是省略的理由。一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。
 4. 环境延续:连续页共享同一场景时,后续页环境描述可简化,但 Base 行的光源方向与时间必须保持一致;正文或前页已出现的关键道具与场景保持固定外观,跨页复用同一描述。
@@ -1409,7 +1425,7 @@ E. 分页规划
    - 每个 characters[] 条目都含至少一个动作/姿态/接触词,没有纯外貌堆砌的静态条目。
    - Base 行没有个人外貌、衣着或表情；格级核心动作可用于对齐布局，个人细节在 characters[] 条目里。
    - nl 全部为空字符串,negative 全部为空字符串,size 遵循任务协议的画幅规则，未锁方向时用 portrait。
-   - 每格景别只写一个且容纳该格核心动作;主格承载本页核心事件且面积过半。
+   - 每格景别只写一个且容纳该格核心动作;主次与所选风格一致:经典四格均衡四格,轻松日常和喜剧日常优先规整节拍;其他风格的主格承载本页核心事件且面积过半。
    - 对白原句保留原文与标点,归属人物正确,写在对应条目末行 Text: 之后;无对白的条目没有 Text: 行。
    - 剧情事实可追溯到正文,没有编造人物、动作或道具;页数与张数设定一致;建档与 changes 已完成。`;
 
