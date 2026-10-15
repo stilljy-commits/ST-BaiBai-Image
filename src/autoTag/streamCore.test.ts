@@ -62,6 +62,14 @@ describe('streamed task lifetime',()=>{
     const a=run.add(input)!,b=run.add(input)!;run.cancelJob(a);run.finishInput();await run.analysisSettled();expect(b.phase).toBe('error');
     fail=false;run.retry(b);await run.analysisSettled();expect(single).toHaveBeenCalledTimes(2);expect(b.phase).toBe('pending');
   });
+  it('counts supplemental analysis against the request limit even when a failed card is manually retried',async()=>{
+    let fail=true;const single=vi.fn(async()=>{if(fail)throw Error('invalid response');return 'prompt';});
+    const run=new StreamRun<string,string>('extra-limit',1,1,false,{analyze:single,generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}});
+    const job=run.add(input)!;await run.analysisSettled();expect(job.phase).toBe('error');
+    const extra=deferred<void>(),external=run.additionalAnalysis(()=>extra.promise);await flush();expect(run.working).toBe(true);
+    fail=false;run.retry(job);await flush();expect(single).toHaveBeenCalledOnce();
+    extra.resolve();await external;await run.analysisSettled();expect(single).toHaveBeenCalledTimes(2);expect(job.phase).toBe('pending');
+  });
   it('attaches without waiting for analysis, then saves the same late task once',async()=>{
     const analysis=deferred<string>(),image=deferred<string>();
     const commit=vi.fn(async job=>!!job.result),generate=vi.fn(()=>image.promise),release=vi.fn();

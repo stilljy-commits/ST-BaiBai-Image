@@ -376,23 +376,26 @@ async function supplement(s: Session, count: number): Promise<void> {
     (tail.length > 1200 && segment.sourceLine >= tailStart) || gaps.some(gap => starts[segment.sourceLine] >= gap.start && starts[segment.sourceLine] < gap.end));
   if (!candidates.length) return;
   const target = { segments: candidates, promptText: candidates.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n') };
-  const entries = charTagsBeforeFloor(s.binding.floor + 1), known = new Set(entries.map(entry => entry.name));
-  const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
-  const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding.floor, lockedCharTagNames()), lockedCharTagNames());
   const priorImages = parseImageTags(s.body).map(raw => parseImageTagContent(raw).tag.slice(0, 300)).join('；');
   const note = `文末补充配图：已接受 ${count} 张，最多补 ${capacity} 张，至少补 ${needed} 张。已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。`;
-  const messages = await buildAutoTagMessages(s.context, s.binding.floor, { ...s.options, minImages: needed, maxImages: capacity },
-    readBookMemory(s.binding.floor, s.body, s.context.name1), target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
   const controller = s.controller;
   let plan: ReturnType<typeof parseImagePlan> | undefined;
   let lastError: unknown;
-  for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
-    if (controller.signal.aborted) return;
-    try {
-      await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, capacity), anchors); });
-      if (plan) break;
-    } catch (error) { lastError = error; }
-  }
+  await s.core.additionalAnalysis(async () => {
+    if (controller.signal.aborted || !ownerValid(s)) return;
+    const entries = charTagsBeforeFloor(s.binding!.floor + 1), known = new Set(entries.map(entry => entry.name));
+    const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
+    const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames());
+    const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: capacity },
+      readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+    for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
+      if (controller.signal.aborted) return;
+      try {
+        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, capacity), anchors); });
+        if (plan) break;
+      } catch (error) { lastError = error; }
+    }
+  });
   if (!plan) throw lastError ?? new Error('补图分析未返回有效结果');
   if (!plan?.images.length || !ownerValid(s)) return;
   const added = plan.images.map(image => s.core.add({ raw: '', intent: '文末补充画面', text: '', prefix: '', sourceLine: image.sourceLine },

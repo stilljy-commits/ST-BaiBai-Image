@@ -82,6 +82,15 @@ export class StreamRun<P, R> {
     await new Promise<void>(resolve => this.analysisWaiters.add(resolve));
   }
 
+  /** Reserve a real analysis slot so a manual retry cannot overlap a supplemental call. */
+  async additionalAnalysis<T>(task: () => Promise<T>): Promise<T> {
+    do { await this.analysisSettled(); } while (this.analyzing || this.queue.length);
+    if (this.stopped) throw new DOMException('Cancelled', 'AbortError');
+    this.analyzing++;
+    try { return await task(); }
+    finally { this.analyzing--; this.pump(); this.dependencies.idle?.(); }
+  }
+
   retry(job: StreamJob<P, R>): void {
     if (this.stopped || job.saved || this.generating.has(job.id) || this.commits.has(job.id) || job.phase === 'analyzing') return;
     job.controller = new AbortController(); job.error = undefined;
@@ -91,7 +100,7 @@ export class StreamRun<P, R> {
     else { job.phase = 'analyzing'; this.singles.add(job.id); this.queue.push(job); this.touch(job); this.pump(); }
   }
 
-  get working(): boolean { return this.active.size > 0 || this.queue.length > 0; }
+  get working(): boolean { return this.active.size > 0 || this.analyzing > 0 || this.queue.length > 0; }
   async settled(): Promise<void> { while (this.active.size) await Promise.all([...this.active]); }
 
   private track(task: Promise<void>): void {
