@@ -1,13 +1,13 @@
-# 柏宝绘 · 流式重构版 0.4.10
+# 柏宝绘 · 流式重构版 0.4.11
 
 安装/更新链接：https://github.com/stilljy-commits/ST-BaiBai-Image
 
-新增「简单模式 / 标准模式」。NAI渠道开启漫画页模式后，在「漫画分析模式」选择；升级后默认保留标准模式，可随时切回。简单模式围绕核心事件直接写提示词，减少细部推敲，普通事件以2～3格为主；经典四格仍为四格，分镜风格、对白与自定义附加规则继续生效。
+新增 Google Vertex AI 副 API，支持完整版 Service Account 与快速版 Express，使用酒馆/TT 已保存的对应凭据。插件「副 API → 新建渠道 → 接口类型」选择 Google Vertex AI，填写模型与认证模式；也可读取 TT 当前 Vertex 的公开连接设置。副 API 独立运行，不切换正文连接。Express 是认证模式，不承诺更快。
 
-V1/V2、角色库及变化时序、固定每3个标记合批、短尾批、图片原位更新与浮层收尾保留。进行中的流式轮次沿用开始时的模式。模型、思考强度及NAI参数沿用用户设置。
+新增「每批分析图片数」：1～50，默认3。与分析并发、NAI出图并发分别设置；设为5时，13张图按5＋5＋3分析。正文结束立即处理余数，修改从下一轮生效。修复字数统计和信息小结后误出尾图的问题，统计文字保留。
 
-验证：72个测试文件，954项通过、3项原有跳过；类型检查与生产构建通过。8组离线提示词对照中，标准模式与0.4.9完全一致。未主动调用真实tags或NAI接口，实际速度和画面效果需要对照测试。
+简单/标准模式及现有模型、思考档位沿用。研究中的 tags 核心重构尚未加入。验证：75个测试文件，1004项通过、3项原有跳过；类型检查、构建通过。未主动调用真实Vertex/NAI，实际速度需对照测试。
 
-[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.10.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[956a8dc6403e5103d74624421714c418c87d94e0](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/956a8dc6403e5103d74624421714c418c87d94e0)。
+[完整版本说明](https://github.com/stilljy-commits/ST-BaiBai-Image/blob/codex/stream-rebuild/RELEASE-0.4.11.md)。main存放酒馆发布文件，完整源码在codex/stream-rebuild。源码提交：[5294df91acbfba2f72fb14263e1137899c374ecb](https://github.com/stilljy-commits/ST-BaiBai-Image/commit/5294df91acbfba2f72fb14263e1137899c374ecb)。
 
 原作者及上游：[baibai-git/ST-BaiBai-Image](https://github.com/baibai-git/ST-BaiBai-Image)。
