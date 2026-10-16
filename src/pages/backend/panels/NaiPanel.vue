@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { comicReasoningKey, comicReasoningCapability, type ComicReasoning } from '@/api/comicReasoning';
+import { getTagGenChannel } from '@/state/settings';
 import {
   CHATU8_SETTINGS_KEY,
   detectChatu8Artists,
@@ -465,12 +467,24 @@ const vibesSupported = computed(() => naiSupportsVibes(settings.nai.model));
 const samplerOptions = computed(() => naiSamplers(settings.nai.model));
 
 /** 漫画页模式:分镜风格与留白方案下拉选项(来自设置常量,与规范注入同源)。 */
+const comicReasoningCaps = computed(() => comicReasoningCapability(getTagGenChannel()));
+const comicReasoningOptions = computed(() => [
+  {value:'follow',label:'跟随渠道（默认）'},
+  ...(comicReasoningCaps.value.low ? [{value:'low',label:'低推理'}] : []),
+  ...(comicReasoningCaps.value.off ? [{value:'off',label:'关闭推理'}] : []),
+]);
+const comicReasoning = computed({get:() => {
+  const key=comicReasoningKey(getTagGenChannel()); const value=settings.nai.comicReasoningByModel?.[key] ?? 'follow';
+  return comicReasoningOptions.value.some(o=>o.value===value)?value:'follow';
+},set:(value:string) => {
+  const key=comicReasoningKey(getTagGenChannel());if(key) settings.nai.comicReasoningByModel={...settings.nai.comicReasoningByModel,[key]:value as ComicReasoning};
+}});
 const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.label }));
 const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
-const comicAnalysisOptions = [{ value: 'standard', label: '标准模式' }, { value: 'simple', label: '简单模式' }];
+const comicAnalysisOptions = [{ value: 'standard', label: '标准模式' }, { value: 'simple', label: '简单模式' }, { value: 'fast', label: '极速模式' }];
 const comicAnalysisMode = computed({
   get: () => settings.nai.comicAnalysisMode ?? 'standard',
-  set: (value: string) => { settings.nai.comicAnalysisMode = value === 'simple' ? 'simple' : 'standard'; },
+  set: (value: string) => { settings.nai.comicAnalysisMode = value === 'fast' ? 'fast' : value === 'simple' ? 'simple' : 'standard'; },
 });
 const comicStyle = computed({ get: () => settings.nai.comicPanelStyle ?? 'eromanga', set: (value: string) => { settings.nai.comicPanelStyle = value; } });
 const comicGutter = computed({ get: () => settings.nai.comicGutter ?? 'bleed', set: (value: string) => { settings.nai.comicGutter = value; } });
@@ -1291,13 +1305,23 @@ async function removeVibe(vibe: NaiVibe) {
           <BbiSelect v-model="comicAnalysisMode" :options="comicAnalysisOptions" aria-label="漫画分析模式" />
         </div>
         <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
-          {{ comicAnalysisMode === 'simple'
-            ? '简单模式：围绕核心事件生成提示词，普通事件以2～3格为主，减少细部姿态、服装部件和光源推敲。人物身份、核心动作、所选分镜风格与对白设置继续生效，经典四格仍为四格。'
-            : '标准模式：沿用完整的分镜、细节与连续性要求。升级后默认保留此模式，可随时切回。' }}
-          切换从下一次分析生效；进行中的流式轮次沿用开始时的模式，已有提示词和图片保持原样。模型、思考强度和NAI生图参数沿用你的设置。
+          {{ comicAnalysisMode === 'fast'
+            ? '极速模式：AI输出简短分镜，插件补齐固定外貌和生图格式；每页就绪后提前生图，并复用已确认的连续状态。画格数量自然选择，经典四格仍为四格。实际速度因模型而异。'
+            : comicAnalysisMode === 'simple'
+              ? '简单模式：沿用此前的精简分析规则，由AI直接编写完整生图提示词。'
+              : '标准模式：沿用完整的分镜、细节与连续性要求。' }}
+          升级保留原来的选择。切换从下一次分析生效；进行中的流式轮次沿用开始时的模式。人物身份、分镜风格、对白和NAI参数继续使用原设置；标准和简单模式的推理强度沿用渠道。
         </p>
-        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'simple'" class="bbi-field-hint">
+        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-field-hint">
           自定义附加规则及已开启的工程规则仍生效；其中要求的细节越多，提速空间越有限。
+        </p>
+
+        <div v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-num-row">
+          <span class="bbi-field-label">极速模式推理方式</span>
+          <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="极速模式推理方式" />
+        </div>
+        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-field-hint" aria-live="polite">
+          {{ comicReasoningCaps.label }}。按副API渠道和模型分别保存；换到未适配模型时跟随渠道。关闭推理可能降低复杂情节的理解准确性，可随时恢复；不影响主API正文和其他副API任务。
         </p>
 
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">

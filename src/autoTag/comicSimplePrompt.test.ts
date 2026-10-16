@@ -32,6 +32,21 @@ async function build(v2 = true, text = true, fixed = true) {
 }
 
 describe('switchable simple comic analysis',()=>{
+  it('uses the new protocol only in fast mode and keeps both previous prompts intact',async()=>{
+    const {profile,environment}=fixture();const batch=prepareStreamBatch(jobs,[]);
+    const args=[ctx,0,{...settings.autoTag,minImages:3,maxImages:3},null,batch.target,null,batch.instructions,profile] as const;
+    for(const mode of ['standard','simple'] as const){
+      environment.nai.comicAnalysisMode=mode;
+      const existing=await buildAutoTagMessages(...args,environment,'fixed-markers');
+      expect(await buildAutoTagMessages(...args,environment,'fixed-markers','FAST_PROTOCOL')).toEqual(existing);
+    }
+    environment.nai.comicAnalysisMode='fast';
+    const fast=await buildAutoTagMessages(...args,environment,'fixed-markers','FAST_PROTOCOL');
+    expect(fast.some(message=>message.content==='FAST_PROTOCOL')).toBe(true);
+    expect(fast.some(message=>message.content.startsWith('【漫画分析·简单模式】'))).toBe(false);
+    expect(fast.some(message=>message.content.includes('<thinking>'))).toBe(false);
+    await expect(buildAutoTagMessages(...args,environment,'fixed-markers')).rejects.toThrow('缺少分镜数据协议');
+  });
   it.each([true,false])('keeps the native V2=%s format and maps three final images back to their markers',async(v2)=>{
     const {messages,prompt,sample,batch}=await build(v2);
     const raw=JSON.stringify({...sample,images:batch.groups.map(group=>({...sample.images[0],position:group.markerId}))});

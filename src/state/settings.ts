@@ -1,3 +1,4 @@
+import { normalizeComicReasoningMap, type ComicReasoning } from '@/api/comicReasoning';
 import {
   normalizeSimpleConfig,
   simpleDefaults,
@@ -302,8 +303,9 @@ export interface NaiSettings extends BackendConn {
    * 两套协议互斥;切换后下一张图生效,正文里的存量旧 tag 不受影响。
    */
   comicV2?: boolean;
-  /** 漫画提示词分析精度。旧配置默认 standard；simple 简化画面决策，不改变出图参数。 */
-  comicAnalysisMode?: 'standard' | 'simple';
+  /** 保留 standard / simple；fast 为独立的简短分镜引擎，不自动迁移旧选择。 */
+  comicAnalysisMode?: 'standard' | 'simple' | 'fast';
+  comicReasoningByModel?: Record<string, ComicReasoning>;
   /**
    * 漫画页对白上画(comicMode 开启时生效)。开启 = Text/气泡指令正常输出;
    * 关闭 = 页面纯视觉叙事,不写 Text、不画文字——发送端会剥掉模型仍写出的
@@ -542,7 +544,6 @@ export interface AutoTagSettings {
   streamAnalysisConcurrency?: number;
   /** Number of image markers per analysis request (1–50, default 3), independent of concurrency. */
   streamAnalysisBatchSize?: number;
-  streamWorldBook?: string;
   /** 可编辑提示词集(破限/后端规范/思维链);空串 = 回落内置默认。 */
   prompts: AutoTagPrompts;
 }
@@ -1611,6 +1612,7 @@ function naiDefaults(): NaiSettings {
     comicMode: false,
     comicV2: true,
     comicAnalysisMode: 'standard',
+    comicReasoningByModel: {},
     comicText: true,
     comicPanelStyle: 'eromanga',
     comicGutter: 'bleed',
@@ -1668,7 +1670,6 @@ function defaults(): ImageSettings {
       streamGapSupplement: false,
       streamAnalysisConcurrency: 2,
       streamAnalysisBatchSize: 3,
-      streamWorldBook: '',
       prompts: {
         jailbreak: '',
         naiSpec: '',
@@ -2158,7 +2159,8 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
       typeof o.normalizeRefStrength === 'boolean' ? o.normalizeRefStrength : def.normalizeRefStrength,
     comicMode: typeof o.comicMode === 'boolean' ? o.comicMode : def.comicMode,
     comicV2: typeof o.comicV2 === 'boolean' ? o.comicV2 : def.comicV2,
-    comicAnalysisMode: o.comicAnalysisMode === 'simple' ? 'simple' : 'standard',
+    comicAnalysisMode: o.comicAnalysisMode === 'fast' ? 'fast' : o.comicAnalysisMode === 'simple' ? 'simple' : 'standard',
+    comicReasoningByModel: normalizeComicReasoningMap(o.comicReasoningByModel),
     comicText: typeof o.comicText === 'boolean' ? o.comicText : def.comicText,
     comicPanelStyle:
       COMIC_PANEL_STYLES.find(s => s.id === o.comicPanelStyle)?.id ?? def.comicPanelStyle,
@@ -2300,7 +2302,6 @@ function normalize(raw: unknown): ImageSettings {
     autoGenerate:
       typeof rt.autoGenerate === 'boolean' ? rt.autoGenerate : d.autoTag.autoGenerate,
     streamGen: typeof rt.streamGen === 'boolean' ? rt.streamGen : d.autoTag.streamGen,
-    streamWorldBook: typeof rt.streamWorldBook === 'string' ? rt.streamWorldBook : '',
     streamPreview:
       typeof rt.streamPreview === 'boolean' ? rt.streamPreview : d.autoTag.streamPreview,
     streamGapSupplement:

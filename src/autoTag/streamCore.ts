@@ -11,6 +11,7 @@ export interface StreamJob<P, R> {
   payload?: P;
   result?: R;
   error?: string;
+  analysisError?: string;
   attached: boolean;
   saved: boolean;
   revision: number;
@@ -18,7 +19,7 @@ export interface StreamJob<P, R> {
 export interface StreamDependencies<P, R> {
   analyze: (job: StreamJob<P, R>) => Promise<P>;
   /** Each configured group is analyzed together, with one independent result per marker. */
-  analyzeBatch?: (jobs: StreamJob<P, R>[]) => Promise<P[]>;
+  analyzeBatch?: (jobs: StreamJob<P, R>[], ready: (index: number, payload: P) => void) => Promise<P[]>;
   batchFailed?: (jobs: StreamJob<P, R>[], error: unknown) => void;
   generate: (payload: P, job: StreamJob<P, R>) => Promise<R>;
   commit: (job: StreamJob<P, R>) => Promise<boolean>;
@@ -127,22 +128,25 @@ export class StreamRun<P, R> {
       this.analyzing++;
       this.track((async () => {
         try {
-          const payloads = jobs.length === 1 ? [await this.dependencies.analyze(jobs[0])] : await this.dependencies.analyzeBatch!(jobs);
-          if (payloads.length !== jobs.length) throw new Error('批量分析未覆盖所有标记');
-          for (let i = 0; i < jobs.length; i++) {
-            const item = jobs[i];
-            if (item.controller.signal.aborted) continue;
-            item.payload = payloads[i];
+          const accept = (index: number, payload: P) => {
+            const item = jobs[index];
+            if (!item || item.controller.signal.aborted || item.payload) return;
+            item.payload = payload;
             item.phase = this.autoGenerate ? 'generating' : 'pending'; this.touch(item);
             if (this.autoGenerate) this.startGeneration(item);
+          };
+          const payloads = jobs.length === 1 ? [await this.dependencies.analyze(jobs[0])] : await this.dependencies.analyzeBatch!(jobs, accept);
+          if (payloads.length !== jobs.length) throw new Error('批量分析未覆盖所有标记');
+          for (let i = 0; i < jobs.length; i++) {
+            accept(i, payloads[i]);
           }
         } catch (error) {
           if (jobs.length > 1 && !this.stopped) {
-            const remaining = jobs.filter(item => !item.controller.signal.aborted);
+            const remaining = jobs.filter(item => !item.controller.signal.aborted && !item.payload);
             for (const item of remaining) this.singles.add(item.id);
             this.queue.unshift(...remaining);
-            this.dependencies.batchFailed?.(remaining, error);
-          } else for (const item of jobs) this.failed(item, error);
+            if (remaining.length) this.dependencies.batchFailed?.(remaining, error);
+          } else for (const item of jobs) if (!item.payload) this.failed(item, error);
         }
         finally { this.analyzing--; this.pump(); }
       })());

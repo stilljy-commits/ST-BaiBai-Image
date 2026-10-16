@@ -26,8 +26,8 @@ export function syncMarkerInjection(): void {
     try {
       ctx.setExtensionPrompt(KEY, active() && eligibleGeneration ? generationRule : '', 1, 1, false, 0, () => eligibleGeneration && active());
     } catch (error) { console.warn('[BBI][AutoTagDebug] marker-inject:register-failed', String(error)); }
-  } else if (active() && !ctx?.eventTypes.GENERATE_AFTER_DATA && !settings.autoTag.streamWorldBook?.trim() && !warned) {
-    warned = true; toastr.info('当前客户端未提供标记注入接口，请配置已有的配图规则世界书；无标记时使用原版整楼分析', '柏宝绘');
+  } else if (active() && !ctx?.eventTypes.GENERATE_AFTER_DATA && !warned) {
+    warned = true; toastr.info('当前客户端未提供标记注入接口；无标记时使用整楼分析，请更新客户端以使用自动注入', '柏宝绘');
   }
 }
 

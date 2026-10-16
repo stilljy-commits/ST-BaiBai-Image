@@ -1,6 +1,38 @@
 import type { ApiChannel } from '@/state/settings';
 import { getContext } from '@/st/context';
 
+type VertexModelChannel = Partial<Pick<ApiChannel, 'model' | 'vertexAuthMode'>>;
+
+/** Snapshot the host catalog, without selecting a model or touching its credentials.
+ * TT's Vertex status route returns bypass + an empty list; its own model picker is
+ * the maintained catalog. Read even hidden/full-only options independently of the
+ * MAIN connection's auth mode, then apply this secondary connection's mode instead.
+ */
+export function vertexModelList(channel: VertexModelChannel): string[] {
+  const source = getContext()?.chatCompletionSettings;
+  const custom = source?.custom_models_by_source;
+  const values = new Set<string>();
+  const add = (value: unknown, mode?: string) => {
+    if (typeof value !== 'string') return;
+    const id = value.trim();
+    if (!/^[a-zA-Z0-9][\w./:@-]*$/.test(id)) return;
+    if (channel.vertexAuthMode === 'express' && (mode === 'full' || /^claude-/i.test(id))) return;
+    values.add(id);
+  };
+  if (typeof document !== 'undefined') {
+    for (const option of document.querySelectorAll<HTMLOptionElement>('#model_vertexai_select option')) {
+      add(option.value, option.dataset.mode);
+    }
+  }
+  if (custom && typeof custom === 'object' && !Array.isArray(custom)) {
+    const models = (custom as Record<string, unknown>).vertexai;
+    if (Array.isArray(models)) for (const model of models) add(model);
+  }
+  add(source?.vertexai_model);
+  add(channel.model);
+  return [...values].sort();
+}
+
 /** Read public connection settings only. Never switch the main connection or read secrets. */
 export function currentVertexSettings(): Partial<ApiChannel> {
   const source = getContext()?.chatCompletionSettings;

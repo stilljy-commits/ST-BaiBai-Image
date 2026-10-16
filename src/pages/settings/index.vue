@@ -6,7 +6,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
-import { currentVertexSettings } from '@/api/vertex';
+import { currentVertexSettings, vertexModelList } from '@/api/vertex';
 import { normalizeStreamBatchSize, MAX_STREAM_BATCH_SIZE } from '@/autoTag/batchSettings';
 import { streamBatchSizes } from '@/autoTag/streamCore';
 import {
@@ -486,8 +486,10 @@ const modelMenuOpen = ref(false);
 const modelQuery = ref(''); // 聚焦后用户输入的过滤词;失焦时清空
 // 已拉取到的当前渠道模型列表
 const modelList = computed<string[]>(() => {
-  const id = editingChannel.value?.id;
-  return id ? models.value[id] ?? [] : [];
+  const channel = editingChannel.value;
+  if (!channel) return [];
+  const pulled = models.value[channel.id];
+  return channel.provider === 'vertexai' ? vertexModelList(channel) : pulled ?? [];
 });
 // 过滤:有 query 按子串(大小写不敏感)过滤;为空则显示全部。性能上限 200 条,避免超长列表卡顿。
 const filteredModels = computed<string[]>(() => {
@@ -760,19 +762,6 @@ async function confirmUpdate() {
         </label>
         <p class="bbi-field-hint">同时进行的副API分析批数(1~4)；设为1时依次分析各批，已拿到tags的图片可同时进入出图队列。每批可返回多张tags，NAI仍逐张生图，出图并发在渠道页控制。</p>
 
-        <label class="bbi-num-row">
-          <span class="bbi-field-label">标记规则世界书(自动同步数量)</span>
-          <input
-            v-model="settings.autoTag.streamWorldBook"
-            class="bbi-input"
-            type="text"
-            placeholder="世界书名,留空=不同步"
-          />
-        </label>
-        <p class="bbi-field-hint">
-          填写承载「正文配图标记」规则的世界书名后,上面最少/最多图片数改动时会自动改写该
-          世界书规则条目里的数量行——不用再手动同步数字。只改数量那一行,条目其余内容不动。
-        </p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近 AI 楼数</span>
@@ -1115,7 +1104,7 @@ async function confirmUpdate() {
               <Icon name="refresh" />
             </button>
           </div>
-          <span v-if="channelProvider === 'vertexai'" class="bbi-field-hint">可以直接填写模型名；拉取按钮只读取 TT 当前选择的 Vertex 模型，不是完整远端列表。</span>
+          <span v-if="channelProvider === 'vertexai'" class="bbi-field-hint">可从 TT 的 Vertex 模型列表和自定义模型中独立选择，也可直接输入新模型名；刷新按钮重新读取列表。选择只影响此副 API，不切换主 API。列表来自宿主，账号及地区是否支持以连通性测试为准。</span>
         </label>
         <div class="bbi-channel-row">
           <label class="bbi-mini-field">

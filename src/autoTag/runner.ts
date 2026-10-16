@@ -1,3 +1,5 @@
+import { compactComicSpec, compactLibrary, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
+import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import { planChangeOps } from '@/autoTag/changeOps';
 import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
 import { captureRenderProfile } from '@/autoTag/renderProfile';
@@ -276,16 +278,19 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const profile = autoTagProfile();
     const environment = captureAutoTagEnvironment(profile);
     const renderProfile = captureRenderProfile(environment.nai, environment.backend);
+    const compact:CompactComicContext|undefined = renderProfile.mode !== 'illustration' && environment.nai.comicAnalysisMode === 'fast' ? {target:preparedTarget,entries:anchors.entries,locked:lockedNames,nai:environment.nai,size:profile.lockedSize,min:promptOptions.minImages,max:promptOptions.maxImages}:undefined;
     const messages = await buildAutoTagMessages(
       context,
       floor,
       promptOptions,
       memory,
       preparedTarget,
-      anchors.text,
+      compact ? compactLibrary(compact) : anchors.text,
       slot ? buildSlotTaskNote(rawSource, slot.seq) : '',
       profile,
       environment,
+      'select-scenes',
+      compact ? compactComicSpec(compact) : undefined,
     );
     const channel = getTagGenChannel();
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
@@ -305,7 +310,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         // (直接 let 会被 TS 收窄成 null:闭包内的赋值控制流分析看不见。)
         const parsed: { plan: ImagePlan | null } = { plan: null };
         const validate = (raw: string) => {
-          const candidate = parseImagePlan(
+          const candidate = compact ? parseCompactComic(raw,compact) : parseImagePlan(
             raw,
             preparedTarget.segments,
             promptOptions.minImages,
@@ -334,6 +339,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             signal: controller.signal,
             source,
             validate,
+            ...(compact ? {stream:true,reasoningOverride:comicReasoningOverride(channel,environment.nai.comicReasoningByModel?.[comicReasoningKey(channel)] ?? 'follow')} : {}),
           });
         } else {
           await requestViaMainApi(messages, {

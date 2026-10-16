@@ -2,7 +2,7 @@ import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
 vi.mock('@/st/context',()=>({getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
-vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode}]}));
+vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any,compactSpec:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode,compactSpec}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
 vi.mock('@/autoTag/charAnchors',()=>({resolveCharAnchors:(entries:any[])=>({text:JSON.stringify(entries),entries}),applyPositionedCharRefs:(text:string)=>({text,unknown:[]})}));
 vi.mock('@/state/charTags',()=>({CHAR_TAG_FIELDS:['sex','hair','eyes','fandom'],BBI_CHAR_EXTRA_KEY:'chars',charTagsBeforeFloor:()=>[],lockedCharTagNames:()=>new Set(),readCharTagFloorDelta:()=>null,makeCharTagFloorDelta:(x:any)=>x,recomputeCharTags:()=>{},createCharTagNewOp:(x:any,r:any)=>({...x,kind:'new',reason:r,at:Date.now()}),createCharTagSetOp:(name:any,field:any,value:any,reason:any)=>({kind:'set',name,field,value,reason,at:Date.now()}),emptyCharFields:()=>({}),applyCharTagOps:(entries:any[],ops:any[])=>[...entries,...ops.filter(op=>op.kind==='new').map(op=>({name:op.name,fields:op.fields,raw:op.raw,nl:op.nl,history:[]}))]}));
@@ -21,6 +21,9 @@ const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥�
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
 function finishAnalysis(index:number,count?:number){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
   const markers=[...task.m[0].note.matchAll(/图片 position 固定填 "(M\d+)"/g)].map((m:any)=>m[1]);const positions=markers.length?markers:ids;
+  if(task.m[0].compactSpec){
+    task.o.validate(JSON.stringify({pages:Array.from({length:count??task.m[0].options.maxImages},(_,i)=>({id:positions[i%positions.length],scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}]}))}));task.resolve();return;
+  }
   task.o.validate(JSON.stringify({images:Array.from({length:count ?? task.m[0].options.maxImages},(_,i)=>({position:positions[i%positions.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
 function finishImage(index:number){h.images[index].resolve({result:{url:`data:image/png;base64,image${index}`,filename:'fake.png',revoke:vi.fn()},seed:42,size:'portrait',backend:'nai',charactersApplied:false,meta:{backend:'nai'}});}
 function previewDocument(){
@@ -35,6 +38,7 @@ beforeEach(()=>{
   h.analyses=[];h.images=[];h.saveWait=null;vi.clearAllMocks();
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
+  settings.channels=[];settings.assignments.tagGen='';
   settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';
   Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
@@ -224,7 +228,7 @@ describe('real stream runner with fixed groups of three',()=>{
     h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway'}],changes:[{name:'小雪',field:'new',fields:{sex:'1girl',hair:'silver hair',eyes:'red eyes'},position:'P1',reason:'first appearance'}]}));
     h.analyses[0].resolve();await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
     expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:1});expect(h.analyses[1].m[0].library).toContain('silver hair');
-    expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBeUndefined();
+    expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBe('select-scenes');
     expect(h.analyses[1].o.source).toBe('流式配图 · 文末补充');finishAnalysis(1,1);await flush();
     const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(slot=>slot.slotId);expect(ids).toHaveLength(2);expect(ids).toContain(original);
   });
@@ -287,4 +291,70 @@ describe('real stream runner with fixed groups of three',()=>{
     beginStreamSession('A');feedStreamText(text);await flush();finishAnalysis(0);await flush();const request=h.analyses[1].m[0];
     expect(request.content).toContain('她用钥匙推开车站的门。');expect(request.note).toContain('她穿白裙，持钥匙。');expect(request.note).not.toContain('她用钥匙推开车站的门。');
   });
+});
+
+function useCompactChannel(){
+ Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:'fast',comicPanelStyle:'universal',comicExtraRules:'',comicNsfwRules:false});
+ settings.channels=[{id:'compact',name:'test',provider:'openai',url:'https://api.deepseek.com/v1',key:'dummy',model:'deepseek-flash',temperature:1,maxTokens:2048,timeoutSec:60,stream:false,excludeParams:[],reasoningEffort:'max'}];
+ settings.assignments.tagGen='compact';Object.assign(settings.autoTag,{maxImages:6,minImages:0,streamAnalysisConcurrency:1});
+}
+const compactPage=(id:string,extra:any={})=>({id,scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}],...extra});
+describe('compact pages integrated with real task lifecycle',()=>{
+ it.each(['standard','simple'] as const)('keeps the old %s engine and channel inference even with saved fast-mode overrides',async(mode)=>{
+  useCompactChannel();settings.nai.comicAnalysisMode=mode;
+  const {comicReasoningKey}=await import('@/api/comicReasoning');
+  settings.nai.comicReasoningByModel={[comicReasoningKey(settings.channels[0])]:'off'};
+  beginStreamSession('A');feedStreamText(story(3));await flush();
+  const task=h.analyses[0];expect(task.m[0].analysisMode).toBe(mode);expect(task.m[0].compactSpec).toBeUndefined();
+  expect(task.o).not.toHaveProperty('onContent');expect(task.o).not.toHaveProperty('reasoningOverride');expect(task.o).not.toHaveProperty('stream');
+  finishAnalysis(0);await flush();expect(h.images).toHaveLength(3);
+ });
+ it('captures fast mode for the running floor and switches back to simple on the next floor',async()=>{
+  useCompactChannel();beginStreamSession('A');settings.nai.comicAnalysisMode='simple';feedStreamText(story(3));await flush();
+  expect(h.analyses[0].m[0].analysisMode).toBe('fast');expect(h.analyses[0].o.onContent).toBeTypeOf('function');
+  finishAnalysis(0);await flush();await attachStory(story(3));h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续'});
+  beginStreamSession('A');feedStreamText(story(3));await flush();expect(h.analyses[1].m[0].analysisMode).toBe('simple');
+  expect(h.analyses[1].m[0].compactSpec).toBeUndefined();expect(h.analyses[1].o).not.toHaveProperty('onContent');
+ });
+ it('starts an accepted page before the rest of its batch arrives and never renders it twice',async()=>{
+  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();
+  const task=h.analyses[0];expect(task.o.stream).toBe(true);expect(settings.channels[0].stream).toBe(false);
+  task.o.onContent('{"pages":['+JSON.stringify(compactPage('M1'))+',');await flush();expect(h.images).toHaveLength(1);
+  const raw=JSON.stringify({pages:['M1','M2','M3'].map(id=>compactPage(id))});task.o.validate(raw);task.resolve();await flush();
+  expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);await attachStory(story(3));expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);
+ });
+ it('retries only the rejected last page while keeping two already generated pages',async()=>{
+  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  const raw=JSON.stringify({pages:[compactPage('M1'),compactPage('M2'),compactPage('M3',{shots:[{camera:'',actors:[]}]})]});
+  task.o.onContent(raw);await flush();expect(h.images).toHaveLength(2);
+  try{task.o.validate(raw);}catch(error){task.reject(error);}await flush();
+  expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].options.maxImages).toBe(1);expect(h.analyses[1].m[0].note).toContain('camera');
+  finishAnalysis(1);await flush();expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(2);
+ });
+ it('reuses a confirmed prefix only for the next batch and leaves unprocessed narrative intact',async()=>{
+  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.validate(JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{state:{complete:true,facts:'已确认的先前事实'+i,outfits:{}}}))}));task.resolve();await flush();
+  feedStreamText(story(6));await flush();const note=h.analyses[1].m[0].note;
+  expect(note).toContain('已确认的此前连续状态');expect(note).toContain('已确认的先前事实2');expect(note).not.toContain('事件0发生');
+ });
+});
+
+describe('partial request and parallel identity recovery',()=>{
+ it('keeps all accepted pages when transport fails after their final objects arrived',async()=>{
+  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent(JSON.stringify({pages:['M1','M2','M3'].map(id=>compactPage(id))}));await flush();expect(h.images).toHaveLength(3);
+  task.reject(Error('connection closed after final page'));await flush();expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(3);
+ });
+ it.each([true,false])('compiles the canonical first accepted identity for V2=%s even when batches finish out of order',async(v2)=>{
+  useCompactChannel();Object.assign(settings.nai,{comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;
+  const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');
+  beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(2);
+  const response=(hair:string)=>JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{
+    profiles:i?[]:[{name:'小雪',fields:{sex:'girl',hair,eyes:'blue eyes'},position:'P1'}],
+    shots:[{camera:'medium shot',actors:[{name:'小雪',action:'walking',face:'front',omit:[]}]}],
+  }))});
+  h.analyses[1].o.validate(response('silver hair'));h.analyses[1].resolve();await flush();
+  h.analyses[0].o.validate(response('pink hair'));h.analyses[0].resolve();await flush();expect(h.images).toHaveLength(6);
+  for(const image of h.images){const value=v2?image.input.characters[0].tag:image.input.prompt;expect(value).toContain('silver hair');expect(value).not.toContain('pink hair');}
+ });
 });

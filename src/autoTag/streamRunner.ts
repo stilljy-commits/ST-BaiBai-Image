@@ -1,3 +1,7 @@
+import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
+import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
+import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
+import type { CharTagEntry } from '@/state/charTags';
 import { requestCompletion, requestViaMainApi, type ChatMsg } from '@/api/client';
 import { buildAutoTagMessages, captureAutoTagEnvironment, type AutoTagEnvironment } from '@/autoTag/prompt';
 import { maskStreamStorySource, prepareTargetText, type PreparedTargetText } from '@/autoTag/clean';
@@ -27,6 +31,7 @@ interface Payload { image: ImageInsertion; changes: CharChange[]; }
 type Job = StreamJob<Payload, GenerateOutput>;
 interface Session {
   id: string; chatId: string; context: STContext; referenceFloor: number;
+  continuity: ComicContinuityLedger; seedEntries: CharTagEntry[];
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
   stripTags: string[];
@@ -83,6 +88,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   if (!ctx || !settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen || isCurrentChatExcluded()) return;
   const state: Omit<Session, 'core'> = {
     id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
+    continuity: new ComicContinuityLedger(), seedEntries: jsonCopy(charTagsBeforeFloor((ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0,ctx.chat.length-1)) + (type === 'continue' ? 1 : 0))),
     scanner: new MarkerScanner(), options: jsonCopy(settings.autoTag),
     stripTags: [...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS],
     generation: captureGenerationSnapshot(), profile: captureRenderProfile(settings.nai, settings.defaultBackend),
@@ -94,7 +100,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const core = new StreamRun<Payload, GenerateOutput>(state.id, Math.max(0, state.options.maxImages - state.existingCount), Math.min(4, Math.max(1, state.options.streamAnalysisConcurrency ?? 2)),
     state.options.autoGenerate, {
       analyze: job => analyze(s, job),
-      analyzeBatch: jobs => analyzeBatch(s, jobs),
+      analyzeBatch: (jobs,ready) => analyzeBatch(s, jobs,ready),
       batchFailed: (jobs,error) => {
         const message=error instanceof Error?error.message:'';
         const code=/少于|图片数|图片数量/.test(message)?'image-count':/position|可选位置|P编号/.test(message)?'position':/标记/.test(message)?'marker-ownership':/JSON|数组|tag/.test(message)?'response-format':'request-failed';
@@ -115,7 +121,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const s: Session = { ...state, core };
   sessions.set(s.id, s); current = s; log('stream:begin', { run: s.id, chatId, minImages: state.options.minImages,
     maxImages: state.options.maxImages, batchSize: core.batchSize, batchSizes: streamBatchSizes(core.max, core.batchSize), analysisConcurrency: core.concurrency,
-    analysisMode: simpleComicAnalysis(s) ? 'simple' : 'standard' });
+    analysisMode: s.profile.mode === 'illustration' ? 'standard' : s.promptEnvironment.nai.comicAnalysisMode ?? 'standard' });
 }
 
 /** Cancel only runs belonging to a chat that is no longer active. */
@@ -151,7 +157,8 @@ export function feedStreamText(text: string): void {
 }
 
 async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图'): Promise<void> {
-  if (s.channel) await requestCompletion(s.channel, messages, { signal, source, validate });
+  if (s.channel) await requestCompletion(s.channel, messages, { signal, source, validate,
+    ...(fastComicAnalysis(s)?{stream:true,reasoningOverride:comicReasoningOverride(s.channel,s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel)]??'follow')}:{}) });
   else await requestViaMainApi(messages, { signal, source, validate });
 }
 const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
@@ -160,7 +167,10 @@ const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
 目标段内的正式角色即使不入画，也照原规则检查建档；固定外貌库里已列出的角色直接复用，不重复 new。本楼其他流式任务已确认的首次建档会加入该库，固定外貌本楼全程有效。临时服装、动作等仍以对应目标段落事实为准，不把后文临时状态提前套用。
 一张指 images 数组的一个元素；漫画模式下是一整页漫画，不是一个画格。图片 position 照抄任务给出的 M 编号,插入点由插件处理;正文 P 编号只用于角色变化时序与必要的 statePosition。漫画页内画格用主格、右上小格等空间称呼区分。`;
 function simpleComicAnalysis(s: Session): boolean {
-  return s.profile.mode !== 'illustration' && s.promptEnvironment.nai?.comicAnalysisMode === 'simple';
+  return s.profile.mode !== 'illustration' && ['simple','fast'].includes(s.promptEnvironment.nai?.comicAnalysisMode ?? 'standard');
+}
+function fastComicAnalysis(s: Session): boolean {
+  return s.profile.mode !== 'illustration' && s.promptEnvironment.nai?.comicAnalysisMode === 'fast';
 }
 function analysisScope(s: Session): string {
   return simpleComicAnalysis(s)
@@ -169,7 +179,7 @@ function analysisScope(s: Session): string {
 }
 function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
   const floor = s.binding?.floor ?? s.referenceFloor;
-  const entries = charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
+  const entries = fastComicAnalysis(s) ? s.seedEntries : charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
   const locked = lockedCharTagNames();
   // Only immutable introductions are shared. Timeline updates (outfit etc.) remain positional.
   const introduced = planChangeOps({ images: [], changes: [...s.established.values()] }).map(item => item.op);
@@ -198,7 +208,93 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
   }
   return plan;
 }
+async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
+  if (!ownerValid(s)) throw new Error('聊天已切换');
+  const started=performance.now(), batch=prepareStreamBatch(jobs,s.stripTags,true), anchors=analysisAnchors(s);
+  const originalPrefix=contextWithoutRepeatedTarget(jobs[0].input.prefix,jobs[0].input.text);
+  const continuity=s.continuity.context(jobs[0].ordinal,originalPrefix);
+  const entries=anchors.entries.map(entry=>({...entry,fields:{...entry.fields}}));
+  for(const change of [...continuity.changes].sort((a,b)=>a.sourceLine-b.sourceLine)) {
+    const entry=entries.find(entry=>entry.name===change.name);
+    if(entry&&!lockedCharTagNames().has(change.name)&&Object.hasOwn(entry.fields,change.field)) entry.fields[change.field as keyof typeof entry.fields]=change.value;
+  }
+  const compact:CompactComicContext={target:batch.target,markers:batch.markerTargets,entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,
+    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits}};
+  const scanText=jobs.at(-1)!.input.prefix+'\n'+jobs.map(job=>job.input.text).join('\n');
+  const ctx=getContext()!,floor=s.binding?.floor??s.referenceFloor,analysisContext={...ctx,chat:[...ctx.chat]};
+  analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
+  const note='极速模式仅输出简短分镜。只为下列标记生成pages，id照抄M编号，按M编号顺序输出。\n'+batch.groups.map(g=>
+    '标记 '+g.markerId+'：'+g.intent+'；对应正文 '+g.positions.join('、')+'；图片 position 固定填 "'+g.markerId+'"。').join('\n')+
+    '\n'+continuity.note+'\n此前尚未概括的正文，仅作连续性依据：\n'+continuity.prefix+
+    (jobs.length===1&&jobs[0].analysisError?'\n【当前页修复】上次校验未通过：'+jobs[0].analysisError+'。只修复当前页；以前批次编号不沿用，本次以当前给定M编号和P位置为准。':'');
+  const messages=await buildAutoTagMessages(analysisContext,floor,{...s.options,minImages:jobs.length,maxImages:jobs.length},
+    readBookMemory(floor,scanText,s.context.name1),batch.target,compactLibrary(compact),note,s.promptEnvironment.profile,s.promptEnvironment,'fixed-markers',compactComicSpec(compact));
+  const controller=new AbortController(),cancel=()=>{if(s.controller.signal.aborted||jobs.every(job=>job.controller.signal.aborted))controller.abort();};
+  s.controller.signal.addEventListener('abort',cancel);for(const job of jobs)job.controller.signal.addEventListener('abort',cancel);cancel();
+  const payloads=new Map<string,Payload>(),introduced:CharTagEntry[]=[],acceptedChanges:CharChange[]=[],errors=new Map<string,string>();
+  let responseChars=0,scannedLength=0;
+  const consume=(raw:string)=>{
+    responseChars=raw.length;
+    const appended=raw.slice(scannedLength),reset=raw.length<scannedLength;scannedLength=raw.length;
+    if(!reset&&!appended.includes('}'))return;
+    const pages=completeComicPages(raw);
+    const byId=new Map<string,unknown>();
+    for(const value of pages) if(value&&typeof value==='object'&&typeof (value as any).id==='string') {
+      const id=(value as any).id; if(!byId.has(id))byId.set(id,value);
+    }
+    for(let index=0;index<jobs.length;index++){
+      const job=jobs[index],id=batch.groups[index].markerId;
+      if(payloads.has(id)||job.controller.signal.aborted)continue;
+      const page=byId.get(id); if(!page)break;
+      try{
+        // A parallel batch may have established this new person's identity since dispatch.
+        // Recompile from canonical fields before producing either V1 or V2 strings.
+        const candidate=jsonCopy(page) as Record<string,any>;
+        if(Array.isArray(candidate.profiles)) for(const profile of candidate.profiles){
+          const canonical=s.established.get(profile?.name);
+          if(canonical&&!compact.entries.some(entry=>entry.name===profile.name)) {
+            try{profile.fields=JSON.parse(canonical.value);}catch{/* compiler reports malformed fields */}
+          }
+        }
+        const result=compileComicPage(candidate,{...compact,priorChanges:[...continuity.changes,...acceptedChanges]},introduced);
+        if(controller.signal.aborted||job.controller.signal.aborted||!ownerValid(s))return;
+        const plan=preparePlan(s,result.plan,anchors),payload={image:{...plan.images[0],renderProfile:s.profile},changes:plan.changes};
+        payloads.set(id,payload);errors.delete(id);job.analysisError=undefined;acceptedChanges.push(...plan.changes);
+        if(result.state.complete)compact.outfits={...compact.outfits,...result.state.outfits};
+        const introOps=planChangeOps({images:[],changes:plan.changes.filter(change=>change.field==='new')}).map(item=>item.op);
+        introduced.splice(0,introduced.length,...applyCharTagOps(introduced,introOps,floor,compact.locked));
+        s.continuity.accept({ordinal:job.ordinal,text:job.input.text,marker:job.input.raw,sourceLine:batch.target.segments.find(segment=>segment.id===batch.groups[index].positions.at(-1))!.sourceLine,state:result.state,changes:plan.changes});
+        ready?.(index,payload);
+        log('stream:page-ready',{job:job.id,batchSize:jobs.length,elapsedMs:Math.round(performance.now()-started)});
+      }catch(error){errors.set(id,error instanceof Error?error.message:String(error));break;}
+    }
+  };
+  const validate=(raw:string)=>{
+    consume(raw);
+    const missing=jobs.flatMap((job,index)=>job.controller.signal.aborted||payloads.has(batch.groups[index].markerId)?[]:[batch.groups[index].markerId]);
+    for(let index=0;index<jobs.length;index++)if(missing.includes(batch.groups[index].markerId))jobs[index].analysisError=errors.get(batch.groups[index].markerId)||'缺少完整页数据，或前页校验失败而尚未接受';
+    if(missing.length)throw new Error('漫画页校验失败：'+missing.map(id=>id+' '+(errors.get(id)||'缺少完整数据')).join('；'));
+  };
+  try{
+    const source='流式配图 · '+(jobs.length===1?'单张':'合并'+jobs.length+'张');
+    if(s.channel){
+      const mode=s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel)]??'follow';
+      await requestCompletion(s.channel,messages,{signal:controller.signal,source,stream:true,onContent:consume,validate,reasoningOverride:comicReasoningOverride(s.channel,mode)});
+    }else await requestViaMainApi(messages,{signal:controller.signal,source,validate});
+    return batch.groups.map(group=>payloads.get(group.markerId)!);
+  }finally{
+    s.controller.signal.removeEventListener('abort',cancel);for(const job of jobs)job.controller.signal.removeEventListener('abort',cancel);
+    log('stream:analysis-timing',{jobs:jobs.map(job=>job.id),batchSize:jobs.length,apiMs:Math.round(performance.now()-started),responseChars,
+      promptChars:messages.reduce((sum,m)=>sum+m.content.length,0),reusedContextChars:Math.max(0,originalPrefix.length-continuity.prefix.length),acceptedPages:payloads.size,ok:payloads.size===jobs.length});
+  }
+}
+
 async function analyze(s: Session, job: Job): Promise<Payload> {
+  if(fastComicAnalysis(s)){
+    let last:unknown;for(let attempt=0;attempt<=Math.max(0,s.options.retryCount);attempt++){
+      try{return (await analyzeCompact(s,[job]))[0];}catch(error){last=error;if(job.controller.signal.aborted)throw error;}
+    }throw last;
+  }
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const batch = prepareStreamBatch([job], s.stripTags, simpleComicAnalysis(s)), target = batch.target;
@@ -237,7 +333,8 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   throw error ?? new Error('配图分析未返回有效图片');
 }
 
-async function analyzeBatch(s: Session, jobs: Job[]): Promise<Payload[]> {
+async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
+  if(fastComicAnalysis(s))return analyzeCompact(s,jobs,ready);
   const start = performance.now();
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const batch = prepareStreamBatch(jobs, s.stripTags, simpleComicAnalysis(s));
@@ -407,12 +504,13 @@ async function supplement(s: Session, count: number): Promise<void> {
     const entries = charTagsBeforeFloor(s.binding!.floor + 1), known = new Set(entries.map(entry => entry.name));
     const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
     const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames());
+    const compact:CompactComicContext|undefined = fastComicAnalysis(s) ? {target,entries:anchors.entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,size:s.promptEnvironment.profile.lockedSize,min:needed,max:maximum}:undefined;
     const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: maximum },
-      readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment);
+      readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, compact ? compactLibrary(compact) : anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment,'select-scenes',compact ? compactComicSpec(compact) : undefined);
     for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
       if (controller.signal.aborted) return;
       try {
-        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, parseImagePlan(raw, target.segments, needed, maximum), anchors); },'流式配图 · 文末补充');
+        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, compact ? parseCompactComic(raw,compact) : parseImagePlan(raw, target.segments, needed, maximum), anchors); },'流式配图 · 文末补充');
         if (plan) break;
       } catch (error) { lastError = error; }
     }

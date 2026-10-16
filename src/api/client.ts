@@ -1,6 +1,6 @@
 import { getContext } from '@/st/context';
 import type { ApiChannel } from '@/state/settings';
-import { buildVertexRequest, currentVertexSettings, geminiText } from './vertex';
+import { buildVertexRequest, vertexModelList, geminiText } from './vertex';
 import {
   beginLlm,
   failLlm,
@@ -55,6 +55,11 @@ function alternateUrl(url: string): string {
 
 export interface RequestOptions {
   signal?: AbortSignal;
+  /** Cumulative final-answer text only, never native reasoning. */
+  onContent?: (content: string) => void;
+  stream?: boolean;
+  /** Task-specific reasoning fields, leaving the stored channel unchanged. */
+  reasoningOverride?: Record<string, unknown>;
   /**
    * 用途标签,只用于请求历史页的展示(如「自动 tag」)。
    * 不传也不影响请求本身,历史里显示为「未标注」。
@@ -253,8 +258,20 @@ async function requestCompletionAtUrl(
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
   if ((!channel.url && channel.provider !== 'vertexai') || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
 
-  const stream = channel.stream ?? false;
+  const stream = opts.stream ?? channel.stream ?? false;
   const body = buildRequestBody(channel, messages, reverseProxy, stream);
+  if (opts.reasoningOverride) {
+    const override = opts.reasoningOverride;
+    if (channel.provider === 'vertexai') {
+      delete body.reasoning_effort;
+      if (typeof override.reasoning_effort === 'string') body.reasoning_effort = override.reasoning_effort;
+    } else {
+      body.chat_completion_source = 'custom'; body.custom_url = reverseProxy;
+      body.custom_include_headers = JSON.stringify({ Authorization: `Bearer ${channel.key || ''}` });
+      body.custom_include_body = JSON.stringify(override);
+      delete body.reverse_proxy; delete body.proxy_password;
+    }
+  }
 
   const timeoutSec = validTimeoutSec(channel.timeoutSec);
 
@@ -285,7 +302,7 @@ async function requestCompletionAtUrl(
 
       // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
       if (stream) {
-        const streamed = await readSseContent(resp);
+        const streamed = await readSseContent(resp, opts.onContent);
         if (!streamed) throw new ApiError('副 API 返回空内容');
         // 流式无 usage:ST 构造上游请求体是字段白名单,不含 stream_options,
         // 没法让上游在末尾回 usage chunk。只能事后本地估算。
@@ -299,6 +316,7 @@ async function requestCompletionAtUrl(
 
       const parsed = extractContent(data);
       if (!parsed) throw new ApiError('副 API 返回空内容');
+      opts.onContent?.(parsed);
       // ST 代理非流式分支是 response.send(json) 原样透传,故 usage 是上游真值。
       return { content: parsed, usage: readUsage(data) };
     });
@@ -335,58 +353,35 @@ async function requestCompletionAtUrl(
  * 推理模型的思维链增量(delta.reasoning 等)单独缓冲:只有 content 全空时才回退用它,
  * 避免在 content 正常时把思维链混进正文。
  */
-export async function readSseContent(resp: Response): Promise<string> {
+export async function readSseContent(resp: Response, onContent?: (content: string) => void): Promise<string> {
   const reader = resp.body?.getReader();
-  if (!reader) {
-    // 无法流式读取(理论上不会):退回当作整体 JSON 处理
-    const data = await resp.json().catch(() => null);
-    return data ? extractContent(data) : '';
-  }
+  if (!reader) { const data = await resp.json().catch(() => null); const out = data ? extractContent(data) : ''; if (out) onContent?.(out); return out; }
   const decoder = new TextDecoder();
-  let buf = '';
-  let out = '';
-  let reasoningOut = '';
-  for (; ;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    // Parse complete lines; flush the final unterminated line at EOF as well.
-    const lines = buf.split('\n');
-    buf = lines.pop() ?? '';
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t || !t.startsWith('data:')) continue;
-      const payload = t.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      try {
-        const json = JSON.parse(payload);
-        if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
-        const choice = json?.choices?.[0];
-        const src = choice?.delta ?? choice?.message;
-        const piece = textOf(src?.content) || textOf(choice?.text) || geminiText(json);
-        if (piece) out += piece;
-        const reasoningPiece =
-          textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
-        if (reasoningPiece) reasoningOut += reasoningPiece;
-      } catch (e) {
-        if (e instanceof ApiError) throw e;
-        // 单行解析失败忽略(可能是注释行/心跳)
-      }
+  let buffer = '', out = '', reasoning = '';
+  const consume = (line: string) => {
+    if (!line.trim().startsWith('data:')) return;
+    const payload = line.trim().slice(5).trim();
+    if (!payload || payload === '[DONE]') return;
+    let json: any;
+    try { json = JSON.parse(payload); } catch { return; }
+    if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
+    const choice = json?.choices?.[0], src = choice?.delta ?? choice?.message;
+    const piece = textOf(src?.content) || textOf(choice?.text) || geminiText(json);
+    if (piece) { out += piece; onContent?.(out); }
+    reasoning += textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
+  };
+  try {
+    for (;;) {
+      const {done,value} = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, {stream:true});
+      const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
+      for (const line of lines) consume(line);
     }
-  }
-  if (buf.trim().startsWith('data:')) {
-    const payload = buf.trim().slice(5).trim();
-    if (payload && payload !== '[DONE]') {
-      try {
-        const json = JSON.parse(payload);
-        if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
-        const choice = json?.choices?.[0], src = choice?.delta ?? choice?.message;
-        out += textOf(src?.content) || textOf(choice?.text) || geminiText(json);
-        reasoningOut += textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
-      } catch (e) { if (e instanceof ApiError) throw e; }
-    }
-  }
-  return out.trim() || reasoningOut.trim();
+    buffer += decoder.decode(); if (buffer.trim()) consume(buffer);
+  } catch (error) { await reader.cancel().catch(() => {}); throw error; }
+  finally { reader.releaseLock(); }
+  return out.trim() || reasoning.trim();
 }
 
 /** 把可能是 string / content-parts 数组 / 其他类型的值转成文本;非字符串成分一律丢弃。 */
@@ -540,16 +535,16 @@ export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; m
 const STATUS_URL = '/api/backends/chat-completions/status';
 
 /**
- * 拉取渠道可用的模型列表(走 ST 的 /status 代理,标准 /v1/models)。
- * 只需 url + key,不需要先填 model。
+ * OpenAI uses the host /status proxy. Vertex snapshots the host's maintained
+ * catalog because TT's Vertex /status deliberately does not enumerate models.
  */
 export async function fetchModels(
-  channel: Pick<ApiChannel, 'url' | 'key'> & Partial<Pick<ApiChannel, 'timeoutSec' | 'provider'>>,
+  channel: Pick<ApiChannel, 'url' | 'key'> & Partial<Pick<ApiChannel, 'timeoutSec' | 'provider' | 'model' | 'vertexAuthMode'>>,
 ): Promise<string[]> {
   if (channel.provider === 'vertexai') {
-    const model = currentVertexSettings().model;
-    if (!model) throw new ApiError('请直接填写 Vertex 模型名；TT 不提供完整远端模型列表。');
-    return [model];
+    const models = vertexModelList(channel);
+    if (!models.length) throw new ApiError('未找到宿主的 Vertex 模型列表；仍可直接填写模型名。');
+    return models;
   }
   const ctx = getContext();
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
