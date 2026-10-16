@@ -1,10 +1,32 @@
 import { describe, it, expect, vi } from 'vitest';
 import { StreamRun, streamBatchSizes } from './streamCore';
+import { normalizeStreamBatchSize } from './batchSettings';
 
 function deferred<T>() { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;}); return {promise,resolve}; }
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 const input={raw:'[img: 门口相见]',intent:'门口相见',text:'她打开门。',prefix:'',sourceLine:0};
 describe('streamed task lifetime',()=>{
+  it.each([1,2,3,5,10,50])('uses configurable batches of %s and flushes the tail within concurrency two',async size=>{
+    const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
+    let running=0,peak=0;const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});peak=Math.max(peak,++running);return task.promise.finally(()=>running--);};
+    const generate=vi.fn(async(p:string)=>p);
+    const run=new StreamRun<string,string>('configured',13,2,true,{analyze:async job=>(await start([job]))[0],analyzeBatch:start,generate,commit:async job=>!!job.result,changed:()=>{},release:()=>{}},size);
+    const jobs=Array.from({length:13},()=>run.add(input)!);run.attach(jobs);
+    expect(requests.length).toBe(Math.min(2,Math.floor(13/size)));
+    run.finishInput();const expected=streamBatchSizes(13,size);
+    for(let i=0;i<expected.length;i++){expect(requests[i]).toBeDefined();requests[i].task.resolve(requests[i].jobs.map(job=>job.id));await flush();}
+    await run.settled();expect(requests.map(r=>r.jobs.length)).toEqual(expected);expect(peak).toBeLessThanOrEqual(2);expect(generate).toHaveBeenCalledTimes(13);expect(jobs.every(job=>job.saved)).toBe(true);
+  });
+  it('falls back only the failed configured batch and preserves the following full batch',async()=>{
+    const batch=vi.fn(async(jobs:any[])=>{if(batch.mock.calls.length===1)throw Error('invalid batch');return jobs.map(job=>job.id);});
+    const single=vi.fn(async(job:any)=>job.id);
+    const run=new StreamRun<string,string>('five',10,1,false,{analyze:single,analyzeBatch:batch,generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}},5);
+    Array.from({length:10},()=>run.add(input));run.finishInput();await run.analysisSettled();
+    expect(batch.mock.calls.map(([jobs])=>jobs.length)).toEqual([5,5]);expect(single).toHaveBeenCalledTimes(5);expect(run.jobs.every(job=>job.payload===job.id)).toBe(true);
+  });
+  it.each([[undefined,3],[null,3],['5',3],[NaN,3],[Infinity,3],[0,1],[-5,1],[2.9,2],[100,50]])('normalizes batch size %s to %s', (value,expected)=>{
+    expect(normalizeStreamBatchSize(value)).toBe(expected);
+  });
   it('bounds batches to three and analyzes ten markers as 3,3,3,1 within the request limit',async()=>{
     const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
     let running=0,peak=0;const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});peak=Math.max(peak,++running);return task.promise.finally(()=>running--);};

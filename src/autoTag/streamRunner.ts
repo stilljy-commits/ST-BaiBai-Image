@@ -111,10 +111,10 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
       },
       commit: job => commit(s, job), changed: job => publish(s, job),
       release: output => output.result.revoke(), idle: () => retire(s),
-    });
+    }, state.options.streamAnalysisBatchSize);
   const s: Session = { ...state, core };
   sessions.set(s.id, s); current = s; log('stream:begin', { run: s.id, chatId, minImages: state.options.minImages,
-    maxImages: state.options.maxImages, batchSizes: streamBatchSizes(core.max), analysisConcurrency: core.concurrency,
+    maxImages: state.options.maxImages, batchSize: core.batchSize, batchSizes: streamBatchSizes(core.max, core.batchSize), analysisConcurrency: core.concurrency,
     analysisMode: simpleComicAnalysis(s) ? 'simple' : 'standard' });
 }
 

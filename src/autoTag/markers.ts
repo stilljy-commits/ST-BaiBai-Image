@@ -40,10 +40,13 @@ function scanVisibleMarkers(source: string, visible: string): StreamMarker[] {
       continue;
     }
     if(source.slice(m.index,m.index+m[0].length)!==m[0])continue;
+    const intent=(m[1]??'').trim();
+    // Documentation examples are not scenes, even outside an explicitly marked footer.
+    if(!intent.replace(/[\s.。…⋯·,，:：;；!?！？_\-—～~]/g,'') || /^(?:中文)?画面意图(?:短句)?$/.test(intent))continue;
     markers.push({
       index: m.index,
       raw: m[0],
-      intent: (m[1] ?? '').trim(),
+      intent,
       end: m.index + m[0].length,
     });
   }

@@ -68,6 +68,8 @@ export interface STCharacter {
 }
 
 export interface STContext {
+  /** Public host settings; contains credential selectors, not secret values. */
+  chatCompletionSettings?: Record<string, unknown>;
   chat: STMessage[];
   chatMetadata: Record<string, unknown>;
   name1: string;

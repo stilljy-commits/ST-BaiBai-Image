@@ -6,6 +6,9 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { fetchModels, testChannel } from '@/api/client';
+import { currentVertexSettings } from '@/api/vertex';
+import { normalizeStreamBatchSize, MAX_STREAM_BATCH_SIZE } from '@/autoTag/batchSettings';
+import { streamBatchSizes } from '@/autoTag/streamCore';
 import {
   BACKENDS,
   DEFAULT_COMFY_SPEC,
@@ -94,6 +97,8 @@ const TAG_GEN_OPTIONS = computed(() => [
   { value: '', label: '跟随主 API' },
   ...settings.channels.map(c => ({ value: c.id, label: c.name || '未命名渠道' })),
 ]);
+const streamBatchExample = computed(() => streamBatchSizes(13, settings.autoTag.streamAnalysisBatchSize).join('、'));
+function normalizeBatchSizeInput(){settings.autoTag.streamAnalysisBatchSize=normalizeStreamBatchSize(settings.autoTag.streamAnalysisBatchSize);}
 
 /* —— 渠道:列表只读展示,编辑/新建都在弹窗里进行,避免一长列表平铺误触。
    渠道列表与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步。 —— */
@@ -102,6 +107,26 @@ const editingId = ref<string | null>(null);
 // 编辑用「草稿副本」:v-model 全改在草稿上,只有点「完成」才写回 settings(避免每敲一字就触发存盘)。
 // 弹窗开关也以它为准:草稿存在 = 弹窗打开。
 const editingChannel = ref<ApiChannel | null>(null);
+const channelProvider = computed<string>({
+  get:()=>editingChannel.value?.provider === 'vertexai' ? 'vertexai' : 'openai',
+  set:value=>{
+    const ch=editingChannel.value;if(!ch)return;
+    ch.provider=value === 'vertexai' ? 'vertexai' : 'openai';
+    if(ch.provider==='vertexai'){
+      ch.url=''; ch.key='';
+      ch.vertexAuthMode ??= 'full'; ch.vertexRegion ||= 'global';
+    }
+  },
+});
+const vertexAuthMode = computed<string>({
+  get:()=>editingChannel.value?.vertexAuthMode ?? 'full',
+  set:value=>{if(editingChannel.value){editingChannel.value.vertexAuthMode=value==='express'?'express':'full';editingChannel.value.vertexSecretId='';}},
+});
+function readCurrentVertex(){
+  if(!editingChannel.value)return;
+  try{Object.assign(editingChannel.value,currentVertexSettings());testing.value[editingChannel.value.id]='已读取模型、认证模式与地区；主 API 设置未改动。';}
+  catch(e){testing.value[editingChannel.value.id]=e instanceof Error?e.message:String(e);}
+}
 // 深拷贝渠道(纯数据,JSON 即可),切断与 settings 真身的引用
 function cloneChannel(ch: ApiChannel): ApiChannel {
   return JSON.parse(JSON.stringify(ch)) as ApiChannel;
@@ -699,7 +724,7 @@ async function confirmUpdate() {
         </label>
         <p class="bbi-field-hint">
           开启后自动给正文模型添加配图标记规则，发送前检查是否已包含规则；已挂同类世界书时复用已有规则。主模型在正文里放 [img: 意图] 标记,
-          所有数量范围都固定每3个正式标记合批分析，不再按上限分段。例如9个标记按3、3、3分析，5个按3、2分析；剩余不足3个的标记在正文结束时立即提交，
+          按下方“每批分析图片数”合并正式标记，不按图片上限分段；最后不足一批的标记在正文结束时立即提交，
           并显示已完成图片和在途位置，后到图片继续完成；文末默认只补足最少张数。主模型在最少/最多范围内选择实际数量，数量范围优先于世界书的字数密度。
           关闭则完整回退「正文结束→全量分析」路径;主模型没放标记时也会自动回退。
         </p>
@@ -715,6 +740,12 @@ async function confirmUpdate() {
           <input v-model="settings.autoTag.streamGapSupplement" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">默认关闭，正文结束后只补足最少张数。开启后还会检查未覆盖的长正文并分析补图，可能增加等待；摘要、选项和变量更新不参与。</p>
+
+        <label class="bbi-num-row">
+          <span class="bbi-field-label">每批分析图片数</span>
+          <input v-model.number="settings.autoTag.streamAnalysisBatchSize" class="bbi-input bbi-num" type="number" min="1" :max="MAX_STREAM_BATCH_SIZE" step="1" @change="normalizeBatchSizeInput" @blur="normalizeBatchSizeInput" />
+        </label>
+        <p class="bbi-field-hint">每次 tags 分析合并多少个 img 标记（1～{{ MAX_STREAM_BATCH_SIZE }}，默认3）。例如13张图按 {{ streamBatchExample }} 分批；正文结束时不足一批也立即分析。数值越大，重复分析通常越少，但首批等待越久。修改从下一轮正文生效，与分析并发、NAI出图并发分别设置。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">流式分段分析并发</span>
@@ -1005,11 +1036,28 @@ async function confirmUpdate() {
           <span class="bbi-modal-label">渠道名</span>
           <input v-model="editingChannel.name" class="bbi-input" placeholder="渠道名" />
         </label>
-        <label class="bbi-modal-field">
+        <div class="bbi-modal-field">
+          <span class="bbi-modal-label">接口类型</span>
+          <BbiSelect v-model="channelProvider" :options="[{value:'openai',label:'OpenAI 兼容'},{value:'vertexai',label:'Google Vertex AI'}]" aria-label="接口类型" />
+        </div>
+        <template v-if="channelProvider === 'vertexai'">
+          <div class="bbi-modal-field">
+            <span class="bbi-modal-label">Vertex 认证模式</span>
+            <BbiSelect v-model="vertexAuthMode" :options="[{value:'full',label:'完整版（Service Account）'},{value:'express',label:'快速版（Express）'}]" aria-label="Vertex 认证模式" />
+          </div>
+          <label v-if="vertexAuthMode === 'full'" class="bbi-modal-field">
+            <span class="bbi-modal-label">地区</span>
+            <input v-model="editingChannel.vertexRegion" class="bbi-input" placeholder="global" />
+          </label>
+          <p class="bbi-field-hint">使用 TT / 酒馆已保存的对应 Vertex 凭据。请先在宿主 API 连接中保存服务账号或 Express 密钥，再在这里选择同一认证模式。副 API 独立运行，不切换正文连接。快速版指认证模式，不是速度档位。</p>
+          <button class="bbi-btn" type="button" @click="readCurrentVertex">读取 TT 当前 Vertex 设置</button>
+          <p v-if="editingChannel.vertexSecretId" class="bbi-field-hint">已绑定读取时选中的凭据；切换认证模式会改为使用该模式当前启用的凭据。</p>
+        </template>
+        <label v-else class="bbi-modal-field">
           <span class="bbi-modal-label">API 地址</span>
           <input v-model="editingChannel.url" class="bbi-input" placeholder="如 https://api.openai.com/v1" />
         </label>
-        <label class="bbi-modal-field">
+        <label v-if="channelProvider !== 'vertexai'" class="bbi-modal-field">
           <span class="bbi-modal-label">API 密钥</span>
           <div class="bbi-model-row">
             <input
@@ -1067,6 +1115,7 @@ async function confirmUpdate() {
               <Icon name="refresh" />
             </button>
           </div>
+          <span v-if="channelProvider === 'vertexai'" class="bbi-field-hint">可以直接填写模型名；拉取按钮只读取 TT 当前选择的 Vertex 模型，不是完整远端列表。</span>
         </label>
         <div class="bbi-channel-row">
           <label class="bbi-mini-field">
@@ -1092,7 +1141,7 @@ async function confirmUpdate() {
             />
           </div>
         </div>
-        <span class="bbi-field-hint">思考强度不知道的就选 auto，DS 系推荐 max</span>
+        <span class="bbi-field-hint">auto 保留模型默认行为；其它档位是否支持由模型和宿主决定。</span>
         <label class="bbi-switch-row">
           <span class="bbi-modal-label">流式传输</span>
           <input v-model="editingChannel.stream" type="checkbox" class="bbi-checkbox" />

@@ -18,6 +18,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
+import { normalizeStreamBatchSize } from '@/autoTag/batchSettings';
 import { reactive, watch } from 'vue';
 
 /**
@@ -438,6 +439,12 @@ export function imageDisplayMaxHeight(size: ImageDisplaySize): number | null {
  */
 export interface ApiChannel {
   id: string;
+  /** Absent on legacy shared channels. Vertex uses the host's saved credentials. */
+  provider?: 'openai' | 'vertexai';
+  vertexAuthMode?: 'full' | 'express';
+  vertexRegion?: string;
+  /** Opaque host credential selector, never a key or service account JSON. */
+  vertexSecretId?: string;
   /** 显示名 */
   name: string;
   /** OpenAI 兼容的 base url,如 https://api.openai.com/v1 */
@@ -533,6 +540,8 @@ export interface AutoTagSettings {
   streamGapSupplement?: boolean;
   /** 流式分段分析的并发上限(1~4,默认 2):同时几批副API分析在飞；每批是一段。 */
   streamAnalysisConcurrency?: number;
+  /** Number of image markers per analysis request (1–50, default 3), independent of concurrency. */
+  streamAnalysisBatchSize?: number;
   streamWorldBook?: string;
   /** 可编辑提示词集(破限/后端规范/思维链);空串 = 回落内置默认。 */
   prompts: AutoTagPrompts;
@@ -1658,6 +1667,7 @@ function defaults(): ImageSettings {
       streamPreview: false,
       streamGapSupplement: false,
       streamAnalysisConcurrency: 2,
+      streamAnalysisBatchSize: 3,
       streamWorldBook: '',
       prompts: {
         jailbreak: '',
@@ -1678,11 +1688,18 @@ let chanSeq = 0;
 
 /** 补全单个渠道的缺失字段并校验类型(与柏宝书同构,共享存储来回序列化也安全)。 */
 function normalizeChannel(c: Partial<ApiChannel>): ApiChannel {
+  // Older BaiBai Book versions rebuild shared channels and drop unknown fields.
+  // Restore only this extension's non-secret Vertex routing, for the same ID and a blank URL.
+  // Explicit provider changes or deletion in the shared list remain authoritative.
+  const own = getContext()?.extensionSettings?.[SETTINGS_KEY] as {channels?:Partial<ApiChannel>[]} | undefined;
+  const saved = c.provider === undefined && !c.url && c.id && Array.isArray(own?.channels)
+    ? own.channels.find(ch=>ch.id===c.id && ch.provider==='vertexai') : undefined;
+  const vertex = c.provider === 'vertexai' ? c : saved;
   return {
     id: typeof c.id === 'string' ? c.id : `ch_${Date.now()}_${++chanSeq}`,
     name: typeof c.name === 'string' ? c.name : '新渠道',
-    url: typeof c.url === 'string' ? c.url : '',
-    key: typeof c.key === 'string' ? c.key : '',
+    url: vertex ? '' : typeof c.url === 'string' ? c.url : '',
+    key: vertex ? '' : typeof c.key === 'string' ? c.key : '',
     model: typeof c.model === 'string' ? c.model : '',
     temperature: typeof c.temperature === 'number' ? c.temperature : 1.0,
     maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 65535,
@@ -1696,6 +1713,12 @@ function normalizeChannel(c: Partial<ApiChannel>): ApiChannel {
       : [],
     // 后加字段:老渠道无此键 → 空串(auto,不发参数),行为与加字段前完全一致
     reasoningEffort: typeof c.reasoningEffort === 'string' ? c.reasoningEffort.trim() : '',
+    ...(vertex ? {
+      provider: 'vertexai' as const,
+      vertexAuthMode: vertex.vertexAuthMode === 'express' ? 'express' as const : 'full' as const,
+      vertexRegion: typeof vertex.vertexRegion === 'string' && vertex.vertexRegion.trim() ? vertex.vertexRegion.trim() : 'global',
+      vertexSecretId: typeof vertex.vertexSecretId === 'string' ? vertex.vertexSecretId.trim() : '',
+    } : {}),
   };
 }
 
@@ -2286,6 +2309,7 @@ function normalize(raw: unknown): ImageSettings {
       typeof rt.streamAnalysisConcurrency === 'number' && Number.isFinite(rt.streamAnalysisConcurrency)
         ? Math.min(4, Math.max(1, Math.floor(rt.streamAnalysisConcurrency)))
         : d.autoTag.streamAnalysisConcurrency,
+    streamAnalysisBatchSize: normalizeStreamBatchSize(rt.streamAnalysisBatchSize),
     // 可编辑提示词集:逐字段兜底;旧版 jailbreakPrompt 字段迁移进 prompts.jailbreak
     prompts: (() => {
       const rp = (rt.prompts ?? {}) as Partial<AutoTagPrompts>;

@@ -79,6 +79,7 @@ function clampToStoryBody(
     .replace(/<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi, noiseReplacement);
   s = replaceCustomTags(s, customTags, noiseReplacement);
   s = stripManagedTags(s);
+  s = maskedSource(s, metadataFooterRanges(s));
 
   const startRe = /<bbs_start\b/gi;
   let lastStart = -1;
@@ -173,6 +174,22 @@ function sourceLineRanges(source: string): SourceLineRange[] {
   return lines;
 }
 
+/** Explicit output bookkeeping headings, not generic story words such as “总结”. */
+function metadataFooterRanges(source: string): RemovalRange[] {
+  const ranges: RemovalRange[]=[];
+  const count='(?:正文(?:回答)?|本轮(?:正文|回答)?|本次(?:正文|回答)?|回复|回答)?(?:实际)?字数(?:统计|检查|校验|自检|小结|说明|报告)?';
+  const bookkeeping='(?:本轮|本次)?(?:信息小结|输出信息|输出自检|生成统计)';
+  const heading=new RegExp(`^[ \\t]*(?:#{1,6}[ \\t]*)?(?:\\*\\*)?(?:【|\\[)?(?:${count}|${bookkeeping})(?:】|\\])?(?:\\*\\*)?[ \\t]*(?:[:：][^\\r\\n]*)?[ \\t]*(?=\\r?$)`,'gmi');
+  for(const match of source.matchAll(heading)){
+    const start=match.index!;
+    // A later explicit story section can resume narrative in a continued/reformatted reply.
+    const rest=source.slice(start+match[0].length);
+    const resume=rest.search(/^[ \t]*<(?:now_plot|bbs_start)(?=[\s>])/mi);
+    ranges.push({start,end:resume<0?source.length:start+match[0].length+resume});
+  }
+  return ranges;
+}
+
 function retainedLineText(source: string, line: SourceLineRange, ranges: RemovalRange[]): string {
   const pieces: string[] = [];
   let cursor = line.start;
@@ -191,7 +208,6 @@ function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
   const noise: RemovalRange[] = [
     ...rangesForRegex(source, RE_THINK_BLOCK),
     ...rangesForRegex(source, RE_DRAFT_BLOCK),
-    ...rangesForRegex(source, RE_STORY_WRAPPER),
     ...rangesForRegex(source, /<!--[\s\S]+?-->/g),
     ...rangesForRegex(source, /<horae[\s\S]*?>[\s\S]*?<\/horae[\s\S]*?>/gi),
   ];
@@ -199,6 +215,10 @@ function targetRemovalRanges(source: string, tags: string[]): RemovalRange[] {
     if (!tag) continue;
     for (const regex of blockStripRegexes(tag)) noise.push(...rangesForRegex(source, regex));
   }
+
+  // A bookkeeping heading inside a draft/comment/example must not crop the real story.
+  // Keep story delimiters visible until footer boundaries have been determined.
+  noise.push(...metadataFooterRanges(maskedSource(source, noise)), ...rangesForRegex(source, RE_STORY_WRAPPER));
 
   const masked = maskedSource(source, noise);
   const crop: RemovalRange[] = [];

@@ -1,4 +1,5 @@
 import type { StreamPhase } from '@/autoTag/streamState';
+import { normalizeStreamBatchSize } from '@/autoTag/batchSettings';
 
 export interface StreamJob<P, R> {
   id: string;
@@ -16,7 +17,7 @@ export interface StreamJob<P, R> {
 }
 export interface StreamDependencies<P, R> {
   analyze: (job: StreamJob<P, R>) => Promise<P>;
-  /** Each group of three is analyzed together, with one independent result per marker. */
+  /** Each configured group is analyzed together, with one independent result per marker. */
   analyzeBatch?: (jobs: StreamJob<P, R>[]) => Promise<P[]>;
   batchFailed?: (jobs: StreamJob<P, R>[], error: unknown) => void;
   generate: (payload: P, job: StreamJob<P, R>) => Promise<R>;
@@ -27,9 +28,10 @@ export interface StreamDependencies<P, R> {
 }
 
 /** Expected sizes at full capacity; incomplete groups are dispatched only when input ends. */
-export function streamBatchSizes(capacity: number): number[] {
+export function streamBatchSizes(capacity: number, batchSize: number = 3): number[] {
   const total = Number.isFinite(capacity) ? Math.max(0, Math.floor(capacity)) : 0;
-  return Array.from({ length: Math.ceil(total / 3) }, (_, index) => Math.min(3, total - index * 3));
+  const size = normalizeStreamBatchSize(batchSize);
+  return Array.from({ length: Math.ceil(total / size) }, (_, index) => Math.min(size, total - index * size));
 }
 
 /** Analysis, rendering and persistence have separate lifetimes. DOM never starts jobs. */
@@ -45,8 +47,11 @@ export class StreamRun<P, R> {
   private singles = new Set<string>();
   private inputFinished = false;
   private analysisWaiters = new Set<() => void>();
+  readonly batchSize: number;
   constructor(readonly id: string, readonly max: number, readonly concurrency: number,
-    readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>) {}
+    readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>, batchSize = 3) {
+    this.batchSize = normalizeStreamBatchSize(batchSize);
+  }
 
   add(input: StreamJob<P, R>['input'], payload?: P): StreamJob<P, R> | null {
     if (this.stopped || this.jobs.filter(job => job.phase !== 'cancelled').length >= this.max) return null;
@@ -113,7 +118,7 @@ export class StreamRun<P, R> {
       this.queue = this.queue.filter(job => !job.controller.signal.aborted);
       if (!this.queue.length) break;
       const single = !this.dependencies.analyzeBatch || this.singles.has(this.queue[0].id);
-      const target = single ? 1 : 3;
+      const target = single ? 1 : this.batchSize;
       // A failed part retries through single requests; do not consume the next part's quota.
       const retryAt = this.queue.findIndex(item => this.singles.has(item.id));
       const available = retryAt > 0 ? retryAt : this.queue.length;

@@ -3,6 +3,27 @@ import { contextWithoutRepeatedTarget, markerSegments, prefixBefore, findMarkers
 import { prepareTargetText } from './clean';
 
 describe('stream analysis narrative context', () => {
+  it('ignores placeholder examples without rejecting short genuine scene intents',()=>{
+    expect(findMarkers('格式 [img: ...]\n[img: ……]\n[img: 中文画面意图]\n[img: 站台]')).toHaveLength(1);
+    expect(findMarkers('[img: 站台]')[0].intent).toBe('站台');
+  });
+  it.each(['【正文回答字数统计】','【本轮字数统计】','## 正文字数统计','**字数统计**','【信息小结】','【本轮输出信息】'])('ignores %s footer even when it has a plausible real intent',heading=>{
+    const story='旅人走到站台。\r\n[img: 站台相见]\r\n';
+    const footer=heading+'\r\n本轮约6000字。\r\n[img: 旅人在站台挥手]';
+    expect(findMarkers(story+footer).map(m=>m.intent)).toEqual(['站台相见']);
+    expect(prepareTargetText(story+footer,[]).segments.map(s=>s.text)).toEqual(['旅人走到站台。']);
+    expect(replaceMarkers(story+footer,['<slot>'])).toBe(story.replace('[img: 站台相见]','<slot>')+footer);
+  });
+  it('does not hide story dialogue mentioning statistics, and resumes at an explicit story section',()=>{
+    const text='她指着纸上“字数统计”的标题。\n[img: 看纸张]\n【本轮字数统计】\n100字\n[img: 忽略]\n<now_plot>\n旅人推开门。\n[img: 推门]\n</now_plot>';
+    expect(findMarkers(text).map(m=>m.intent)).toEqual(['看纸张','推门']);
+    expect(markerSegments(text)[1].sourceLine).toBe(6);
+  });
+  it.each(['<draft>\n【字数统计】\n[img: 草稿]\n</draft>','<!--\n【字数统计】\n[img: 注释]\n-->'])('does not let hidden bookkeeping headings crop the following real prose',hidden=>{
+    const text=hidden+'\n旅人推开门。\n[img: 推门]';
+    expect(findMarkers(text).map(m=>m.intent)).toEqual(['推门']);
+    expect(prepareTargetText(text,[]).segments.map(s=>s.text)).toEqual(['旅人推开门。']);
+  });
   it('ignores planned markers in open and closed drafts, retaining only actual story markers',()=>{
     const scanner=new MarkerScanner();
     const draft='<draft>\n只是在规划画面。\n[img: 门口]\n';

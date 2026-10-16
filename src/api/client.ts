@@ -1,5 +1,6 @@
 import { getContext } from '@/st/context';
 import type { ApiChannel } from '@/state/settings';
+import { buildVertexRequest, currentVertexSettings, geminiText } from './vertex';
 import {
   beginLlm,
   failLlm,
@@ -77,9 +78,11 @@ function readUsage(data: any): { prompt: number | null; completion: number | nul
   const usage = data?.usage;
   const num = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null;
+  const visible = num(data?.usageMetadata?.candidatesTokenCount);
+  const thoughts = num(data?.usageMetadata?.thoughtsTokenCount);
   return {
-    prompt: num(usage?.prompt_tokens),
-    completion: num(usage?.completion_tokens),
+    prompt: num(usage?.prompt_tokens) ?? num(data?.usageMetadata?.promptTokenCount),
+    completion: num(usage?.completion_tokens) ?? (visible === null && thoughts === null ? null : (visible ?? 0) + (thoughts ?? 0)),
   };
 }
 
@@ -202,6 +205,7 @@ export function buildRequestBody(
   reverseProxy: string,
   stream: boolean,
 ): Record<string, unknown> {
+  if (channel.provider === 'vertexai') return buildVertexRequest(channel, messages, stream);
   const effort = channel.reasoningEffort?.trim() ?? '';
   const common = {
     model: channel.model,
@@ -247,7 +251,7 @@ async function requestCompletionAtUrl(
 ): Promise<string> {
   const ctx = getContext();
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
-  if (!channel.url || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
+  if ((!channel.url && channel.provider !== 'vertexai') || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
 
   const stream = channel.stream ?? false;
   const body = buildRequestBody(channel, messages, reverseProxy, stream);
@@ -346,7 +350,7 @@ export async function readSseContent(resp: Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    // 按行解析,保留最后一段不完整的行到下次
+    // Parse complete lines; flush the final unterminated line at EOF as well.
     const lines = buf.split('\n');
     buf = lines.pop() ?? '';
     for (const line of lines) {
@@ -359,7 +363,7 @@ export async function readSseContent(resp: Response): Promise<string> {
         if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
         const choice = json?.choices?.[0];
         const src = choice?.delta ?? choice?.message;
-        const piece = textOf(src?.content) || textOf(choice?.text);
+        const piece = textOf(src?.content) || textOf(choice?.text) || geminiText(json);
         if (piece) out += piece;
         const reasoningPiece =
           textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
@@ -368,6 +372,18 @@ export async function readSseContent(resp: Response): Promise<string> {
         if (e instanceof ApiError) throw e;
         // 单行解析失败忽略(可能是注释行/心跳)
       }
+    }
+  }
+  if (buf.trim().startsWith('data:')) {
+    const payload = buf.trim().slice(5).trim();
+    if (payload && payload !== '[DONE]') {
+      try {
+        const json = JSON.parse(payload);
+        if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
+        const choice = json?.choices?.[0], src = choice?.delta ?? choice?.message;
+        out += textOf(src?.content) || textOf(choice?.text) || geminiText(json);
+        reasoningOut += textOf(src?.reasoning) || textOf(src?.reasoning_content) || textOf(src?.thinking);
+      } catch (e) { if (e instanceof ApiError) throw e; }
     }
   }
   return out.trim() || reasoningOut.trim();
@@ -400,7 +416,7 @@ function textOf(value: unknown): string {
 export function extractContent(data: any): string {
   const msg = data?.choices?.[0]?.message;
   const content =
-    textOf(msg?.content) || textOf(data?.choices?.[0]?.text) || textOf(data?.content);
+    textOf(msg?.content) || textOf(data?.choices?.[0]?.text) || textOf(data?.content) || geminiText(data);
   if (content.trim()) return content.trim();
   return (
     textOf(msg?.reasoning) || textOf(msg?.reasoning_content) || textOf(msg?.thinking)
@@ -473,6 +489,12 @@ export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOption
 
 /** 连通性测试:发一条极短请求 */
 export async function testChannel(channel: ApiChannel): Promise<{ ok: boolean; message: string }> {
+  if (channel.provider === 'vertexai') {
+    try {
+      const reply = await requestCompletion(channel, [{role:'user',content:'Reply with ok.'}], {source:'Vertex 连通性测试'});
+      return {ok:true,message:`Vertex 连通正常，返回：${reply.slice(0,40)}`};
+    } catch (e) { return {ok:false,message:e instanceof Error?e.message:String(e)}; }
+  }
   const primaryUrl = normalizeUrl(channel.url);
   try {
     const reply = await requestCompletionAtUrl(
@@ -522,8 +544,13 @@ const STATUS_URL = '/api/backends/chat-completions/status';
  * 只需 url + key,不需要先填 model。
  */
 export async function fetchModels(
-  channel: Pick<ApiChannel, 'url' | 'key'> & Partial<Pick<ApiChannel, 'timeoutSec'>>,
+  channel: Pick<ApiChannel, 'url' | 'key'> & Partial<Pick<ApiChannel, 'timeoutSec' | 'provider'>>,
 ): Promise<string[]> {
+  if (channel.provider === 'vertexai') {
+    const model = currentVertexSettings().model;
+    if (!model) throw new ApiError('请直接填写 Vertex 模型名；TT 不提供完整远端模型列表。');
+    return [model];
+  }
   const ctx = getContext();
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
   if (!channel.url) throw new ApiError('请先填写 API 地址');

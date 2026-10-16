@@ -36,7 +36,7 @@ beforeEach(()=>{
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';
-  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2});
+  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
 });
@@ -46,6 +46,26 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  it('freezes batch size for the current floor and applies a changed value on the next floor',async()=>{
+    Object.assign(settings.autoTag,{maxImages:13,streamAnalysisBatchSize:5,streamAnalysisConcurrency:1});
+    beginStreamSession('A');settings.autoTag.streamAnalysisBatchSize=2;
+    feedStreamText(story(4));await flush();expect(h.analyses).toHaveLength(0);
+    feedStreamText(story(13));await flush();expect(h.analyses[0].m[0].options.maxImages).toBe(5);
+    finishAnalysis(0);await flush();expect(h.analyses[1].m[0].options.maxImages).toBe(5);
+    finishAnalysis(1);await flush();expect(h.analyses).toHaveLength(2);
+    await attachStory(story(13));expect(h.analyses[2].m[0].options.maxImages).toBe(3);
+    finishAnalysis(2);await flush();expect(h.images).toHaveLength(13);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(13);
+    h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续'});beginStreamSession('A');feedStreamText(story(2));await flush();
+    expect(h.analyses[3].m[0].options.maxImages).toBe(2);finishAnalysis(3);await flush();
+  });
+  it('does not dispatch a fourth image from a word-count footer or use its text for gap filling',async()=>{
+    Object.assign(settings.autoTag,{maxImages:21,minImages:3,streamGapSupplement:true});
+    const footer='\n【正文回答字数统计】\n'+('本轮正文约6000字。'.repeat(180))+'\n[img: 旅人挥手]';
+    const text=story(3)+footer;beginStreamSession('A');feedStreamText(text);await flush();
+    expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0].content).not.toContain('6000');
+    finishAnalysis(0);await flush();await attachStory(text);
+    expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(3);expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(h.ctx.chat[1].mes).toContain(footer);
+  });
   it('keeps simple mode for all batches in a run and uses a changed setting on the next run',async()=>{
     Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:'simple'});
     Object.assign(settings.autoTag,{maxImages:6,streamAnalysisConcurrency:1});
