@@ -538,6 +538,8 @@ export interface AutoTagSettings {
   streamGen?: boolean;
   /** 流式出图的浮层预览(默认关)。开启后流式期间在屏幕角落浮层显示已生成的缩略图。 */
   streamPreview?: boolean;
+  /** Display completed images at their live prose markers without writing the message. Default off. */
+  streamInlinePreview?: boolean;
   /** 达到数量下限后仍补画未覆盖的长正文段落。默认关，避免额外分析等待。 */
   streamGapSupplement?: boolean;
   /** 流式分段分析的并发上限(1~4,默认 2):同时几批副API分析在飞；每批是一段。 */
@@ -1667,6 +1669,7 @@ function defaults(): ImageSettings {
       autoGenerate: true,
       streamGen: false,
       streamPreview: false,
+      streamInlinePreview: false,
       streamGapSupplement: false,
       streamAnalysisConcurrency: 2,
       streamAnalysisBatchSize: 3,
@@ -2304,6 +2307,8 @@ function normalize(raw: unknown): ImageSettings {
     streamGen: typeof rt.streamGen === 'boolean' ? rt.streamGen : d.autoTag.streamGen,
     streamPreview:
       typeof rt.streamPreview === 'boolean' ? rt.streamPreview : d.autoTag.streamPreview,
+    streamInlinePreview:
+      typeof rt.streamInlinePreview === 'boolean' ? rt.streamInlinePreview : d.autoTag.streamInlinePreview,
     streamGapSupplement:
       typeof rt.streamGapSupplement === 'boolean' ? rt.streamGapSupplement : d.autoTag.streamGapSupplement,
     streamAnalysisConcurrency:

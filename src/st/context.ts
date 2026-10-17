@@ -68,6 +68,8 @@ export interface STCharacter {
 }
 
 export interface STContext {
+  /** Public host streaming owner, read only; never replaced by the extension. */
+  streamingProcessor?: { messageId?: number; isStopped?: boolean; isFinished?: boolean } | null;
   /** Public host settings; contains credential selectors, not secret values. */
   chatCompletionSettings?: Record<string, unknown>;
   chat: STMessage[];

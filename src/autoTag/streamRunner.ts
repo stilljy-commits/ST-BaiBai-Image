@@ -1,5 +1,7 @@
 import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
+import { StreamInlinePreview, type InlinePreviewSnapshot } from '@/autoTag/streamInlinePreview';
+import { openLightbox } from '@/floor/lightbox';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import type { CharTagEntry } from '@/state/charTags';
 import { requestCompletion, requestViaMainApi, type ChatMsg } from '@/api/client';
@@ -17,7 +19,7 @@ import { mergeStreamProfiles } from '@/autoTag/streamProfiles';
 import { registerStreamActions, updateStreamSlot, forgetStreamSlot } from '@/autoTag/streamState';
 import { planChangeOps } from '@/autoTag/changeOps';
 import { charTagsBeforeFloor, lockedCharTagNames, makeCharTagFloorDelta, readCharTagFloorDelta, recomputeCharTags, applyCharTagOps, BBI_CHAR_EXTRA_KEY, type CharTagAutoOp } from '@/state/charTags';
-import { settings, getTagGenChannel, isCurrentChatExcluded, type AutoTagSettings } from '@/state/settings';
+import { settings, getTagGenChannel, isCurrentChatExcluded, imageDisplayMaxHeight, type AutoTagSettings } from '@/state/settings';
 import { captureGenerationSnapshot, generateImage, decideSeed, type GenerationSnapshot, type GenerateOutput } from '@/generate';
 import { saveImageResult } from '@/floor/storage';
 import { hydrateMessage } from '@/floor/hydrate';
@@ -37,6 +39,8 @@ interface Session {
   stripTags: string[];
   promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText;
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
+  inline?: StreamInlinePreview;
+  inlineOwner?: { processor: NonNullable<STContext['streamingProcessor']>; floor: number; message: STMessage; swipe: number | null };
   controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; changeOps: Map<string, CharTagAutoOp>; completed: boolean; supplementDone: boolean;
 }
 const sessions = new Map<string, Session>();
@@ -50,7 +54,10 @@ const jsonCopy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 function ownerValid(s: Session): boolean {
   const ctx = getContext();
   if (!ctx || ctx.getCurrentChatId() !== s.chatId) return false;
-  if (!s.binding) return true;
+  if (!s.binding) {
+    const owner=s.inlineOwner;
+    return !owner || (!!ctx.chat[owner.floor]&&isSameMessage(ctx.chat[owner.floor],owner.message)&&swipe(ctx.chat[owner.floor])===owner.swipe&&(!ctx.streamingProcessor||ctx.streamingProcessor===owner.processor));
+  }
   const { floor, message, expectedSwipe } = s.binding;
   return !!ctx.chat[floor] && isSameMessage(ctx.chat[floor], message) && swipe(ctx.chat[floor]) === expectedSwipe;
 }
@@ -82,6 +89,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const ctx = getContext();
   if (current && !current.completed) {
     current.controller.abort(); current.core.cancel();
+    disposeInlinePreview(current);
     document.getElementById(`bbi-preview-${current.id}`)?.remove(); sessions.delete(current.id);
   }
   current = undefined;
@@ -129,18 +137,20 @@ export function cancelStreamSessions(keepChatId?: string): void {
   for (const [id, s] of sessions) {
     if (keepChatId && s.chatId === keepChatId) continue;
     s.controller.abort(); s.core.cancel(); for (const job of s.core.jobs) forgetStreamSlot(job.id);
+    disposeInlinePreview(s);
     document.getElementById(`bbi-preview-${id}`)?.remove(); sessions.delete(id);
     if (current === s) current = undefined;
   }
 }
 export function stopCurrentStream(): void {
-  if (!current) return; current.controller.abort(); current.core.cancel(); current.completed = true; current.supplementDone = true; retire(current); current = undefined;
+  if (!current) return; current.controller.abort(); current.core.cancel(); disposeInlinePreview(current); current.completed = true; current.supplementDone = true; retire(current); current = undefined;
 }
 export function invalidateStreamOwners(): void {
   for (const [id, s] of sessions) if (!ownerValid(s)) {
     s.controller.abort(); s.core.cancel();
+    disposeInlinePreview(s);
     document.getElementById(`bbi-preview-${id}`)?.remove(); sessions.delete(id);
-  }
+  } else s.inline?.refresh();
 }
 
 export function feedStreamText(text: string): void {
@@ -154,6 +164,7 @@ export function feedStreamText(text: string): void {
       prefix: prefixBefore(text, ordinal, 6000,s.stripTags), sourceLine: segment.sourceLine });
     if (job) log('stream:dispatch', { run: s.id, job: job.id, withoutFloor: true });
   }
+  updateInlinePreview(s);
 }
 
 async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图'): Promise<void> {
@@ -453,14 +464,15 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
     attached.push(job); const tag = tagFor(s, job); s.written.set(job.id, tag); return tag;
   });
   // Reserve every accepted slot before awaiting uploads or any image task.
+  const finishInline=s.inline?.beginHandoff();
   const ok = await serial(s, () => applyMessageText(floor, text => {
     const liveMarkers = findMarkers(text,s.stripTags);
     if (liveMarkers.length !== segments.length || liveMarkers.some((marker, i) => marker.raw !== segments[i].marker.raw)) return null;
     return replaceMarkers(text, replacements,s.stripTags);
-  }, chatId, s.binding!.expectedSwipe, message));
-  if (ok !== 'saved') { s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
+  }, chatId, s.binding!.expectedSwipe, message)).catch(error=>{disposeInlinePreview(s);finishInline?.();throw error;});
+  if (ok !== 'saved') { disposeInlinePreview(s);finishInline?.();s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
   s.completed = true; current = undefined; updatePreview(s); s.core.attach(attached); s.core.finishInput();
-  hydrateMessage(floor, ctx); void ensureFloorRendered(ctx, message, floor, chatId);
+  hydrateMessage(floor, ctx);finishInline?.(); void ensureFloorRendered(ctx, message, floor, chatId);
   log('stream:attached', { run: s.id, floor, slots: attached.length });
   void supplement(s, attached.length + parseImageTags(final).length).catch(error => {
     if (s.controller.signal.aborted) return;
@@ -536,11 +548,38 @@ export function refreshStreamPreviews(): void {
   for (const s of sessions.values()) updatePreview(s);
 }
 function updatePreview(s: Session): void {
+  updateInlinePreview(s);
+  updateFloatingPreview(s);
+}
+function disposeInlinePreview(s:Session):void{const inline=s.inline;s.inline=undefined;inline?.dispose();}
+function inlineSnapshot(s:Session):InlinePreviewSnapshot|null{
+  if(s.completed||s.controller.signal.aborted||!settings.enabled||!settings.autoTag.enabled||!settings.autoTag.streamGen||!settings.autoTag.streamInlinePreview||!ownerValid(s))return null;
+  const ctx=getContext(),processor=ctx?.streamingProcessor,floor=processor?.messageId;
+  if(!ctx||!processor||processor.isStopped||typeof floor!=='number'||!Number.isInteger(floor)||floor<0)return null;
+  const message=ctx.chat[floor];if(!message||message.is_user)return null;
+  const owner=s.inlineOwner;
+  if(owner&&(owner.processor!==processor||owner.floor!==floor||!isSameMessage(message,owner.message)||swipe(message)!==owner.swipe))return null;
+  const chat=document.getElementById('chat'),root=chat?.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
+  if(!chat||!root||root.querySelector('textarea'))return null;
+  const segments=markerSegments(message.mes,s.stripTags),markers=segments.map(segment=>segment.marker);
+  const jobs=s.core.jobs.filter(job=>job.result&&!job.attached&&!job.saved&&job.phase!=='cancelled'&&markers[job.ordinal]?.raw===job.input.raw&&segments[job.ordinal].segment.trim().endsWith(job.input.text.trim()));
+  if(!s.inlineOwner&&jobs.length)s.inlineOwner={processor,floor,message,swipe:swipe(message)};
+  return {chat,root,markers:markers.map(marker=>marker.raw),maxHeight:imageDisplayMaxHeight(settings.ui.imageDisplaySize),items:jobs.map(job=>({id:job.id,ordinal:job.ordinal,raw:job.input.raw,url:job.result!.result.url,dimensions:streamDimensions(s,job)}))};
+}
+function streamDimensions(s:Session,job:Job){
+  return s.generation.backend==='nai'?parseSize(pickSize(s.generation.nai,effectiveOrientation(s.generation.orientation,job.payload?.image.size??s.promptEnvironment.profile.lockedSize??'portrait'))||'832×1216')??undefined:undefined;
+}
+function updateInlinePreview(s:Session):void{
+  if(s.completed||s.controller.signal.aborted||!settings.enabled||!settings.autoTag.enabled||!settings.autoTag.streamGen||!settings.autoTag.streamInlinePreview){disposeInlinePreview(s);return;}
+  if(!s.inline&&s.core.jobs.some(job=>job.result&&!job.saved&&!job.attached))s.inline=new StreamInlinePreview(()=>inlineSnapshot(s),()=>updateFloatingPreview(s),item=>openLightbox({src:item.url}));
+  s.inline?.refresh();
+}
+function updateFloatingPreview(s: Session): void {
   const id = `bbi-preview-${s.id}`;
   let host = document.getElementById(id);
   if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen ||
     !settings.autoTag.streamPreview || s.completed || !ownerValid(s)) { host?.remove(); return; }
-  const jobs = s.core.jobs.filter(job => job.result && !job.attached && !job.saved && job.phase !== 'cancelled');
+  const jobs = s.core.jobs.filter(job => job.result && !job.attached && !job.saved && job.phase !== 'cancelled' && !s.inline?.has(job.id));
   if (!jobs.length) { host?.remove(); return; }
   if (!host) {
     host = document.createElement('div'); host.id = id;

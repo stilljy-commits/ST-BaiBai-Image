@@ -48,6 +48,7 @@ src/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
 │   ├── runner.ts      # 事件监听、去重、重试、编排(入口)
+│   ├── streamInlinePreview.ts # 可选的流式正文图片预览：只显示已完成图，不写聊天；节点复用、阅读锚点及正式卡片接管
 │   ├── generationGate.ts # 生成门:把自动 tag 与真实生成配对(GENERATION_STARTED 武装 → 最终 RENDERED 消费)
 │   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链
 │   ├── protocol.ts    # 段尾位置 ID、JSON 严格解析校验、tag 注入格式

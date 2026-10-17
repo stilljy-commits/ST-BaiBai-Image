@@ -110,7 +110,7 @@ async function hydrateWhenReady(attempt = 0) {
       watch(() => [settings.enabled, settings.autoTag.enabled, settings.autoTag.streamGen, settings.autoTag.minImages, settings.autoTag.maxImages], () => {
         syncMarkerInjection(); if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen) stopCurrentStream();
       });
-      watch(() => [settings.enabled, settings.autoTag.enabled, settings.autoTag.streamGen, settings.autoTag.streamPreview], refreshStreamPreviews);
+      watch(() => [settings.enabled, settings.autoTag.enabled, settings.autoTag.streamGen, settings.autoTag.streamPreview, settings.autoTag.streamInlinePreview, settings.ui.imageDisplaySize], refreshStreamPreviews);
       // 公开接口必须排在 hydrateSettings 之后:设置回灌前 getBackendStatus() 读的是
       // 默认值,会把配好的用户报成「未配置」。排在 bindCharTagSync 之后则是为了让
       // ready 事件里的 revision 已经对应真实角色库。

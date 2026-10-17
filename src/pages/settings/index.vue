@@ -732,6 +732,12 @@ async function confirmUpdate() {
         </p>
 
         <label class="bbi-switch-row">
+          <span class="bbi-field-label">正文生成时显示已完成图片</span>
+          <input v-model="settings.autoTag.streamInlinePreview" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p class="bbi-field-hint">默认关闭。开启流式出图后，已生成图片会提前显示在对应段落，不给未完成图片添加大块占位；正文结束后照常保存。只改变显示，不增加分析或生图请求。无法可靠定位时等正文结束再插入；已在正文预览的图片不重复放入浮层。</p>
+
+        <label class="bbi-switch-row">
           <span class="bbi-field-label">流式浮层预览(流式期间在角落显示已出缩略图)</span>
           <input v-model="settings.autoTag.streamPreview" type="checkbox" class="bbi-checkbox" />
         </label>

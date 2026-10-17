@@ -1,5 +1,13 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
-const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
+const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],inlines:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
+vi.mock('@/autoTag/streamInlinePreview',()=>({StreamInlinePreview:class {
+ snapshot:any;disposed=false;handoff=false;finished=false;
+ constructor(public read:()=>any,public changed:()=>void){h.inlines.push(this);}
+ refresh(){if(!this.disposed)this.snapshot=this.read();}
+ has(id:string){return !this.disposed&&!!this.snapshot?.items.some((item:any)=>item.id===id);}
+ beginHandoff(){this.handoff=true;return()=>{this.finished=true;};}
+ dispose(){this.disposed=true;}
+}}));
 vi.mock('@/st/context',()=>({getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
 vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any,compactSpec:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode,compactSpec}]}));
@@ -12,7 +20,7 @@ vi.mock('@/st/messageEdit',async importOriginal=>({ ...await importOriginal<type
 vi.mock('@/generate',()=>({captureGenerationSnapshot:()=>({backend:'nai',nai:{seed:42,model:'nai-diffusion-5-full'},status:{configured:true},comfy:{},orientation:'auto'}),decideSeed:()=>42,
   generateImage:(input:any,signal:any)=>new Promise(resolve=>h.images.push({input,signal,resolve}))}));
 import { settings } from '@/state/settings';
-import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews } from './streamRunner';
+import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews, invalidateStreamOwners, stopCurrentStream } from './streamRunner';
 import { saveImageResult } from '@/floor/storage';
 import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
 import { cancelStreamSlot, retryStreamSlot, streamSlotState } from '@/autoTag/streamState';
@@ -35,12 +43,12 @@ function previewDocument(){
   return hosts;
 }
 beforeEach(()=>{
-  h.analyses=[];h.images=[];h.saveWait=null;vi.clearAllMocks();
+  h.analyses=[];h.images=[];h.inlines=[];h.saveWait=null;vi.clearAllMocks();
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.channels=[];settings.assignments.tagGen='';
   settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';
-  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
+  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamInlinePreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
 });
@@ -50,6 +58,34 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  async function inlineStory(){
+    const hosts=previewDocument();hosts.set('chat',{querySelector:()=>({querySelector:()=>null})});
+    settings.autoTag.streamInlinePreview=true;settings.autoTag.maxImages=3;
+    beginStreamSession('A');h.ctx.chat.push(ai(story(3)));h.ctx.streamingProcessor={messageId:1};feedStreamText(story(3));await flush();finishAnalysis(0);await flush();finishImage(0);await flush();
+    return hosts;
+  }
+  it('projects only completed results before finalization without writing prose or requesting extra work',async()=>{
+    await inlineStory();const inline=h.inlines[0];expect(inline.snapshot.items).toHaveLength(1);expect(inline.snapshot.items[0].ordinal).toBe(0);
+    expect(h.ctx.chat[1].mes).toBe(story(3));expect(h.ctx.saveChat).not.toHaveBeenCalled();expect(saveImageResult).not.toHaveBeenCalled();expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);
+    await reconcileStreamFloor(1,'A');await flush();expect(inline.handoff&&inline.finished&&inline.disposed).toBe(true);
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledTimes(1);
+  });
+  it('keeps floating preview for fallback results and restores it when inline display is disabled',async()=>{
+    const hosts=await inlineStory();settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);
+    const first=h.inlines[0];settings.autoTag.streamInlinePreview=false;refreshStreamPreviews();expect(first.disposed).toBe(true);expect(hosts.size).toBe(2);
+    settings.autoTag.streamInlinePreview=true;refreshStreamPreviews();expect(h.inlines).toHaveLength(2);expect(hosts.size).toBe(1);expect(h.images).toHaveLength(3);
+  });
+  it.each(['stop','chat','swipe','processor','delete'])('clears live ownership on %s and does not attach a late result elsewhere',async(action)=>{
+    await inlineStory();const inline=h.inlines[0];
+    if(action==='stop')stopCurrentStream();
+    else if(action==='chat'){h.ctx.getCurrentChatId=()=> 'B';cancelStreamSessions('B');}
+    else {if(action==='swipe'){h.ctx.chat[1].swipes=[story(3),'其他回答'];h.ctx.chat[1].swipe_id=1;}
+      if(action==='processor')h.ctx.streamingProcessor={messageId:1};if(action==='delete')h.ctx.chat.pop();invalidateStreamOwners();}
+    expect(inline.disposed).toBe(true);finishImage(1);await flush();expect(saveImageResult).not.toHaveBeenCalled();expect(h.inlines).toHaveLength(1);
+  });
+  it('falls back when the host exposes no trustworthy streaming owner',async()=>{
+    await inlineStory();h.ctx.streamingProcessor=undefined;refreshStreamPreviews();expect(h.inlines[0].snapshot).toBeNull();expect(h.ctx.chat[1].mes).toBe(story(3));
+  });
   it('freezes batch size for the current floor and applies a changed value on the next floor',async()=>{
     Object.assign(settings.autoTag,{maxImages:13,streamAnalysisBatchSize:5,streamAnalysisConcurrency:1});
     beginStreamSession('A');settings.autoTag.streamAnalysisBatchSize=2;
