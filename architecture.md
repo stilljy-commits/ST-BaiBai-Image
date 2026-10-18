@@ -37,6 +37,7 @@ src/
 │   └── iconFallback.ts# 注入按钮的字体图标兜底(防美化主题清空图标)
 ├── state/             # 全局状态与持久化
 │   ├── settings.ts    # ★ 设置模型 + hydrate/persist/迁移 + 跨插件共享渠道存储
+│   ├── comicRuleTabs.ts # 五组漫画附加规则的迁移/切换/编辑;comicExtraRules 始终只存当前组,供三种分析模式与会话快照共用
 │   ├── ui.ts          # 窗口开关/主题/导航/悬浮球;activePage 存 localStorage
 │   │                  # (纯浏览态都走 localStorage:渠道页签记忆同理,在 backend/index.vue)
 │   ├── history.ts     # 请求历史(LLM 推理+生图)模块级内存 store,刻意不持久化

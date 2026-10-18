@@ -31,7 +31,7 @@ import {
   DEFAULT_NAI_COMIC_THINKING,
   DEFAULT_NAI_COMIC_V2_SPEC,
   DEFAULT_NAI_COMIC_V2_THINKING,
-  DEFAULT_COMIC_NSFW_RULES,
+  DEFAULT_COMIC_ENGINEERING_RULES,
   DEFAULT_NAI_SPEC,
   DEFAULT_NAI_THINKING,
   DEFAULT_NAI_V5_SPEC,
@@ -131,14 +131,14 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
       if (planning === 'fixed-markers') spec = spec
         .replace('- position:不变,仍是正文 P 编号。', '- position:直接照抄本次标记的 M 编号,图片插入位置由插件处理;正文 P 编号仅供角色变化时序使用。')
         .replaceAll('"position":"P2"', '"position":"M1"');
-      // NSFW 工程规则(默认开;仅规范文本追加,发送端无额外处理,由 LLM 按分级自行适用)
+      // 画面工程规则由同一开关控制:通用部分适用所有画面,专项由 LLM 按分级适用。
       if (environment.nai.comicNsfwRules) {
-        spec += `\n\n${DEFAULT_COMIC_NSFW_RULES}`;
+        spec += `\n\n${DEFAULT_COMIC_ENGINEERING_RULES}`;
       }
       // 用户自定义附加规则(默认=女性胸部加强+男性面部弱化;清空=不附加):优先级最高
       const extra = (environment.nai.comicExtraRules ?? '').trim();
       if (extra) {
-        spec += `\n\n━━━ 六、附加规则(优先级最高) ━━━\n${extra}`;
+        spec += `\n\n━━━ 六、附加规则(优先级最高) ━━━\n以下自然语言画面要求优先于默认取舍,但不改变输出格式、标记对应、数量和本次对白开关。\n${extra}`;
       }
       // 关闭「对白上画」:追加纯视觉叙事条款(Text/气泡一律不写;发送端另有兜底剥除)
       if (environment.nai.comicText === false) {

@@ -1143,7 +1143,7 @@ describe('auto tag prompt', () => {
     }
   });
 
-  it('NSFW 工程规则块随 comicNsfwRules 开关注入与移除', async () => {
+  it('通用与 NSFW 工程规则随同一 comicNsfwRules 开关一同注入与移除', async () => {
     const options: AutoTagSettings = {
       enabled: true,
       contextMessages: 2,
@@ -1174,7 +1174,9 @@ describe('auto tag prompt', () => {
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
-      // 3A:六项检查全部注入,且明确仅 NSFW 页适用。
+      expect(text).toContain('画面工程规则(统一开关)');
+      expect(text).toContain('通用部分适用于 SFW 与 NSFW 的所有页面');
+      // 原六项专项保留,只在对应分级适用。
       expect(text.includes('NSFW 工程规则(仅分级为 NSFW 的页面适用;SFW 页跳过)')).toBe(true);
       for (const item of ['表情神态', '标准体位术语', '体液交互', '衣物脱卸边界', '可见器官零件', '骨盆挂载与人体工学']) {
         expect([item, text.includes(item)]).toEqual([item, true]);
@@ -1184,6 +1186,8 @@ describe('auto tag prompt', () => {
       settings.nai.comicNsfwRules = false;
       const offMessages = await buildAutoTagMessages(context(), 1, options, null);
       const offText = offMessages.map(m => m.content).join('\n');
+      expect(offText).not.toContain('画面工程规则(统一开关)');
+      expect(offText).not.toContain('通用画面约束:');
       expect(offText.includes('杜绝穿裤做、凭空全裸')).toBe(false);
       expect(offText.includes('骨盆挂载与人体工学')).toBe(false);
     } finally {

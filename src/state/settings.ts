@@ -20,6 +20,7 @@ import {
 } from '@/backends/vibeStore';
 import { getContext } from '@/st/context';
 import { normalizeStreamBatchSize } from '@/autoTag/batchSettings';
+import { normalizeComicRuleTabs, type ComicRuleTab } from '@/state/comicRuleTabs';
 import { reactive, watch } from 'vue';
 
 /**
@@ -335,10 +336,9 @@ export interface NaiSettings extends BackendConn {
    */
   comicAntiPossession?: boolean;
   /**
-   * 漫画页 NSFW 工程规则(comicMode 开启时生效,默认开)。开启后规范末尾追加
-   * 「NSFW 工程规则」块(源自 NAI 1.3.1 预设分级标定的六项检查:表情神态/
-   * 标准体位术语/体液质感/衣物脱卸边界/可见器官零件/骨盆挂载与支撑防穿模),
-   * 仅对分级标定为 NSFW 的页面生效,SFW 页不受影响。
+   * 漫画页画面工程规则(comicMode 开启时生效,默认开)。统一控制通用画面约束
+   * 与原有 NSFW 专项;通用部分适用于所有页面,专项按页面分级适用。
+   * 保留旧字段名,继承用户已有的开关选择。
    */
   comicNsfwRules?: boolean;
   /**
@@ -347,6 +347,9 @@ export interface NaiSettings extends BackendConn {
    * 默认内容 = 女性胸部加强 + 男性面部弱化(源自用户自定义的 NAI 规范/思维链)。
    */
   comicExtraRules?: string;
+  /** 五组附加规则;只有当前页签的正文镜像到 comicExtraRules 并参与分析。 */
+  comicExtraRuleTabs?: ComicRuleTab[];
+  activeComicExtraRuleTab?: number;
   /**
    * 画风配方库(画师串 + 可选绑定的正/负面词)。**与 ComfyUI 工作流库相反:允许为空**——
    * 工作流不给就没法出图,故那边有「恒非空」不变式;配方不给只是不加画风,是可选调味。
@@ -1236,7 +1239,7 @@ export const DEFAULT_COMIC_EXTRA_RULES = `女性胸部规则:每个女性角色(
 本块与规范其他条款冲突时,以本块为准(包括思维链对表情/视线的要求——男性角色按本块执行,女性角色不受影响)。`;
 
 /**
- * 漫画页 NSFW 工程规则内置默认(nai.comicNsfwRules 开启时追加,仅 NSFW 页适用)。
+ * 漫画页工程规则的 NSFW 专项部分;通过统一开关与通用部分一同追加。
  * 内容迁移自 NAI 1.3.1 预设「🔞分级标定」条目的 NSFW 段,六项检查原样保留,
  * 示例词从日文转成我们链路的英文 Danbooru tag 口径。
  */
@@ -1249,6 +1252,17 @@ export const DEFAULT_COMIC_NSFW_RULES = `━━━ NSFW 工程规则(仅分级�
 5. 可见器官零件(区域 ≠ 零件):台本写了裸露、脱掉、插入、含住、射出,且该格能看见对应部位时,必须写出零件名(nipples, areola, penis, erection, pussy, labia, clitoris, anus);只写 nude, topless, no bra, spread legs 视为漏写;头发、手、角度明确挡住某零件时写遮挡物,不发明该零件。本格第一焦点才是该零件时才可按权重规则微权(如 1.15::nipples::),禁止整页给所有器官加权重。
 6. 骨盆挂载与人体工学(防悬浮、穿模、吞人):外露器官必须写明长在裸出的胯部/骨盆上(如 penis rising directly from the exposed pelvis),禁止器官悬空或从家具里长出来;抚摸、握住、插入、含住必须写相对空间,不要只写动词(如 hand between spread thighs, glans against pussy);涉及桌子、床沿、沙发时写清谁坐/躺/站/跪、谁高谁低,禁止两人同一水平线却强行做上下插入;施动者的手必须有着力点(如 hands gripping the desk edge),禁止双手悬空;特写格仍要留下被动方的一条锚定肢体或承托面(如 back against the sofa),禁止特写只剩器官、人被家具吃掉。
 本块与规范其他条款冲突时,以本块为准。`;
+
+/** One switch in every analysis mode; no additional thinking/checklist output is requested. */
+export const DEFAULT_COMIC_ENGINEERING_RULES = `━━━ 画面工程规则(统一开关) ━━━
+以下是一套画面约束:通用部分适用于 SFW 与 NSFW 的所有页面,后附 NSFW 专项仅按实际页面分级适用。直接落实到画面描述,不新增逐项检查报告。
+通用画面约束:
+1. 人物与可见性:外貌、衣着、动作和表情分别归属对应人物;只描述当前取景可见的部分,被遮挡或裁出的细节不强行补画。
+2. 动作与支撑:保留核心动作的参与者、对象、必要接触点与承托关系;站坐躺姿态、手持物和支撑面简明自洽,避免悬浮、穿模和肢体归属混乱,不精算关节角度或空间坐标。
+3. 衣着与道具连续:沿用正文当前衣着、关键道具归属与显著状态,明确变化才更新;镜头外省略不代表恢复默认状态,不凭空增删。
+4. 神态与取景:脸部可见时保留主要情绪与视线;取景能容纳本格核心动作,特写保留必要的主体或环境锚点,不为非关键细节堆叠描述。
+
+${DEFAULT_COMIC_NSFW_RULES}`;
 
 /**
  * 漫画页模式规范附加块:共同映画文法 + 可选风格/留白/色彩/光影/道具场景一致性/防夺舍。
@@ -1621,7 +1635,7 @@ function naiDefaults(): NaiSettings {
     comicLighting: true,
     comicAntiPossession: false,
     comicNsfwRules: true,
-    comicExtraRules: DEFAULT_COMIC_EXTRA_RULES,
+    ...normalizeComicRuleTabs({ comicExtraRules: DEFAULT_COMIC_EXTRA_RULES }),
     concurrency: 1,
     vibes: [],
     // 用户库为空:库里只有用户自己建的配方,官方推荐的那条是内置只读条目
@@ -2176,8 +2190,7 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
         : def.comicAntiPossession,
     comicNsfwRules:
       typeof o.comicNsfwRules === 'boolean' ? o.comicNsfwRules : def.comicNsfwRules,
-    comicExtraRules:
-      typeof o.comicExtraRules === 'string' ? o.comicExtraRules : def.comicExtraRules,
+    ...normalizeComicRuleTabs(o, def.comicExtraRules),
     concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
     vibes: Array.isArray(o.vibes)
       ? o.vibes.map((v, i) => normalizeVibe(v, i)).filter((v): v is NaiVibe => v !== null)

@@ -1,5 +1,5 @@
 import type { NaiSettings } from '@/state/settings';
-import { resolveComicPanelStyle, resolveComicGutterMode, DEFAULT_COMIC_NSFW_RULES } from '@/state/settings';
+import { resolveComicPanelStyle, resolveComicGutterMode, DEFAULT_COMIC_ENGINEERING_RULES } from '@/state/settings';
 import { CHAR_TAG_FIELDS, type CharTagEntry, type CharTagField } from '@/state/charTags';
 import { parseImagePlan, type ImagePlan, type MarkerTargets } from './protocol';
 import type { PreparedTargetText } from './clean';
@@ -67,8 +67,8 @@ state 是该标记对应段落结束时的连续状态：{complete:true,facts:"�
 每页可见人物实例总数不超过22，同一人物跨格分别计数；接近后端容量时合并重复镜头，保留核心动作与参与者。
 所选分镜偏好：${style.description}
 所选留白：${resolveComicGutterMode(nai.comicGutter).description}
-${nai.comicExtraRules?.trim() ? `用户画面偏好（保留其视觉要求；旧@page/@panel/@character指对应页/格/人物，不执行旧格式或分析流程）：\n${nai.comicExtraRules.trim()}` : ''}
-${nai.comicNsfwRules ? `已开启的画面约束（保留视觉要求，落实在scene和逐人物action/outfit/omit，不输出旧格式或检查过程）：\n${DEFAULT_COMIC_NSFW_RULES}` : ''}
+${nai.comicNsfwRules ? `已开启的画面约束（保留视觉要求，落实在scene和逐人物action/outfit/omit，不输出旧格式或检查过程）：\n${DEFAULT_COMIC_ENGINEERING_RULES}` : ''}
+${nai.comicExtraRules?.trim() ? `用户画面偏好（视觉要求优先于默认取舍，但不改变输出格式、标记对应、数量和本次对白开关；旧@page/@panel/@character指对应页/格/人物，不执行旧格式或分析流程）：\n${nai.comicExtraRules.trim()}` : ''}
 ${!nai.comicV2 && nai.comicAntiPossession ? '可选 negative：只列可靠的原作画风排除标签，不排除角色正确身份和外貌；程序写入V1页尾。' : ''}
 结构示例只示范字段：{"pages":[{"id":"${context.markers ? 'M1' : 'P1'}","scene":"station, daylight","profiles":[],"changes":[],"shots":[{"camera":"medium shot","actors":[{"name":"实际原名","action":"holding a map, smiling","face":"front","omit":[]}]}]}]}。示例不提供实际人物。`;
 }

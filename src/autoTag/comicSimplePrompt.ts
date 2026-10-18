@@ -1,6 +1,6 @@
 import type { Orientation } from '@/backends/size';
 import {
-  DEFAULT_COMIC_NSFW_RULES,
+  DEFAULT_COMIC_ENGINEERING_RULES,
   resolveComicGutterMode,
   resolveComicPanelStyle,
   type NaiSettings,
@@ -53,7 +53,7 @@ characters中每格每个可见人物各一条，按阅读顺序、格内从左�
   ];
   if (!v2 && nai.comicAntiPossession) lines.push('【同人画风排除】可在页尾@negative写可靠的原作画风关联标签，无法确认时省略；不排除角色本人的正确特征。');
   // Preserve explicit opt-ins and editable rules; simple mode never rewrites user content.
-  if (nai.comicNsfwRules) lines.push(DEFAULT_COMIC_NSFW_RULES);
+  if (nai.comicNsfwRules) lines.push(DEFAULT_COMIC_ENGINEERING_RULES);
   if (nai.comicExtraRules?.trim()) lines.push(`【用户附加规则】以下内容原样保留，画面要求优先于默认取舍，但不改变JSON格式、标记对应和本次对白开关。${v2 ? '本块沿用的@page指Base，@character指characters人物条目，@panel指Base画格句；只按V2格式输出，不输出这些旧标记。' : ''}\n${nai.comicExtraRules.trim()}`);
   lines.push(`【结构示例】以下只示范一页的字段，实际页数与标记按本次任务。示例人物和外貌不覆盖实际角色库。\n${JSON.stringify(exampleImage(nai, lockedSize, fixed))}`);
   if (!text) lines.push('最终结果继续遵守关闭对白上画：不写Text、气泡或文字指令。');

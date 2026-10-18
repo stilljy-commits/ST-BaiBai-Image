@@ -37,6 +37,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import NaiArtistManager from '@/pages/backend/panels/NaiArtistManager.vue';
+import ComicExtraRules from '@/pages/backend/panels/ComicExtraRules.vue';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { makeJpegThumbnail } from '@/st/imageFile';
 import { deleteUserImage } from '@/st/images';
@@ -490,7 +491,6 @@ const comicStyle = computed({ get: () => settings.nai.comicPanelStyle ?? 'eroman
 const comicGutter = computed({ get: () => settings.nai.comicGutter ?? 'bleed', set: (value: string) => { settings.nai.comicGutter = value; } });
 const selectedComicStyle = computed(() => resolveComicPanelStyle(comicStyle.value));
 const selectedComicGutter = computed(() => resolveComicGutterMode(comicGutter.value));
-const comicExtraRules = computed({ get: () => settings.nai.comicExtraRules ?? '', set: (value: string) => { settings.nai.comicExtraRules = value; } });
 
 /** BbiSelect 的 modelValue 是 string,而 nai.model 是字面量联合;这层 get/set 只为搭桥。
  *  写入前对一遍 NAI_MODELS:下拉本就只发合法值,但少了这句类型断言就是空口无凭。 */
@@ -1390,29 +1390,18 @@ async function removeVibe(vibe: NaiVibe) {
         </label>
 
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">NSFW 工程规则(迁移自 1.3.1,仅 NSFW 页生效)</span>
+          <span class="bbi-field-label">画面工程规则（通用 + NSFW）</span>
           <input
             v-model="settings.nai.comicNsfwRules"
             type="checkbox"
             class="bbi-checkbox"
           />
         </label>
-        <p v-if="settings.nai.comicMode && settings.nai.comicNsfwRules" class="bbi-field-hint">
-          已开启:分级为 NSFW 的页面按六项工程规则逐格检查——表情神态、标准体位术语、体液质感、
-          衣物脱卸边界、可见器官零件、骨盆挂载与支撑防穿模(防悬浮/穿模/吞人)。SFW 页不受影响。
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
+          一个开关控制整套画面约束：通用部分用于所有画面，约束人物归属、可见细节、动作支撑和衣着道具连续；NSFW 专项仅在对应场景适用。关闭后不追加这套工程规则。
         </p>
 
-        <div v-if="settings.nai.comicMode" class="bbi-num-row">
-          <span class="bbi-field-label">漫画模式附加规则(优先级最高,清空 = 不附加)</span>
-        </div>
-        <BbiTextarea
-          v-if="settings.nai.comicMode"
-          v-model="comicExtraRules"
-          :rows="6"
-          :max-rows="14"
-          mono
-          placeholder="自定义规则文本,追加在漫画规范末尾,与规范冲突时以本块为准"
-        />
+        <ComicExtraRules v-if="settings.nai.comicMode" />
         <p v-if="settings.nai.comicMode" class="bbi-field-hint">
           默认含:女性胸部加强 + 男性面部弱化 + 分镜女性在场规则(每格必有女角色) + 特写切入格定位顺序(胸/臀/下体/腿/腰/脸)。可自由改写，后续新生成的提示词采用修改后的规则；进行中的流式轮次沿用开始时的选择。
         </p>
