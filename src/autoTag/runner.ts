@@ -1,4 +1,5 @@
 import { compactComicSpec, compactLibrary, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
+import { finalizeComicPlan } from '@/comic/plan';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import { planChangeOps } from '@/autoTag/changeOps';
 import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
@@ -267,7 +268,6 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // 锁定名(全局库 ⊖ 本聊天基线):AI 的 changes 对这些名字一律无效,库文本里带 [locked] 标记
     const lockedNames = lockedCharTagNames();
     // 纯本地渲染:建档由主请求在同一次输出里完成(changes 的 field="new")
-    const anchors = resolveCharAnchors(entriesBefore, lockedNames);
     // 单槽重写:协议强制「恰好 1 张」,并把该槽位当前提示词与其余槽位摘要带给模型
     // (锚住同一个画面、别抢别人的画面)。min/max 要同时覆盖 build 的规则文案与下面的
     // parse 校验,只改一处会自相矛盾。
@@ -278,6 +278,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const profile = autoTagProfile();
     const environment = captureAutoTagEnvironment(profile);
     const renderProfile = captureRenderProfile(environment.nai, environment.backend);
+    const anchors = resolveCharAnchors(entriesBefore, lockedNames,renderProfile.mode!=='illustration');
     const compact:CompactComicContext|undefined = renderProfile.mode !== 'illustration' && environment.nai.comicAnalysisMode === 'fast' ? {target:preparedTarget,entries:anchors.entries,locked:lockedNames,nai:environment.nai,size:profile.lockedSize,min:promptOptions.minImages,max:promptOptions.maxImages}:undefined;
     const messages = await buildAutoTagMessages(
       context,
@@ -446,6 +447,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
       for (const n of tagRes.unknown) unknownNames.add(n);
     }
+    if(renderProfile.mode!=='illustration'&&!compact)finalizeComicPlan(plan,anchors.entries,undefined,lockedNames);
     if (unknownNames.size) {
       // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。
       // 这是漏建档唯一的确定性信号,藏进控制台等于没有,必须让用户看见。

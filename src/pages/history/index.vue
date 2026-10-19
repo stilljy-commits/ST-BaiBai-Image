@@ -103,6 +103,7 @@ function segments(record: HistoryRecord): Segment[] {
       label: `\u89d2\u8272: ${character.name}`,
       text: [character.tag, character.nl].filter(Boolean).join('\n\n'),
     });
+    if(character.negative)out.push({label:`角色负面: ${character.name}`,text:character.negative});
   }
   if (record.negative) out.push({ label: '负面', text: record.negative });
   return out;

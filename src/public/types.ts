@@ -111,6 +111,8 @@ export interface PublicCharacterPrompt {
   tag: string;
   /** 该角色的自然语言描述(可空)。 */
   nl?: string;
+  /** 该人物专属排除词;支持自定义 UC 的 NAI 型号生效。 */
+  negative?: string;
 }
 
 export interface GenerateRequest {

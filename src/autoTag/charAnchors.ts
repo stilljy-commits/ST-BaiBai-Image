@@ -8,6 +8,7 @@ import {
   type CharTagField,
 } from '@/state/charTags';
 import { getTagGenChannel } from '@/state/settings';
+import { comicFixedFields } from '@/comic/characters';
 
 /**
  * 角色固定外貌库的「锚定」侧。
@@ -50,13 +51,20 @@ export function formatEntryForPrompt(entry: CharTagEntry, locked = false): strin
  * 库文本:发给 AI 的角色库部分。AI 依据它决定 changes,并在 tag/nl 中照抄对应字段;
  * 名单与字段值都由插件生成,AI 只读。锁定名(全局库)带 [locked] 标记并在头部声明不可变。
  */
-export function buildLibraryText(entries: CharTagEntry[], lockedNames?: ReadonlySet<string>): string {
+export function buildLibraryText(entries: CharTagEntry[], lockedNames?: ReadonlySet<string>,comic=false): string {
   if (!entries.length) return '';
-  const lines = entries.map(entry => formatEntryForPrompt(entry, lockedNames?.has(entry.name) ?? false));
+  const lines = entries.map(entry => {
+    const locked=lockedNames?.has(entry.name)??false;
+    if(!comic||!entry.fields.fandom||entry.source!=='ai'||locked)return formatEntryForPrompt(entry,locked);
+    const fixed=comicFixedFields(entry),fields=Object.fromEntries(CHAR_TAG_FIELDS.map(f=>[f,fixed[f]??''])) as CharTagEntry['fields'];
+    const manualNl=entry.history.some(h=>h.floor<0&&(h.field==='nl'||h.field==='new'));
+    return formatEntryForPrompt({...entry,fields,nl:manualNl?entry.nl:''},locked);
+  });
   const lockedNote = lockedNames?.size
     ? '; entries marked [locked] are global and immutable: never report changes for them, always copy their fields as-is'
     : '';
-  return `【角色固定外貌库】[system-maintained; copy fields verbatim into character prompts${lockedNote}]\n${lines.join('\n')}`;
+  const policy=comic?'可靠身份与已确认改设；可见字段按需复用，当前衣着以正文为准':'copy fields verbatim into character prompts';
+  return `【角色固定外貌库】[system-maintained; ${policy}${lockedNote}]\n${lines.join('\n')}`;
 }
 
 /** 旧接口兼容:runner 之外仍有调用方依赖锚定文本形态。 */
@@ -180,8 +188,9 @@ export interface ResolvedCharAnchors {
 export function resolveCharAnchors(
   entriesBefore: CharTagEntry[],
   lockedNames?: ReadonlySet<string>,
+  comic=false,
 ): ResolvedCharAnchors {
-  const text = buildLibraryText(entriesBefore, lockedNames);
+  const text = buildLibraryText(entriesBefore, lockedNames,comic);
   return { text: text || null, entries: entriesBefore };
 }
 
@@ -203,6 +212,7 @@ const REF_RESERVED = new Set([
   'non_character',
   'position',
   'center',
+  'outfit',
 ]);
 
 function joinEntryTag(entry: CharTagEntry): string {

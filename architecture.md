@@ -49,7 +49,7 @@ src/
 │   └── client.ts      # LLM 请求:副 API 走 ST 服务端代理 / 跟随主 API 走 generateRaw
 ├── autoTag/           # ★ 链路 A:自动生 tag(独立 LLM 请求 → 协议校验 → 注入正文)
 │   ├── runner.ts      # 事件监听、去重、重试、编排(入口)
-│   ├── streamInlinePreview.ts # 可选的流式正文图片预览：只显示已完成图，不写聊天；节点复用、阅读锚点及正式卡片接管
+│   ├── streamInlinePreview.ts # 可选的流式正文图片预览：唯一标记或未改写正文锚点定位，兼容隐藏标记与展开的正文折叠区域；节点复用、阅读锚点及正式卡片接管
 │   ├── generationGate.ts # 生成门:把自动 tag 与真实生成配对(GENERATION_STARTED 武装 → 最终 RENDERED 消费)
 │   ├── prompt.ts      # 组装消息:破限/角色/人设/世界书/规范/协议/思维链
 │   ├── protocol.ts    # 段尾位置 ID、JSON 严格解析校验、tag 注入格式
@@ -922,6 +922,8 @@ API 对象 `Object.freeze`,一个插件改不动下一个插件拿到的东西�
 | 自动 tag 触发条件 / 去重 / 重试 | src/autoTag/runner.ts + generationGate.ts(生成门配对) |
 | 发给 LLM 的消息组装(顺序/内容) | src/autoTag/prompt.ts(NAI 一律走 DEFAULT_NAI_V5_SPEC:Base+Character 双提示) |
 | LLM 输出协议(JSON 形状/位置 ID/tag 格式) | src/autoTag/protocol.ts |
+| 三种漫画分析模式的共同画面规则 / 同人身份优先 / 分镜位置 | src/comic/rules.ts + characters.ts + layout.ts；标准/简单由模型按协议落实，极速由程序展开位置与固定字段 |
+| 漫画衣着连续性 / V1 本地编译 / 逐人物排除词 | src/comic/plan.ts + characters.ts 的源码位置账本 + sections.ts；runner/streamRunner 共用收尾，nai.ts 转原生 Base/Character captions，保存/编辑/历史保留 optional negative；V5 Medium 不发自定义人物 UC |
 | 世界书/角色卡/persona 装配 | src/autoTag/context.ts |
 | 柏宝书状态读取 | src/autoTag/bookMemory.ts |
 | 角色库 v3(基线+楼层增量/changes ops/@占位符兜底/历史回滚) | src/autoTag/charAnchors.ts + src/state/charTags.ts + src/autoTag/runner.ts |

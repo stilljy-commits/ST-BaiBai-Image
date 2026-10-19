@@ -1,4 +1,5 @@
 import type { ChatMsg } from '@/api/client';
+import { COMIC_VISUAL_RULES } from '@/comic/rules';
 import { templateSupportsNegative } from '@/backends/comfyTemplates';
 import { getWorkflowPlaceholders } from '@/backends/comfyui';
 import { naiSupportsCharacterPrompts, stripComicText } from '@/backends/nai';
@@ -127,7 +128,8 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
       // V2(Base 行 + 逐人物 Character Prompts)与 V1(@page/@panel 标记)两套协议互斥;
       // 附加块(风格/留白/光影/附加规则)两套共用,V2 规范自带术语映射把旧称呼对到新结构。
       let spec = (environment.nai.comicV2 ? DEFAULT_NAI_COMIC_V2_SPEC : DEFAULT_NAI_COMIC_SPEC)
-        + buildComicAddenda(environment.nai);
+        + buildComicAddenda(environment.nai)+'\n\n'+COMIC_VISUAL_RULES+
+        (environment.nai.comicV2?'\n人物条目新增panel位置短句和outfit当前衣着，tag不重复衣着；negative可选，只归本人。':'\n人物标记写@character C编号 原名；当前衣着可单列@outfit，专属排除词用其后的@negative；程序转成NAI人物结构。');
       if (planning === 'fixed-markers') spec = spec
         .replace('- position:不变,仍是正文 P 编号。', '- position:直接照抄本次标记的 M 编号,图片插入位置由插件处理;正文 P 编号仅供角色变化时序使用。')
         .replaceAll('"position":"P2"', '"position":"M1"');
@@ -288,18 +290,22 @@ export async function buildAutoTagMessages(
   const sampleNl = library
     ? 'A girl with long silver hair and red eyes wearing a white dress'
     : 'A girl with short black hair wearing a white dress';
-  const comicSampleTag = `<image>\\n@page\\nSFW, 1girl, comic page, 2 panels, the top panel is a small close-up, the bottom panel is a large main panel, white borders, warm afternoon light from the left windows, Chinese text\\n\\n@panel P1\\nA small panel at the top of the page. Close-up of a girl at a doorway.\\n\\n@character C1\\n${library ? 'girl, long silver hair, red eyes, white dress' : 'girl, short black hair, blue eyes, white dress'}, smiling, looking at viewer\\nText: 欢迎回来\\n\\n@panel P2\\nA large main panel across the bottom of the page. Medium shot, the girl walks down a hallway.\\n\\n@character C1\\n${library ? 'girl, long silver hair, red eyes, white dress' : 'girl, short black hair, blue eyes, white dress'}, smiling, walking down the hallway\\n</image>`.replaceAll('\\n', '\n');
+  const comicLocations=['This is the upper right panel.','This is the upper left panel.'];
+  const comicAppearance=library?'girl, long silver hair, red eyes':'girl, short black hair, blue eyes';
+  const comicSampleTag = `<image>\n@page\nSFW, 1girl, comic page, 2 panels, white borders, warm afternoon light, Chinese text\n@panel P1\n${comicLocations[0]} Medium shot, welcoming a guest at the doorway.\n@character C1 小雪\n${comicAppearance}, smiling, medium shot, speech bubble\nText: 欢迎回来\n@outfit\nwhite dress\n@panel P2\n${comicLocations[1]} Medium shot, walking down a hallway.\n@character C1 小雪\n${comicAppearance}, walking down the hallway, medium shot\n@outfit\nwhite dress\n</image>`;
   // V2 样例:Base 行 + 逐人物条目(对齐 1.3.1 预设的结构;Text: 另起一行写在条目末尾)
-  const comicV2SampleTag = `SFW, 1girl, comic, 2 panels, This is the medium panel at the top of the page. Close-up on her smiling face., This is the large main panel filling the bottom half of the page. Medium shot, the girl walks down the hallway., white borders, warm afternoon light from the left windows, high complexity, text, chinese text`;
+  const comicV2SampleTag = `SFW, 1girl, comic, 2 panels, ${comicLocations[0]} Medium shot, welcoming a guest at the doorway., ${comicLocations[1]} Medium shot, walking down a hallway., white borders, warm afternoon light, high complexity, text, chinese text`;
   const comicV2Characters = [
     {
       name: '小雪',
-      tag: `${library ? 'girl, long silver hair, red eyes, white dress' : 'girl, short black hair, blue eyes, white dress'}, smiling, looking at viewer, close-up, speech bubble\nText: 欢迎回来`,
+      tag: `${comicAppearance}, smiling, medium shot, speech bubble\nText: 欢迎回来`,
+      panel:comicLocations[0],outfit:'white dress',
       nl: '',
     },
     {
       name: '小雪',
-      tag: `${library ? 'girl, long silver hair, red eyes, white dress' : 'girl, short black hair, blue eyes, white dress'}, smiling, walking down the hallway, medium shot`,
+      tag: `${comicAppearance}, walking down the hallway, medium shot`,
+      panel:comicLocations[1],outfit:'white dress',
       nl: '',
     },
   ];
@@ -357,8 +363,8 @@ export async function buildAutoTagMessages(
     ? `4. 按上方漫画页${environment.nai.comicV2 ? ' V2' : ''}规范生成完整页面;tag、characters、nl、negative 的口径及人物/画格归属只按该规范执行,当前分镜风格、留白、光影、附加规则全部适用。画幅按下方规则。`
     : comicOn
     ? environment.nai.comicV2
-      ? '4. 漫画页 V2 协议:每张图的 tag 是一行式 Base 行(首位分级词 SFW 或 NSFW;每格一组布局句=位置句+取景词+核心动作短语,空镜格也要有;留白/光影/文字语言,见 NAI 规范);characters 是逐格逐人条目(每人含外貌衣着+表情+取景词,且每条必带至少一个动作/姿态/接触词,条目动作与所在格的格级动作一致,有对白时条目末行另起一行写 Text: 原句);nl 恒为空字符串,negative 恒为空字符串,size 遵循下方画幅规则（未锁方向时用 "portrait"）。人物外貌按规范照抄【角色固定外貌库】字段。不得输出 @page/@panel 标记、<image> 包装、Base nl 或把人物外貌写进 tag。'
-      : '4. 漫画页协议:每张图的 tag 是一段完整的 <image>...</image> 整页漫画指令文本(语法见 NAI 规范);nl 恒为空字符串,characters 恒为空数组,negative 恒为空字符串,size 遵循下方画幅规则（未锁方向时用 "portrait"）。页文本内的人物外貌按规范照抄【角色固定外貌库】字段。不得输出插图式 tag 串、Base nl 或 characters 数组。'
+      ? '4. 漫画页 V2 协议:tag为Base单行，写分级、人数和逐格位置、取景与核心事件；人物按格顺序分别写入characters。人物的必要外貌、动作、衣着outfit、位置panel和可选negative按上方规范执行，有对白才在tag末行写Text:原句。图片nl、negative为空，size遵循下方规则。人物衣着外貌不进Base，不输出旧分段标记。'
+      : '4. 漫画页协议:每张图的tag是<image>...</image>整页漫画文本，人物可见外貌与当前衣着按上方规范执行；nl、negative为空，characters为[]，size遵循下方规则。不得输出插图式tag或Base nl。'
     : naiCharPromptsOn
     ? nlOn
       ? `4. Every image must include Base tag, English Base nl, and characters. Write every nl in English even when the story text is in another language, but keep every character name exactly as in the story: Chinese names stay Chinese (小雪, never Xiaoxue or Snow) in characters[].name, changes[].name, and inside any tag/nl text. Base contains only global counts, scene, composition, lighting, and shared relations — this applies to the Base nl as much as to the Base tag. Give each individual character visible inside the selected frame one Character Prompt ordered left-to-right then top-to-bottom; name/tag/nl are all required. ${naiCharacterRuleTail}`
@@ -393,8 +399,8 @@ export async function buildAutoTagMessages(
   const sizeRule = comicOn && !profile.lockedSize ? '5. size 填 portrait，漫画页按竖画幅规划。' : ordinarySizeRule;
   const libraryReferenceRule = comicOn
     ? environment.nai.comicV2
-      ? '- characters[] 中每个条目:该角色在【角色固定外貌库】中的,外貌与衣着字段逐字照抄库中值(1girl/1boy 转成 girl/boy),禁止改写增删;同人角色(库中 fields.fandom 非空)的条目第二项必须逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name))。一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。'
-      : '- 页文本内的每个 @character 段:该角色在【角色固定外貌库】中的,外貌与衣着字段逐字照抄库中值(1girl/1boy 转成 girl/boy),禁止改写增删;一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。'
+      ? '- 每个人物条目保留可靠fandom及必要可见特征；用户明确外貌不覆盖，自动同人档不必逐项复述。当前衣着按正文单列outfit，默认库不覆盖换装。无名人物不编姓名。'
+      : '- 每个@character归属本格一人，保留可靠fandom和必要可见特征；用户明确外貌不覆盖，自动同人档不必逐项复述。当前衣着按正文，不被默认库覆盖。无名人物不编姓名。'
     : naiCharPromptsOn
     ? `- If a visible character exists in the fixed appearance library or is created in this changes array, copy the fixed fields into that character own characters[].tag; keep appearance wording verbatim but convert 1girl/1boy to girl/boy. The fandom identity tag (fields.fandom) goes first, verbatim. Do not put them in Base or assign them to another character.${nlOn ? ' Library natural-language notes may inform that character nl.' : ''} Use the library entry name verbatim for characters[].name and for any name inside ${nlOn ? 'tag/nl' : 'tag'} — never transliterate, translate, or vary it.`
     : '- 画面中的角色只要已在【角色固定外貌库】，或在本次 changes 中建了档，tag 与 nl 就必须照抄库中/刚建档的字段值，用词一字不改，不得自行改写或增删其固定外貌。fandom 字段只作档案记录，ComfyUI 画图时不照抄它，同人身份 tag 按下发的 ComfyUI 规范现场判定并按规范转义括号。\n   - 同一角色的固定外貌在一张图里只写一遍：同一图内再次提到他时用简短指代（the boy、the silver-haired girl）承接，禁止把整串外貌重复第二遍——重复会让模型以为画面里有多个同样的人，把一个人画成互不相连的几块。';
@@ -407,7 +413,11 @@ export async function buildAutoTagMessages(
   const existingProfileRule = fixedComicMarkers
     ? '“已建档”只能按【角色固定外貌库】区块中的同名条目判断;角色卡、世界书、柏宝书或正文里的设定只是建档依据。本批次目标段落中的每个正式角色(含不入画者),命中同名档案就复用,未命中就在 changes 中输出 field:"new",不另写命中名单或证明。一次性无名角色不建档、不写 changes。'
     : '“已建档”只能按【角色固定外貌库】区块中的同名条目判断：只有名字实际列在该区块中才算已建档；世界书、角色卡、柏宝书或正文里的详细设定只是建档依据，绝不等于已经在库。每个在场正式角色必须二选一：指出库中的同名条目，或在 changes 中输出 field:"new"。一次性无名角色不在这条二选一之内：他既不建档也不写 changes，不需要指出任何库条目，缺档案是正常状态而非遗漏。';
-  const newCharacterRule = `
+  const newCharacterRule = comicOn ? `
+   - ${existingProfileRule}
+   - 新档只记录已确认固定特征，原创新档至少sex/hair/eyes，缺失时简洁决定一次；同人有可靠fandom和sex即可，不为填字段重做原作外貌与穿搭。name照抄原名，position记录首次出现P位置。
+   - 字段限fandom/sex/hair/eyes/skin/body/extra/outfit；outfit只收固定招牌着装，临时衣着、动作、道具不入档。
+   - 已有角色的永久变化写field/value与生效P位置，变化前不用新状态；locked不写changes。无新增永久变化填[]，不输出命中证明。${newCharacterNlRule}` : `
    - **建档先于画图**：先通读目标正文，找出每个有名有姓、且【角色固定外貌库】里还没有的正式角色——只要角色卡、世界书、柏宝书或持续剧情为他给出了设定，或他是持续参与剧情的角色，首次出场就必须建档，不论他是否入选本次图片。判断依据是发给你的全部设定内容，由你自己通读判断。一次性无名路人不建。
    - **建档资格与入画资格是两回事**：不建档只表示他不进角色库，不表示他不能入画；已建档也不表示他必须入画。先按本图的主体和核心互动取景，再为镜头内的人写外貌，不按档案状态决定取舍。无名角色若是核心互动的参与者，照常入画，不得仅因缺档案放弃画面、改选瞬间或裁掉他；仅仅在场不构成入画理由，无关在场者可以留在镜头外。
    - ${existingProfileRule}
@@ -423,7 +433,10 @@ export async function buildAutoTagMessages(
     : naiCharPromptsOn
     ? '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须放进各自的 characters[].tag，禁止放进 Base 或分配给其他角色。'
     : '- 多人画面中，每个角色的发色、瞳色、体型、服装、物件和个人动作都必须使用该角色的区分性称谓邻接绑定，禁止把两人的外貌特征散放成无法归属的一串公共 tag。';
-  const characterRule = `7. 角色状态与 changes：${newCharacterRule}
+  const characterRule = comicOn ? `7. 角色状态与 changes：${newCharacterRule}
+   ${libraryReferenceRule}
+   ${multiCharacterBindingRule}
+   临时衣着按当前P位置继承，明确换装后更新，不复述长期未变的细部；省略不可见部分不清除状态。永久变化的 position 是新状态开始生效的位置，不能提前。images为空时仍报告实际建档或永久变化，不写自检报告。` : `7. 角色状态与 changes：${newCharacterRule}
    ${libraryReferenceRule}
    - 按正文 P 位置为每个角色维护临时服装状态：正文未明确初始穿着时可以合理决定一次；没有穿上、脱下、换装、衣物损坏或场景/时间跳跃时沿用上一状态，发生明确变化后从对应 P 位置起更新。首次确定一套临时服装时，必须冻结足以复现款式的“服装视觉指纹”：服装类别之外，再固定版型/剪裁、主色和关键部件，涉及裤袜时固定颜色与透明度；例如不能只写 school uniform, pantyhose，而应具体到 navy school blazer, white collared shirt, red ribbon, dark pleated skirt, opaque white pantyhose。只补少量关键特征，不堆无关装饰。相同状态复用同一视觉指纹；镜头外不可见的部件可以省略，但省略不等于脱掉，后续重新可见且中间没有变化时必须恢复。每张图的 ${nlOn ? 'tag 与 nl 都' : 'tag 都'}要写出当前镜头可见的关键服装特征。临时穿着不得写进固定 outfit，除非设定明确它是长期不换的招牌着装。
    ${multiCharacterBindingRule}

@@ -12,6 +12,11 @@ export interface ImageCharacterPrompt {
   name: string;
   tag: string;
   nl: string;
+  negative?: string;
+  /** Optional AI metadata, consumed by the comic finalizer before persistence. */
+  outfit?: string;
+  panel?: string;
+  clothingVisible?: boolean;
 }
 
 export interface ImageInsertion {
@@ -169,7 +174,14 @@ function sanitizeCharacters(value: unknown, imageIndex: number): ImageCharacterP
         /^\s*Text:/im.test(rawTag),
       );
       const nl = sanitizeContent(item.nl, `characters[${index}].nl`, imageIndex);
-      if (name && tag) characters.push({ name, tag, nl });
+      const optional:Partial<ImageCharacterPrompt>={};
+      for(const field of ['negative','outfit','panel'] as const)if(typeof item[field]==='string'){
+        try{const value=sanitizeContent(item[field],`characters[${index}].${field}`,imageIndex);
+          if(value||field==='outfit')optional[field]=value;
+        }catch{/* Bad optional metadata must not discard the person or cause a retry. */}
+      }
+      if(typeof item.clothingVisible==='boolean')optional.clothingVisible=item.clothingVisible;
+      if (name && tag) characters.push({ name, tag, nl, ...optional });
     } catch {
       // A malformed character prompt must not discard an otherwise valid image plan.
     }
@@ -275,7 +287,7 @@ function parseNewFields(raw: Record<string, unknown>): string | null {
     const text = typeof value === 'string' ? value.trim().replace(/[\r\n]+/g, ' ') : '';
     if (text) fields[field] = text;
   }
-  if (!fields.hair || !fields.eyes) return null;
+  if (fields.fandom?!fields.sex:(!fields.hair || !fields.eyes)) return null;
   return JSON.stringify(fields);
 }
 

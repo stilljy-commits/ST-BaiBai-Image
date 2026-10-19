@@ -230,7 +230,8 @@ export function parseImageTagContent(raw: string): ImageTagContent {
             /^\s*Text:/im.test(text) ? text.trim().replace(/\r\n?/g, '\n') : oneLine(text);
           const tag = keepLines(typeof rawItem.tag === 'string' ? rawItem.tag : '');
           const nl = oneLine(typeof rawItem.nl === 'string' ? rawItem.nl : '');
-          return name && tag ? [{ name, tag, nl }] : [];
+          const negative=oneLine(typeof rawItem.negative==='string'?rawItem.negative:'');
+          return name && tag ? [{ name, tag, nl, ...(negative?{negative}:{}) }] : [];
         });
       }
     } catch {
@@ -297,7 +298,7 @@ export function formatPromptText(
     content.tag,
     content.nl,
     ...content.characters.map(character =>
-      [`角色: ${character.name}`, character.tag, character.nl].filter(Boolean).join('\n'),
+      [`角色: ${character.name}`, character.tag, character.nl, character.negative?`角色负面: ${character.negative}`:''].filter(Boolean).join('\n'),
     ),
     content.negative ? `Negative: ${content.negative}` : '',
   ]

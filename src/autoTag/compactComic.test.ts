@@ -69,7 +69,7 @@ describe('compact comic compilation',()=>{
  ])('rejects %s before image generation',(_name,make)=>expect(()=>compileComicPage(make(),context())).toThrow());
  it('retains V1 sections and stable character ids while using the same per-panel plan',()=>{
   const c=context();c.nai.comicV2=false;const result=compileComicPage(page(),c).plan.images[0];
-  expect(result.tag).toContain('@page\n');expect(result.tag).toContain('@panel P1\n');expect(result.tag).toContain('@character C1\n');expect(result.characters).toEqual([]);
+  expect(result.tag).toContain('@page\n');expect(result.tag).toContain('@panel P1\n');expect(result.tag).toContain('@character C1 小雪\n');expect(result.characters).toEqual([]);
  });
  it('orders pages by source before carrying wardrobe state and keeps the input snapshot immutable',()=>{
   const c=context();c.markers=undefined;c.min=2;c.max=2;
@@ -83,6 +83,31 @@ describe('compact comic compilation',()=>{
   expect(compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'出发吧。'})]}]}),c).plan.images[0].characters[0].tag).toContain('\nText: 出发吧。');
   expect(()=>compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'新增台词'})]}]}),c)).toThrow('原句');
   c.nai.comicText=false;expect(compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'新增台词'})]}]}),c).plan.images[0].characters[0].tag).not.toContain('Text:');
+ });
+ it('carries explicit clothes to a later page without requiring a complete continuity summary',()=>{
+  const c=context();c.markers=undefined;c.min=2;c.max=2;
+  const result=parseCompactComic(JSON.stringify({pages:[page({id:'P1',shots:[{camera:'medium shot',actors:[actor({outfit:'white sweater'})]}],state:{complete:false}}),page({id:'P2'})]}),c);
+  expect(result.images[1].characters[0].tag).toContain('white sweater');
+  expect(result.images[1].characters[0].tag).not.toContain('blue coat');
+ });
+ it('keeps the latest story-time wardrobe when the last panel is an earlier cutaway',()=>{
+  const result=compileComicPage(page({shots:[{camera:'medium shot',actors:[actor({at:'P2',outfit:'white sweater'})]},{camera:'medium shot',actors:[actor({at:'P1',outfit:'blue coat'})]}]}),context());
+  expect(result.wardrobe).toEqual({小雪:'white sweater'});
+ });
+ it('compiles minimal fandom identity and keeps explicit costume changes',()=>{
+  const c=context();const fan=entry();fan.source='ai';fan.fields.fandom='known_character (work)';fan.fields.hair='';fan.fields.eyes='';c.entries=[fan];
+  const result=compileComicPage(page({shots:[{camera:'medium shot',actors:[actor({outfit:'white sweater'})]}]}),c).plan.images[0].characters[0];
+  expect(result.tag).toContain('known_character (work)');expect(result.tag).toContain('white sweater');expect(result.tag).not.toContain('blue coat');
+ });
+ it('places the main panel by the selected layout and reuses the exact same location for its actors',()=>{
+  const result=compileComicPage(page({layout:'focus-top',main:2,shots:[{camera:'medium shot',actors:[actor()]},{camera:'medium shot',actors:[actor()]}]}),context()).plan.images[0];
+  expect(result.tag).toContain('large main panel at the top');expect(result.characters[0].tag).toContain('large main panel at the top');
+  expect(result.characters[1].tag).toContain('lower right');expect(result.tag).not.toContain('large main panel at the bottom');
+ });
+ it('keeps page-level exclusions distinct from the last actor in legacy sections',()=>{
+  const c=context();c.nai.comicV2=false;c.nai.comicAntiPossession=true;
+  const result=compileComicPage(page({negative:'unrelated scenery'}),c).plan.images[0];
+  expect(result.tag.indexOf('@negative')).toBeLessThan(result.tag.indexOf('@panel'));
  });
  it('validates marker coverage and allows an empty freely selected floor only with lower bound zero',()=>{
   expect(()=>parseCompactComic(JSON.stringify({pages:[page(),page()]}),{...context(),max:2})).toThrow('重复');

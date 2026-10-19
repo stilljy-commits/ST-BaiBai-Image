@@ -2,6 +2,8 @@ import { unzipSync } from 'fflate';
 import { randomUuid } from '@/randomUuid';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
+import { parseComicSections, comicSectionBase, comicSectionCharacters } from '@/comic/sections';
+import { finalizeComicCharacters } from '@/comic/characters';
 import type { ComfyImageResult } from '@/backends/comfyui';
 import {
   isAbortError,
@@ -351,7 +353,12 @@ export function naiQualityTags(nai: NaiSettings): string {
 /** 负面提示词解析链:配方绑定值 → 渠道覆盖值(undesiredContent)→ 内置默认(模型官方负面词)。 */
 export function naiUndesiredContent(nai: NaiSettings): string {
   const bound = naiActivePreset(nai)?.negative.trim();
-  return bound || nai.undesiredContent.trim() || naiDefaultUndesired(nai.model);
+  const custom=bound||nai.undesiredContent.trim();
+  if(custom)return custom; // User recipes are never silently rewritten.
+  const builtin=naiDefaultUndesired(nai.model);
+  if(!nai.comicMode||!isNai5(nai.model)||isNaiMedium(nai.model))return builtin;
+  const conflicts=new Set(['multiple views','multiple scenes','comic','screentone','halftone','dithering',...(nai.comicText!==false?['text']:[])]);
+  return builtin.split(',').map(v=>v.trim()).filter(v=>!conflicts.has(v.toLowerCase())).join(', ');
 }
 
 /**
@@ -397,25 +404,22 @@ export function stripComicV2Tokens(line: string): string {
 }
 
 export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
-  // 漫画页模式:tag 已是完整的 @page/@panel 整页指令,画师串拼在前后会变成页文本
-  // 外的零散 tag、干扰 V5 的分格解析,故不拼画师串;**质量词同样不拼**——整页文本的
-  // 最后一段是 @negative,追加的质量词会落进负面段、被 NAI 当成排除词反向压制画面
-  // (复杂度由规范要求写进 @page 页面基础词,如 high complexity,不需要外部质量词)。
-  // <image></image> 包装是聊天侧格式,发送前剥掉(发给 NAI 是页首/页尾噪声)。
-  // 关闭对白上画时剥掉 Text 行。
+  // Both comic formats use native Base/Character captions. V1 private markers
+  // are parsed locally; unrecognized legacy syntax retains its former raw path.
+  // Artist/quality words belong before any Text tail, never inside dialogue.
   if (nai.comicMode && isNai5(nai.model)) {
+    const sections=!nai.comicV2?parseComicSections(prompt):null;
     let stripped = (nai.comicText ? prompt.trim() : stripComicText(prompt))
       .replace(/^\s*<image>\s*/i, '')
       .replace(/\s*<\/image>\s*$/i, '')
       .trim();
-    if (nai.comicV2) {
-      stripped = stripped.replace(/\s*\n+\s*/g, ', ');
+    if(sections)stripped=nai.comicText?comicSectionBase(sections):stripComicText(comicSectionBase(sections));
+    if (nai.comicV2||sections) {
+      if(!sections)stripped = stripped.replace(/\s*\n+\s*/g, ', ');
       // 关闭对白上画:Base 行里的文字语言词与气泡词按 token 剥除
       if (!nai.comicText) stripped = stripComicV2Tokens(stripped);
-      // V2 恢复普通模式的质量词/画师串拼装:V2 没有 @negative 段,末尾追加安全。
-      // 漏拼质量词会让 V5 拿不到 very aesthetic/masterpiece 等官方质量链,整页
-      // 画质与人物结构明显劣化;画师串照常放最前(决定画风基调,NAI 对靠前 tag
-      // 权重更高)。对白上画时从质量词滤掉 no text(官方默认含它,会压制漫画对白)。
+      // Match normal artist/quality assembly after separating person/negative
+      // sections. Text-enabled pages omit the conflicting default "no text".
       const artist = naiArtistPrompt(nai);
       const quality = nai.comicText
         ? naiQualityTags(nai)
@@ -424,7 +428,9 @@ export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): s
             .filter(part => part && !/^no\s+text$/i.test(part))
             .join(', ')
         : naiQualityTags(nai);
-      return [artist, stripped, quality].filter(Boolean).join(', ');
+      const textAt=stripped.indexOf('\nText:');
+      const visual=textAt<0?stripped:stripped.slice(0,textAt),tail=textAt<0?'':stripped.slice(textAt);
+      return [artist, visual, quality].filter(Boolean).join(', ')+tail;
     }
     return stripped;
   }
@@ -478,7 +484,8 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   // 显式传入 > 面板固定种子 > 随机
   const seed = values.seed ?? (nai.seed > 0 ? nai.seed : naiRandomSeed());
   const prompt = fullPositivePrompt(nai, values.prompt, values.nl);
-  const negative = fullNegativePrompt(nai);
+  const sections=nai.comicMode&&!nai.comicV2&&isNai5(nai.model)?parseComicSections(values.prompt):null;
+  const negative = [fullNegativePrompt(nai),!isNaiMedium(nai.model)?sections?.negative:''].filter(Boolean).join(', ');
   const skipCfg = skipCfgAboveSigma(width, height, nai.model, nai.varietyBoost);
   const sampler = isNai5(nai.model) && !NAI_V5_SAMPLERS.has(nai.sampler) ? 'k_euler_ancestral' : nai.sampler;
   // Medium Effort:固定 14 步 / Euler Ancestral / CFG Rescale 0,用户设置被忽略。
@@ -524,10 +531,11 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     // 漫画页 V2 关闭对白上画时,characters 条目里的 Text 行/气泡指令同样剥除
     // (Base 行已在 fullPositivePrompt 里剥过;这里兜底人物条目,行内 token 一并过滤)。
     const stripComicCharText = nai.comicMode && nai.comicV2 && !nai.comicText;
+    const inputCharacters=sections?finalizeComicCharacters(comicSectionCharacters(sections)):(values.characters??[]);
     const charCaptions = naiSupportsCharacterPrompts(nai.model)
-      ? (values.characters ?? []).map(character => ({
+      ? inputCharacters.map(character => ({
           char_caption: characterCaption(
-            stripComicCharText
+            (stripComicCharText||(!!sections&&!nai.comicText))
               ? { ...character, tag: stripComicV2Tokens(stripComicText(character.tag)) }
               : character,
           ),
@@ -543,8 +551,7 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     params.v4_negative_prompt = {
       caption: {
         base_caption: negative,
-        // Medium Effort 忽略逐人物负面(服务端锁定 Heavy);发空串与官方 client 同口径。
-        char_captions: charCaptions.map(() => ({ char_caption: '', centers: [{ x: 0.5, y: 0.5 }] })),
+        char_captions: charCaptions.map((_,index) => ({ char_caption: medium?'':inputCharacters[index]?.negative?.trim()??'', centers: [{ x: 0.5, y: 0.5 }] })),
       },
       legacy_uc: false,
     };
@@ -832,7 +839,7 @@ export async function generateNaiImage(
     usage: {
       // positive 即顶层 input / v4_prompt 里那份全文（含画师串与质量词）
       positive: fullPositivePrompt(nai, values.prompt, values.nl),
-      negative: fullNegativePrompt(nai),
+      negative: String(params.negative_prompt??fullNegativePrompt(nai)),
       width: params.width as number,
       height: params.height as number,
       artist,

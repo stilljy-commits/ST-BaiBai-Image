@@ -254,6 +254,7 @@ export function beginImage(info: ImageBegin): number {
       name: truncate(character.name),
       tag: truncate(character.tag),
       nl: truncate(character.nl),
+      ...(character.negative?{negative:truncate(character.negative)}:{}),
     })),
     seed: info.seed,
     size: info.size,

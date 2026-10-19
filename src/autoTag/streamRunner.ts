@@ -1,6 +1,8 @@
 import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
-import { StreamInlinePreview, type InlinePreviewSnapshot } from '@/autoTag/streamInlinePreview';
+import { ComicWardrobeLedger } from '@/comic/characters';
+import { finalizeComicPlan } from '@/comic/plan';
+import { StreamInlinePreview, inlineStoryText, type InlinePreviewSnapshot } from '@/autoTag/streamInlinePreview';
 import { openLightbox } from '@/floor/lightbox';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import type { CharTagEntry } from '@/state/charTags';
@@ -34,6 +36,7 @@ type Job = StreamJob<Payload, GenerateOutput>;
 interface Session {
   id: string; chatId: string; context: STContext; referenceFloor: number;
   continuity: ComicContinuityLedger; seedEntries: CharTagEntry[];
+  wardrobe: ComicWardrobeLedger;
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
   stripTags: string[];
@@ -41,6 +44,7 @@ interface Session {
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
   inline?: StreamInlinePreview;
   inlineOwner?: { processor: NonNullable<STContext['streamingProcessor']>; floor: number; message: STMessage; swipe: number | null };
+  inlineDiagnostic?: string;
   controller: AbortController; chain: Promise<void>; written: Map<string, string>; established: Map<string, CharChange>; changeOps: Map<string, CharTagAutoOp>; completed: boolean; supplementDone: boolean;
 }
 const sessions = new Map<string, Session>();
@@ -101,7 +105,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
     stripTags: [...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS],
     generation: captureGenerationSnapshot(), profile: captureRenderProfile(settings.nai, settings.defaultBackend),
     promptEnvironment: captureAutoTagEnvironment(), existingCount: type === 'continue' ? parseImageTags(ctx.chat.at(-1)?.mes ?? '').length : 0,
-    continuing: type === 'continue', baselineOps: [],
+    continuing: type === 'continue', baselineOps: [], wardrobe:new ComicWardrobeLedger(),
     channel: getTagGenChannel() ? jsonCopy(getTagGenChannel()) : null,
     controller: new AbortController(), chain: Promise.resolve(), written: new Map(), established: new Map(), changeOps: new Map(), completed: false, supplementDone: false,
   };
@@ -129,6 +133,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   const s: Session = { ...state, core };
   sessions.set(s.id, s); current = s; log('stream:begin', { run: s.id, chatId, minImages: state.options.minImages,
     maxImages: state.options.maxImages, batchSize: core.batchSize, batchSizes: streamBatchSizes(core.max, core.batchSize), analysisConcurrency: core.concurrency,
+    inlinePreview: !!state.options.streamInlinePreview, floatingPreview: !!state.options.streamPreview,
     analysisMode: s.profile.mode === 'illustration' ? 'standard' : s.promptEnvironment.nai.comicAnalysisMode ?? 'standard' });
 }
 
@@ -194,7 +199,7 @@ function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
   const locked = lockedCharTagNames();
   // Only immutable introductions are shared. Timeline updates (outfit etc.) remain positional.
   const introduced = planChangeOps({ images: [], changes: [...s.established.values()] }).map(item => item.op);
-  return resolveCharAnchors(applyCharTagOps(entries, introduced, floor, locked), locked);
+  return resolveCharAnchors(applyCharTagOps(entries, introduced, floor, locked), locked,s.profile.mode!=='illustration');
 }
 function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof resolveCharAnchors>): ImagePlan {
   const profile = s.promptEnvironment.profile;
@@ -217,6 +222,9 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
       character.nl = applyPositionedCharRefs(character.nl, anchors.entries, ops, image.sourceLine, 'nl', locked).text;
     }
   }
+  // Fast pages already pass the same character finalizer inside compilation.
+  // Re-running after metadata was consumed could restore an old default outfit.
+  if(s.profile.mode!=='illustration'&&!fastComicAnalysis(s))finalizeComicPlan(plan,anchors.entries,s.wardrobe,locked);
   return plan;
 }
 async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
@@ -230,7 +238,7 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
     if(entry&&!lockedCharTagNames().has(change.name)&&Object.hasOwn(entry.fields,change.field)) entry.fields[change.field as keyof typeof entry.fields]=change.value;
   }
   const compact:CompactComicContext={target:batch.target,markers:batch.markerTargets,entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,
-    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits}};
+    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits,...s.wardrobe.before(jobs[0].input.sourceLine)}};
   const scanText=jobs.at(-1)!.input.prefix+'\n'+jobs.map(job=>job.input.text).join('\n');
   const ctx=getContext()!,floor=s.binding?.floor??s.referenceFloor,analysisContext={...ctx,chat:[...ctx.chat]};
   analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
@@ -271,7 +279,8 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
         if(controller.signal.aborted||job.controller.signal.aborted||!ownerValid(s))return;
         const plan=preparePlan(s,result.plan,anchors),payload={image:{...plan.images[0],renderProfile:s.profile},changes:plan.changes};
         payloads.set(id,payload);errors.delete(id);job.analysisError=undefined;acceptedChanges.push(...plan.changes);
-        if(result.state.complete)compact.outfits={...compact.outfits,...result.state.outfits};
+        compact.outfits={...compact.outfits,...result.wardrobe};
+        s.wardrobe.accept(plan.images[0].sourceLine,result.wardrobe);
         const introOps=planChangeOps({images:[],changes:plan.changes.filter(change=>change.field==='new')}).map(item=>item.op);
         introduced.splice(0,introduced.length,...applyCharTagOps(introduced,introOps,floor,compact.locked));
         s.continuity.accept({ordinal:job.ordinal,text:job.input.text,marker:job.input.raw,sourceLine:batch.target.segments.find(segment=>segment.id===batch.groups[index].positions.at(-1))!.sourceLine,state:result.state,changes:plan.changes});
@@ -515,7 +524,7 @@ async function supplement(s: Session, count: number): Promise<void> {
     if (controller.signal.aborted || !ownerValid(s)) return;
     const entries = charTagsBeforeFloor(s.binding!.floor + 1), known = new Set(entries.map(entry => entry.name));
     const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
-    const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames());
+    const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames(),s.profile.mode!=='illustration');
     const compact:CompactComicContext|undefined = fastComicAnalysis(s) ? {target,entries:anchors.entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,size:s.promptEnvironment.profile.lockedSize,min:needed,max:maximum}:undefined;
     const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: maximum },
       readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, compact ? compactLibrary(compact) : anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment,'select-scenes',compact ? compactComicSpec(compact) : undefined);
@@ -552,26 +561,38 @@ function updatePreview(s: Session): void {
   updateFloatingPreview(s);
 }
 function disposeInlinePreview(s:Session):void{const inline=s.inline;s.inline=undefined;inline?.dispose();}
+function inlineDiagnostic(s:Session,reason:string,detail:Record<string,number>={}){
+  if(s.inlineDiagnostic===reason)return;s.inlineDiagnostic=reason;
+  log('stream:inline-preview',{run:s.id,reason,...detail});
+}
+/** Host cleanup may normalize whitespace or presentation markup. Check all of
+ * the story words; an earlier prefix is allowed for continued replies.
+ */
+function sameInlineStorySegment(current:string,expected:string):boolean{
+  const normalized=inlineStoryText(expected);
+  return !!normalized&&inlineStoryText(current).endsWith(normalized);
+}
 function inlineSnapshot(s:Session):InlinePreviewSnapshot|null{
   if(s.completed||s.controller.signal.aborted||!settings.enabled||!settings.autoTag.enabled||!settings.autoTag.streamGen||!settings.autoTag.streamInlinePreview||!ownerValid(s))return null;
   const ctx=getContext(),processor=ctx?.streamingProcessor,floor=processor?.messageId;
-  if(!ctx||!processor||processor.isStopped||typeof floor!=='number'||!Number.isInteger(floor)||floor<0)return null;
+  if(!ctx||!processor||processor.isStopped||typeof floor!=='number'||!Number.isInteger(floor)||floor<0){inlineDiagnostic(s,'host-owner-unavailable');return null;}
   const message=ctx.chat[floor];if(!message||message.is_user)return null;
   const owner=s.inlineOwner;
   if(owner&&(owner.processor!==processor||owner.floor!==floor||!isSameMessage(message,owner.message)||swipe(message)!==owner.swipe))return null;
   const chat=document.getElementById('chat'),root=chat?.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
-  if(!chat||!root||root.querySelector('textarea'))return null;
+  if(!chat||!root||root.querySelector('textarea')){inlineDiagnostic(s,'message-not-rendered');return null;}
   const segments=markerSegments(message.mes,s.stripTags),markers=segments.map(segment=>segment.marker);
-  const jobs=s.core.jobs.filter(job=>job.result&&!job.attached&&!job.saved&&job.phase!=='cancelled'&&markers[job.ordinal]?.raw===job.input.raw&&segments[job.ordinal].segment.trim().endsWith(job.input.text.trim()));
+  const jobs=s.core.jobs.filter(job=>job.result&&!job.attached&&!job.saved&&job.phase!=='cancelled'&&markers[job.ordinal]?.raw===job.input.raw&&sameInlineStorySegment(segments[job.ordinal].segment,job.input.text));
+  if(!jobs.length&&s.core.jobs.some(job=>job.result&&!job.attached&&!job.saved))inlineDiagnostic(s,'story-marker-mismatch',{markers:markers.length});
   if(!s.inlineOwner&&jobs.length)s.inlineOwner={processor,floor,message,swipe:swipe(message)};
-  return {chat,root,markers:markers.map(marker=>marker.raw),maxHeight:imageDisplayMaxHeight(settings.ui.imageDisplaySize),items:jobs.map(job=>({id:job.id,ordinal:job.ordinal,raw:job.input.raw,url:job.result!.result.url,dimensions:streamDimensions(s,job)}))};
+  return {chat,root,markers:markers.map(marker=>marker.raw),anchors:segments.map(segment=>segment.segment),maxHeight:imageDisplayMaxHeight(settings.ui.imageDisplaySize),items:jobs.map(job=>({id:job.id,ordinal:job.ordinal,raw:job.input.raw,url:job.result!.result.url,dimensions:streamDimensions(s,job)}))};
 }
 function streamDimensions(s:Session,job:Job){
   return s.generation.backend==='nai'?parseSize(pickSize(s.generation.nai,effectiveOrientation(s.generation.orientation,job.payload?.image.size??s.promptEnvironment.profile.lockedSize??'portrait'))||'832×1216')??undefined:undefined;
 }
 function updateInlinePreview(s:Session):void{
   if(s.completed||s.controller.signal.aborted||!settings.enabled||!settings.autoTag.enabled||!settings.autoTag.streamGen||!settings.autoTag.streamInlinePreview){disposeInlinePreview(s);return;}
-  if(!s.inline&&s.core.jobs.some(job=>job.result&&!job.saved&&!job.attached))s.inline=new StreamInlinePreview(()=>inlineSnapshot(s),()=>updateFloatingPreview(s),item=>openLightbox({src:item.url}));
+  if(!s.inline&&s.core.jobs.some(job=>job.result&&!job.saved&&!job.attached))s.inline=new StreamInlinePreview(()=>inlineSnapshot(s),()=>updateFloatingPreview(s),item=>openLightbox({src:item.url}),(reason,detail)=>inlineDiagnostic(s,reason,detail));
   s.inline?.refresh();
 }
 function updateFloatingPreview(s: Session): void {

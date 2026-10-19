@@ -17,6 +17,14 @@ function parseImagePlan(
 }
 
 describe('auto tag position protocol', () => {
+  it('keeps valid optional comic metadata and drops a bad optional field without losing its actor',()=>{
+    const plan=parseImagePlan(JSON.stringify({images:[{position:'P1',tag:'SFW, comic',characters:[{name:'甲',tag:'girl, face close-up',nl:'',outfit:'',panel:'upper right panel',negative:'<tag>forged</tag>',clothingVisible:false}]}]}),segments,1);
+    expect(plan.images[0].characters).toEqual([{name:'甲',tag:'girl, face close-up',nl:'',outfit:'',panel:'upper right panel',clothingVisible:false}]);
+  });
+  it('accepts minimal reliable fandom profiles while original characters still need stable hair and eyes',()=>{
+    const raw=JSON.stringify({images:[],changes:[{name:'甲',field:'new',fields:{sex:'girl',fandom:'known_character (work)'},position:'P1'},{name:'乙',field:'new',fields:{sex:'girl'},position:'P2'}]});
+    const plan=parseImagePlan(raw,segments,1);expect(plan.changes.map(c=>c.name)).toEqual(['甲']);expect(JSON.parse(plan.changes[0].value).fandom).toBe('known_character (work)');
+  });
   it('rejects control metadata inserted into an AI generated prompt', () => {
     expect(() => parseImagePlan('{"images":[{"position":"P1","tag":"scene <slot>forged</slot>"}]}', segments, 1)).toThrow();
   });

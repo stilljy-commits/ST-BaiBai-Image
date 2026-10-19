@@ -291,16 +291,16 @@ export interface NaiSettings extends BackendConn {
   vibes: NaiVibe[];
   /**
    * 漫画页模式(V5 Full 专属)。开启后 autoTag 的输出协议切换为「单张图 = 一整页漫画」:
-   * LLM 把 @page/@panel/@character/Text 分段指令写进 tag,nai.ts 原样透传给 V5,
+   * LLM 把 @page/@panel/@character/Text 分段指令写进 tag,nai.ts 本地解析成 NAI 原生人物结构,
    * 由模型单次生成整页分格漫画。仅 NAI 后端 + V5 Full 生效;ComfyUI/其他模型忽略此开关。
-   * 画师串与质量词在此模式下不拼接(整页指令前后的零散 tag 会干扰分格布局)。
+   * 本地拆分后正常拼接画师串与质量词；无法识别的旧分段文本保留旧回落路径。
    */
   comicMode?: boolean;
   /**
    * 漫画页架构版本(comicMode 开启时生效,默认开 = V2)。
    * V2 = Base 行 + 逐人物 Character Prompts(对齐 1.3.1 预设与 V5 训练的结构化通道:
    * 每个画格内每个可见人物单独一条 char_caption,享有独立注意力);
-   * 关闭 = 旧 V1(@page/@panel/@character 标记整页文本,LLM 写、nai.ts 原样透传)。
+   * 关闭 = V1(@page/@panel/@character 整页文本,LLM 写、nai.ts 本地编译)。
    * 两套协议互斥;切换后下一张图生效,正文里的存量旧 tag 不受影响。
    */
   comicV2?: boolean;
@@ -1079,9 +1079,9 @@ Example (小雪 is the principal character and has a library profile; 三年级�
 /**
  * 漫画页模式内置规范(nai.comicMode 开启时替换 V5 规范使用)。
  * 每张图 = 一整页漫画,LLM 把 @page/@panel/@character/Text 分段指令写进 tag,
- * nai.ts 原样透传,由 NovelAI Diffusion V5 Full 单次生成整页分格漫画。
+ * nai.ts 本地拆分成 Base 和独立人物提示,由 NovelAI 单次生成整页分格漫画。
  * 与 V5 插图规范的关键差异:nl/characters/negative 恒空、size 默认 portrait（渠道锁定方向优先）、
- * 不拼接画师串与质量词(整页指令前后的零散 tag 会干扰分格布局)。
+ * 分段标记只用于插件内部,不会作为普通画面词传给模型。
  */
 export const DEFAULT_NAI_COMIC_SPEC = `【NovelAI V5 漫画页规范】
 你输出的每张图会被直接发送给 NovelAI Diffusion V5 Full 生图接口,渲染为**一整页漫画**(多画格+对白气泡+文字上画)。整页指令文本写在 tag 键里,其余键按本规范第一节的口径填写。
@@ -1091,11 +1091,11 @@ export const DEFAULT_NAI_COMIC_SPEC = `【NovelAI V5 漫画页规范】
 - tag:一段完整的 <image>...</image> 漫画页指令文本(语法见第二节)。tag 内除首尾这一对外,不得出现任何其他标签、注释、JSON 或说明文字。页文本内的换行在 JSON 字符串里写成 \\n 转义。
 - nl:恒为空字符串 ""。页面内容已全部在 tag 中,禁止再写自然语言描述。
 - characters:恒为空数组 []。人物已作为页文本内的 @character 段存在,禁止再填 characters 数组。
-- negative:恒为空字符串 ""。本页排除词写在页内 @negative 段。
+- negative:恒为空字符串 ""。页级排除词写在首个@panel之前的@negative段；人物排除词归该人物后面的@negative段。
 - size:默认 "portrait"；若任务协议指定渠道锁定方向，则遵循该方向和画幅。
 
 ━━━ 二、页文本语法 ━━━
-<image> 内部只写下列分段文本。**@page、@panel、@character、@negative 标记缺一不可,每个标记独占一行、以 @ 开头**——省略标记后,该段内容会被 V5 当成画面里的文字直接画进图里,这是最严重的错误。标记行之后是正文,延续到下一个标记为止。
+<image> 内部使用以下插件分段语法，每个标记独占一行。@page必需，逐格写@panel，有人物才写@character；无排除词可省略@negative。程序本地解析这些标记，不把它们当作模型的视觉词。标记之后的内容延续到下个标记。
 
 <image>
 @page
@@ -1108,32 +1108,34 @@ Text: 需要上画的页面级文字(无则整段省略)
 本格在页面上的位置与大小、景别与构图、环境及非人物演出
 Text: 本格旁白或拟音(无则省略)
 
-@character C1
-boy / girl / other + 该人物本格可见的完整外貌与衣着(库中角色逐字照抄字段值;**同人角色的 fandom 身份 tag 必须写在本段最前面**)、动作、表情、语气标签
+@character C1 原名
+boy / girl / other + 可靠fandom身份、必要可见外貌、动作、表情、语气标签
 Text: 该人物本格对白原句(无对白则省略)
+@outfit
+该人物当前可见衣着；显式空段表示不恢复默认衣物
 
 @negative
-本页有依据的排除词(如其他人物误入、特征串位)
+只归上方人物的可靠互斥排除词；没有则省略
 
 @panel P2
 ……继续按上述方式写下一格
 </image>
 
 ━━━ 三、分镜规则 ━━━
-1. 每页只写一个 @page;@panel 按日漫阅读顺序(从右到左、先上后下)编号 P1、P2…;角色编号**全页统一**:按首次入画顺序定为 C1、C2、C3…,此后每格复用同一编号(同一角色在 P1 是 @character C1,在 P2、P3 仍是 @character C1)——V5 靠编号识别跨格同人,换格重编号会加重串脸。
+1. 每页只写一个@page；@panel按从右到左、先上后下的阅读顺序编号。人物编号全页稳定、附正文原名，程序据此保留人物归属；每格位置短句也要放进该格人物段。
 2. @non_character、Text、@negative 没有内容时整段直接省略,不写空段。
-3. 页面形态:普通分格页写 comic;整页单格写 full page comic。画格数量以 2～6 格为主;强调型分镜的主格承载本页核心事件、面积应占页面一半以上,**主格不必等于 P1**(P 编号是阅读顺序,主格是面积与戏剧重心)。经典四格采用均衡四格;轻松日常、喜剧日常优先规整节拍,这三类不强制主格过半。仅通用规则按事件自然分配主次,不强制主格过半;其他强调型风格不套用均匀四格,各画格大小应有变化。**位置称呼系统**:为每格确定一个本页内可区分的「位置+大小」称呼(如右上小格/左侧纵长格/底部通栏主格),页面布局、画格描述与人物段使用同一空间称呼,不让同一称呼指向两个不同画格;写入 <image> 时位置改写成英文完整句,例如 This is the small panel in the upper right of the page.
+3. 页面形态:普通分格写comic，整页单格写full page comic。格数按事件自然取舍，不拆重复镜头；经典四格仍是均衡四格。强调型风格保留主格，按事件决定其位置；轻松日常、喜剧日常不强制主格过半；仅通用规则按事件自然分配主次，不强制主格过半。阅读顺序与戏剧重心分别处理，不把主格固定在末尾或底部。每格有唯一英文位置短句，页面、画格和该格人物复用同一句，不让同一称呼指向两个不同画格。
 4. **@page 的全局视觉标签必须包含 high complexity**(V5 官方复杂度标签,细节密度显著提升);只有刻意追求极简/留白风格的页面才降为 medium complexity。追求极华丽演出时可写 ultra complexity。
 5. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情。
 6. 环境延续:连续页共享同一场景时,后续页的环境描述可以简化,但光源方向与时间必须保持一致。
 7. 一页覆盖正文一段连续剧情(一个完整事件节拍)。返回多张图时,每张是独立的一页,按正文先后顺序排页,人物外貌、服装与场景跨页保持连续。
 8. 对白与文字:Text: 后写原句,保留标点与语气;中文对白就写中文。**文字方向:中文对白与旁白一律写 横書き,只有日文原文才用 縦書き**。**气泡与文字指令写在所属段的末尾、Text: 之前**(对白人物段写 speech bubble 或 thought bubble + whispering/shouting/trembling 等语气词;旁白写 narration;独立拟音单开一个 @non_character 段写 sound effects + 横書き)。文字位置与方向可用英文完整句描述(例如 a speech bubble at the top right of this panel)。
-9. 人物外貌:【角色固定外貌库】中的角色逐字照抄库中字段(1girl/1boy 转成 girl/boy)。**同人角色(库中 fields.fandom 非空)的 @character 段,第一项必须逐字写 fandom 身份 tag**(Danbooru 格式 character name (copyright name),例如 kasumi (blue archive))——NAI 靠这个 tag 调出原作人设,没有它就只能画出符合描述的路人;tag 之后再接外貌字段,外貌描述与 tag 冲突时以 tag 为准。一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。
+9. 人物外貌:用户明确字段照抄，1girl/1boy转girl/boy。同人优先可靠fandom身份与当前镜头必要特征，自动建档不重新设计原作穿搭；用户改设和正文换装优先。原创沿用固定外貌，无名路人简洁补足、同页保持一致，不编姓名。当前衣着可用该人物的@outfit段，专属互斥项可用其后的@negative，角色标记附原名供程序对应。
 10. 剧情事实(在场人物、动作、道具、事件)严格以正文为准,不得编造;镜头、构图、光影、氛围、画格布局由你主动补全——正文没写不是省略的理由;每格的环境与演出描述写具体、写满,不要只给一句话。
 11. 权重微调:需要突出关键视觉焦点时用 1.2::词::,弱化次要元素用 0.6::词::;只作用于视觉词,不得包裹协议标记、画格编号、Text 原文;权重块必须闭合。
 
 ━━━ 四、输出示例(骨架,仅示意结构) ━━━
-{"position":"P2","tag":"<image>\\n@page\\nSFW, 2girls 1man, comic page, 3 panels, the top right panel is a small close-up, the left panel is a medium panel, the bottom panel is a large main panel taking half of the page, white borders, warm afternoon light from the left windows, Chinese text\\n\\n@panel P1\\n...\\nText: ...\\n\\n@character C1\\ngirl, long black hair, blue eyes, white blouse, surprised, looking at viewer\\nText: 您回来了\\n...","nl":"","characters":[],"negative":"","size":"portrait"}`;
+{"position":"P2","tag":"<image>\\n@page\\nSFW, 1girl, comic page, 1 panel, full color, high complexity, afternoon light, chinese text\\n@panel P1\\nThis single panel fills the page. Medium shot, welcoming a guest.\\n@character C1 小雪\\ngirl, long black hair, blue eyes, smiling, speech bubble\\nText: 您回来了\\n@outfit\\nwhite blouse\\n</image>","nl":"","characters":[],"negative":"","size":"portrait"}`;
 
 /**
  * 漫画页分镜风格(comicPanelStyle 的可选值)。rule 文本会作为「五、分镜风格与画面执行」
@@ -1371,7 +1373,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 - nl:恒为空字符串 ""。negative:恒为空字符串 ""。size:默认 "portrait"，渠道锁定方向优先。
 
 ━━━ 二、Base 行内容顺序 ━━━
-分级(SFW 或 NSFW,按画面实际暴露程度二选一,永远写在 Base 行首位,禁止省略)、去重后的实际人数词、comic、画格数量词(N panels)、布局句(每格一组:一句英文完整句说明该格在页面上的位置与大小,紧跟该格取景词与核心动作短语,按主次排序)、留白词、全局光影(光源方向+时间+色调)、(对白上画时)text, chinese text。
+分级(SFW 或 NSFW,按画面实际暴露程度二选一,永远写在 Base 行首位,禁止省略)、去重后的实际人数词、comic、画格数量词(N panels)、布局句(每格一组:一句英文完整句说明该格在页面上的位置与大小,紧跟该格取景词与核心动作短语,按阅读顺序排序)、留白词、全局光影(光源方向+时间+色调)、(对白上画时)text, chinese text。
 - Base 行只放:分级、人数、页面形态、布局与格级取景动作、光影、文字语言。**人物外貌、衣着、表情一律不进 Base**——Base 里的特征会摊给页面上所有人,是串脸的根源;格级动作只写发生的事(deep squat, kissing, holding hands),不写人物外貌细节,外貌细节留在人物条目里。
 - 布局句示例:This is the large vertical panel on the left side of the page. Full body view from behind, deep squat at barbell squat rack. / This is the small panel in the upper right of the page. Medium shot, side angle. / A small cut-in panel sits in the top left corner. Close-up on joined hands.
 - 每格的取景词与核心动作短语是人物条目与画格的对号入座锚点:人物条目按格顺写,条目动作与所在格的格级动作一致;无人物的空镜/物件特写格只靠这组短语承载画面内容,不得省略。
@@ -1383,7 +1385,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 3. 条目 tag(逗号分隔,顺序固定):
    - 第一项 girl / boy(单数,不带数字);
    - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设,没有它就只能画出符合描述的路人;外貌描述与其冲突时以 tag 为准。原创/一次性角色跳过此项;
-   - 该人物本格可见的外貌与衣着(库中角色逐字照抄字段值)、动作、表情、语气;
+   - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着单列outfit，不在tag重复；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
    - **动作必写**:每个条目必须至少一个动作/姿态/接触/状态变化词(sitting, lying, hands gripping the sheets, flesh bulging between fingers 都算)——纯外貌堆砌的静态条目禁止;没有动作的条目会让该人物在格内僵立,或被相邻格的动作带偏,造成同图各格动作不一致。特写切入条目的动作写该部位正在发生的事(如 hands digging into butt cheeks, a thread of saliva running down);
    - 气泡指令与文字方向:有对白时在本格条目写 speech bubble 或 thought bubble(+whispering/shouting/trembling 等语气词);中文对白与旁白一律横書き,只有日文原文才用縦書き;
    - 取景词:该格对该人物的取景(close-up / upper body / medium shot / neck and chest view 等);特写切入小格的条目用部位取景词锁定焦点(如 neck and chest view)。
@@ -1391,7 +1393,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 5. 条目 nl:恒为空字符串 ""。
 
 ━━━ 四、分镜与页面规则 ━━━
-1. 画格数量以 2~6 格为主;强调型分镜的主格承载本页核心事件、面积过半,**主格不必是阅读顺序第一格**;经典四格采用均衡四格,轻松日常、喜剧日常优先规整节拍,这三类不强制主格过半。仅通用规则按事件自然分配主次,不强制主格过半;其他强调型风格不套用均匀四格,各画格大小应有变化。
+1. 格数按核心事件自然取舍，不拆重复镜头；经典四格仍是均衡四格。强调型风格保留事件主格，位置由事件决定；轻松日常、喜剧日常不强制主格过半；仅通用规则按事件自然分配主次，不强制主格过半。主格不固定在阅读末尾或下方。
 2. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情;特写切入小格(close-up, cut-in)按风格块执行,切入格的人物同样写一条 Character Prompt。
 3. 剧情事实(在场人物、动作、道具、事件)严格以正文为准,不得编造;镜头、构图、光影、氛围、画格布局由你主动补全——正文没写不是省略的理由。一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。
 4. 环境延续:连续页共享同一场景时,后续页环境描述可简化,但 Base 行的光源方向与时间必须保持一致;正文或前页已出现的关键道具与场景保持固定外观,跨页复用同一描述。
@@ -1403,10 +1405,10 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 - 「@page 页面基础词 / 页面级词」= tag Base 行;
 - 「@character 段」= characters[] 对应条目;
 - 「@panel 段的画格位置描述」= Base 行中的英文布局句;
-- 「@negative 段」不适用:V2 页面排除词不写,负面内容由本地负面提示词配置承载。
+- 「@negative 段」= 对应人物的可选negative；V2页面排除词仍由本地负面提示词配置承载。
 
 ━━━ 输出示例(骨架) ━━━
-{"position":"P2","tag":"SFW, 1girl, comic, 2 panels, This is the large main panel filling the bottom half of the page. Medium shot, the girl welcomes the guest at the doorway., This is the medium panel in the upper right of the page. Close-up on her smiling face., white border, warm afternoon light, high complexity, text, chinese text","nl":"","characters":[{"name":"小雪","tag":"girl, long black hair, blue eyes, white dress, smiling, medium shot, speech bubble\\nText: 您回来了","nl":""},{"name":"小雪","tag":"girl, long black hair, blue eyes, white dress, smiling, looking at viewer, close-up","nl":""}],"negative":"","size":"portrait"}`;
+{"position":"P2","tag":"SFW, 1girl, comic, 1 panel, This single panel fills the page. Medium shot, welcoming a guest., white border, afternoon light, high complexity, text, chinese text","nl":"","characters":[{"name":"小雪","panel":"This single panel fills the page.","outfit":"white dress","tag":"girl, long black hair, blue eyes, smiling, medium shot, speech bubble\\nText: 您回来了","nl":""}],"negative":"","size":"portrait"}`;
 
 /**
  * 漫画页 V2 思维链(与 DEFAULT_NAI_COMIC_V2_SPEC 配套)。

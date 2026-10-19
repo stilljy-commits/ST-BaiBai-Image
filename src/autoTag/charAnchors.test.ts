@@ -28,6 +28,17 @@ function entry(name: string, fields: Partial<Record<string, string>>, source: Ch
 }
 
 describe('formatEntryForPrompt / buildLibraryText', () => {
+  it('uses identity-first automatic fandom references only for comic analysis, without modifying saved profiles',()=>{
+    const fan=entry('甲',{sex:'girl',fandom:'known_character (work)',hair:'invented hair',outfit:'invented coat'});fan.nl='invented appearance';
+    const ordinary=buildLibraryText([fan]),comic=buildLibraryText([fan],new Set(),true);
+    expect(ordinary).toContain('invented coat');expect(comic).toContain('known_character (work)');expect(comic).not.toMatch(/invented/);
+    expect(fan.fields.outfit).toBe('invented coat');expect(fan.nl).toBe('invented appearance');
+    expect(buildLibraryText([fan],new Set(['甲']),true)).toContain('invented coat');
+  });
+  it('keeps wardrobe section markers through the actual positioned-reference fallback',()=>{
+    const text='@page\ncomic\n@panel P1\nmedium shot\n@character C1 甲\ngirl\n@outfit\nred coat\n@negative\nblue coat';
+    const result=applyPositionedCharRefs(text,[],[],0,'tag',new Set());expect(result.text).toBe(text);expect(result.unknown).toEqual([]);
+  });
   it('renders non-empty fields with labels in fixed order', () => {
     const text = formatEntryForPrompt(entry('小雪', { sex: '1girl', hair: 'long black hair', eyes: 'red eyes' }));
     expect(text).toBe('- 小雪: 性别=1girl, 头发=long black hair, 眼睛=red eyes');

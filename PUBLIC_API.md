@@ -160,6 +160,8 @@ myPanel.querySelector('img').src = result.dataUrl;   // 想显示在哪就显示
 | `save` | `boolean?` | 落盘进柏宝绘图库，**默认 `true`** |
 | `character` | `string?` | 落盘归到哪个角色名下（图库分组名）。省略 = 当前聊天的角色名 |
 
+`PublicCharacterPrompt` 支持 `name`、`tag`、可选 `nl` 和可选 `negative`。`negative` 仅归该人物，支持自定义负面词的 NAI 型号会分别发送；NAI V5 Medium 忽略自定义负面词。旧调用无需新增字段。
+
 ### 返回值
 
 ```js

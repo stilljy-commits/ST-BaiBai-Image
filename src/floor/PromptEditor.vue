@@ -100,6 +100,7 @@ const draft = computed<ImageTagContent>(() => ({
       name: oneLine(character.name),
       tag: /^\s*Text:/im.test(character.tag) ? character.tag.trim().replace(/\r\n?/g, '\n') : oneLine(character.tag),
       nl: oneLine(character.nl),
+      ...(character.negative?.trim()?{negative:oneLine(character.negative)}:{}),
     }))
     // 与 parseImageTagContent 同口径:name/tag 缺一条即丢弃(空行不落进正文)
     .filter(character => character.name && character.tag),
@@ -110,7 +111,7 @@ function sameCharacters(a: ImageCharacterPrompt[], b: ImageCharacterPrompt[]): b
   if (a.length !== b.length) return false;
   return a.every(
     (item, index) =>
-      item.name === b[index].name && item.tag === b[index].tag && item.nl === b[index].nl,
+      item.name === b[index].name && item.tag === b[index].tag && item.nl === b[index].nl && (item.negative??'')===(b[index].negative??''),
   );
 }
 
@@ -141,7 +142,7 @@ const error = computed(() => {
     ['负面提示词', next.negative],
   ];
   for (const character of next.characters) {
-    fields.push([`角色「${character.name}」`, `${character.name} ${character.tag} ${character.nl}`]);
+    fields.push([`角色「${character.name}」`, `${character.name} ${character.tag} ${character.nl} ${character.negative??''}`]);
   }
   for (const [label, value] of fields) {
     if (value && containsTagMarkup(value)) {
@@ -372,6 +373,7 @@ onBeforeUnmount(() => {
             type="text"
             placeholder="自然语言(可空)"
           />
+          <input v-model="character.negative" class="bbi-input bbi-char-negative" type="text" placeholder="该人物排除词(可空)" aria-label="该人物专属负面提示词" />
           <button
             class="bbi-icon-mini"
             type="button"
@@ -384,7 +386,7 @@ onBeforeUnmount(() => {
         <button class="bbi-btn bbi-btn-sm bbi-char-add" type="button" @click="addCharacter">
           <Icon name="plus" /> 添加角色
         </button>
-        <span class="bbi-field-hint">角色名与 tag 都填了才会生效,留空的行保存时自动丢弃。</span>
+        <span class="bbi-field-hint">角色名与 tag 都填了才会生效。专属排除词仅作用于本人，NAI Medium 不支持自定义负面词。</span>
       </div>
 
       <!-- 改提示词会换 promptHash 桶,而 stale 态只显示最新一张、翻页器不出现。
@@ -466,7 +468,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .bbi-char-tag,
-.bbi-char-nl {
+.bbi-char-nl,
+.bbi-char-negative {
   flex: 1 1 0;
   min-width: 0;
 }
@@ -532,7 +535,8 @@ onBeforeUnmount(() => {
     flex: 1 1 100%;
   }
   .bbi-char-tag,
-  .bbi-char-nl {
+  .bbi-char-nl,
+  .bbi-char-negative {
     flex: 1 1 100%;
   }
 }

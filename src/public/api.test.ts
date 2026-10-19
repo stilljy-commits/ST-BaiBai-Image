@@ -198,7 +198,7 @@ describe('generate', () => {
       nl: ' a girl ',
       negative: ' bad hands ',
       characters: [
-        { name: '阿黛尔', tag: '1girl, silver hair' },
+        { name: '阿黛尔', tag: '1girl, silver hair',negative:' blue coat ' },
         { name: '无 tag 的', tag: '  ' },
         null as never,
       ],
@@ -209,7 +209,7 @@ describe('generate', () => {
       prompt: '1girl, moonlight',
       nl: 'a girl',
       negative: 'bad hands',
-      characters: [{ name: '阿黛尔', tag: '1girl, silver hair', nl: '' }],
+      characters: [{ name: '阿黛尔', tag: '1girl, silver hair', nl: '',negative:'blue coat' }],
       size: 'landscape',
       seed: 4242,
     });

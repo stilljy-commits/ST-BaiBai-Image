@@ -124,18 +124,19 @@ describe('parseResolution', () => {
 });
 
 describe('提示词拼装', () => {
-  it('removes text tokens from a V1 page without losing its multiline panel structure', () => {
+  it('compiles a V1 page to native inputs while removing disabled text', () => {
     const page='<image>\n@page\nSFW, comic page, 2 panels, Chinese text, white borders\n@panel P1\nClose-up, speech bubble\nText: 你好\n@character C1\ngirl, smiling\n</image>';
     const result=fullPositivePrompt(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false,comicText:false}),page);
     expect(result).not.toMatch(/Chinese text|speech bubble|Text:/i);
-    expect(result).toContain('@panel P1\nClose-up\n@character C1\ngirl, smiling');
+    expect(result).toContain('Close-up');expect(result).not.toContain('@panel');
+    const params=buildNaiParameters(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false,comicText:false}),{prompt:page});
+    expect((params.v4_prompt as any).caption.char_captions[0].char_caption).toContain('girl, smiling');
   });
-  it('漫画页模式:剥 <image> 包装、不拼质量词(否则质量词会落进页尾 @negative 段)', () => {
+  it('compiles a V1 global negative separately from positive quality tags', () => {
     const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, qualityTags: 'best quality' });
     const page = '<image>\n@page\nSFW, 1girl, comic page\n\n@panel P1\nA main panel.\n\n@negative\nextra characters\n</image>';
-    expect(fullPositivePrompt(comic, page)).toBe(
-      '@page\nSFW, 1girl, comic page\n\n@panel P1\nA main panel.\n\n@negative\nextra characters',
-    );
+    expect(fullPositivePrompt(comic, page)).toBe('SFW, 1girl, comic page, A main panel., best quality');
+    expect(String(buildNaiParameters(comic,{prompt:page}).negative_prompt)).toContain('extra characters');
   });
 
   it('漫画页模式关闭对白上画:同时剥包装与 Text 行', () => {

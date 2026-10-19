@@ -190,7 +190,8 @@ function normalizeCharacters(raw: GenerateRequest['characters']): ImageCharacter
     const name = typeof item.name === 'string' ? item.name.trim() : '';
     const tag = typeof item.tag === 'string' ? item.tag.trim() : '';
     const nl = typeof item.nl === 'string' ? item.nl.trim() : '';
-    return name && tag ? [{ name, tag, nl }] : [];
+    const negative=typeof item.negative==='string'?item.negative.trim():'';
+    return name && tag ? [{ name, tag, nl, ...(negative?{negative}:{}) }] : [];
   });
 }
 

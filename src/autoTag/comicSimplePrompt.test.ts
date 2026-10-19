@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildAutoTagMessages, captureAutoTagEnvironment } from './prompt';
 import { prepareStreamBatch, splitStreamBatch } from './streamBatch';
 import { parseImagePlan } from './protocol';
+import { finalizeComicPlan } from '@/comic/plan';
 import { parseImageTagContent, serializeImageTag } from '@/st/imageTagRegex';
 import { settings } from '@/state/settings';
 import type { STContext } from '@/st/context';
@@ -51,6 +52,7 @@ describe('switchable simple comic analysis',()=>{
     const {messages,prompt,sample,batch}=await build(v2);
     const raw=JSON.stringify({...sample,images:batch.groups.map(group=>({...sample.images[0],position:group.markerId}))});
     const plan=parseImagePlan(raw,batch.target.segments,3,3,batch.markerTargets);
+    finalizeComicPlan(plan,[]);
     expect(splitStreamBatch(plan,batch).map(image=>image.sourceLine)).toEqual([5,8,11]);
     for (const image of plan.images) {
       expect(image.size).toBe('landscape');

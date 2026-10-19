@@ -140,7 +140,7 @@ describe('状态流转', () => {
       prompt: '1girl',
       nl: '',
       negative: '',
-      characters: [{ name: 'A', tag: '1girl, black hair', nl: 'left' }],
+      characters: [{ name: 'A', tag: '1girl, black hair', nl: 'left',negative:'blue coat' }],
       seed: 42,
       size: 'portrait',
       floor: 3,
@@ -150,7 +150,7 @@ describe('状态流转', () => {
     const record = records[0] as ImageRecord;
     expect(record.status).toBe('aborted');
     expect(record.characters).toEqual([
-      { name: 'A', tag: '1girl, black hair', nl: 'left' },
+      { name: 'A', tag: '1girl, black hair', nl: 'left',negative:'blue coat' },
     ]);
   });
 });
