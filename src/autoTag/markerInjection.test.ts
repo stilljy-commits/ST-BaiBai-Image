@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { settings } from '@/state/settings';
 import { bindMarkerInjection, ensureMarkerInRequest, markerRuleText, markerCountRuleText } from './markerInjection';
+import { STREAM_SCENE_SUBJECT_RULE } from './sceneRules';
 
 let handlers: Map<string, (...args: unknown[]) => unknown>;
 const setPrompt = vi.fn();
@@ -17,7 +18,7 @@ beforeEach(() => {
 afterEach(() => { emit('end'); vi.unstubAllGlobals(); });
 
 describe('marker injection into actual story requests', () => {
-  it('reuses legacy worldbook instructions while making the frozen count override density, exactly once',()=>{
+  it('keeps legacy worldbook text while overriding its density and adding current subject constraints exactly once',()=>{
     emit('start','normal',{},false);
     const legacy='【正文配图标记规则(柏宝绘,写正文时必须执行)】\n约每300~600字一个标记\n本楼配图数量控制在2~10张之间\n[img: 中文意图]';
     const book={role:'system',content:legacy},prefill={role:'assistant',content:'开场'};
@@ -25,7 +26,10 @@ describe('marker injection into actual story requests', () => {
     emit('send',request,false);emit('send',request,false);
     expect(request.prompt).toHaveLength(4);expect(request.prompt[0]).toBe(book);expect(book.content).toBe(legacy);
     expect(request.prompt[2]).toEqual({role:'system',content:markerCountRuleText(2,4)});expect(request.prompt[3]).toBe(prefill);
-    expect(request.prompt[2].content).toContain('每多少字一个标记');expect(request.prompt[2].content).toContain('不是独立数量要求');
+    expect(request.prompt[2].content).toContain('按真实视觉事件和剧情节奏选择位置');
+    expect(request.prompt[2].content).toContain('按字数均匀插图要求以本条为准');
+    expect(request.prompt[2].content).toContain(STREAM_SCENE_SUBJECT_RULE);
+    expect(request.prompt[2].content).not.toMatch(/(?:300|400)\s*[~～-]\s*600/);
   });
   it('treats equal bounds as an exact count and never asks a zero-minimum floor to invent events',()=>{
     expect(markerCountRuleText(10,10)).toContain('必须恰好 10 个标记');
@@ -39,6 +43,8 @@ describe('marker injection into actual story requests', () => {
     const request = { [field]: messages }; const existing = [...messages]; emit('send', request, false);
     expect(messages).toHaveLength(3); expect(messages[1]).toEqual({ role: 'system', content: markerRuleText(2, 4) });
     expect(messages[0]).toBe(existing[0]); expect(messages[2]).toBe(existing[1]);
+    expect(messages[1].content).toContain(STREAM_SCENE_SUBJECT_RULE);
+    expect(messages[1].content).not.toMatch(/(?:300|400)\s*[~～-]\s*600/);
   });
   it('does not add a duplicate when the worldbook or native path already supplied the rule', () => {
     emit('start', 'normal', {}, false);

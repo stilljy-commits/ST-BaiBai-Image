@@ -20,6 +20,7 @@ vi.mock('@/st/messageEdit',async importOriginal=>({ ...await importOriginal<type
 vi.mock('@/generate',()=>({captureGenerationSnapshot:()=>({backend:'nai',nai:{seed:42,model:'nai-diffusion-5-full'},status:{configured:true},comfy:{},orientation:'auto'}),decideSeed:()=>42,
   generateImage:(input:any,signal:any)=>new Promise(resolve=>h.images.push({input,signal,resolve}))}));
 import { settings } from '@/state/settings';
+import { STREAM_SCENE_SUBJECT_RULE } from './sceneRules';
 import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews, invalidateStreamOwners, stopCurrentStream } from './streamRunner';
 import { saveImageResult } from '@/floor/storage';
 import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
@@ -58,6 +59,11 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  it.each(['standard','simple','fast'] as const)('carries the same female-subject rule through streamed %s analysis',async(mode)=>{
+    Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:mode});
+    settings.autoTag.maxImages=3;beginStreamSession('A');feedStreamText(story(3));await flush();
+    expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0].note).toContain(STREAM_SCENE_SUBJECT_RULE);
+  });
   async function inlineStory(text=story(3),rendered=text){
     const hosts=previewDocument();hosts.set('chat',{querySelector:()=>({querySelector:()=>null})});
     settings.autoTag.streamInlinePreview=true;settings.autoTag.maxImages=3;
@@ -288,6 +294,7 @@ describe('real stream runner with fixed groups of three',()=>{
     h.analyses[0].resolve();await flush();expect(h.analyses).toHaveLength(2);expect(h.images).toHaveLength(1);
     expect(h.analyses[1].m[0].options).toMatchObject({minImages:1,maxImages:1});expect(h.analyses[1].m[0].library).toContain('silver hair');
     expect(h.analyses[0].m[0].planning).toBe('fixed-markers');expect(h.analyses[1].m[0].planning).toBe('select-scenes');
+    expect(h.analyses[1].m[0].note).toContain(STREAM_SCENE_SUBJECT_RULE);
     expect(h.analyses[1].o.source).toBe('流式配图 · 文末补充');finishAnalysis(1,1);await flush();
     const ids=parseImageTags(h.ctx.chat[1].mes).map(parseImageTagContent).map(slot=>slot.slotId);expect(ids).toHaveLength(2);expect(ids).toContain(original);
   });

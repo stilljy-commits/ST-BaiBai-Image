@@ -1,5 +1,6 @@
 import { getContext, type STEventSource } from '@/st/context';
 import { settings, isCurrentChatExcluded } from '@/state/settings';
+import { STREAM_SCENE_SUBJECT_RULE } from './sceneRules';
 
 const KEY = 'bbi_stream_marker_rule';
 let warned = false;
@@ -12,12 +13,13 @@ export function markerCountRuleText(min: number, max: number): string {
   return `【本次配图数量约束（柏宝绘）】
 本楼配图数量控制在 ${min}~${max} 张之间，统计整条正文的 [img: 中文画面意图] 标记数，不是漫画页内的画格数。${min === max ? `本次必须恰好 ${max} 个标记。` : `在此范围内按真实视觉事件选择数量，不要求接近上限 ${max}。`}
 只在正式剧情正文中放标记；字数统计、信息小结、状态栏、选项和规则示例中不放配图标记，也不复述标记格式。
-本次插件数量范围优先；已有世界书若写了不同数量，以本条为准。“每多少字一个标记”只辅助分布，不是独立数量要求；篇幅较长就适当拉大间隔，较短就选择次要但真实可见的事件满足下限。标记随剧情推进分散放置，不集中在开头或结尾。${min === 0 ? '没有值得绘制的事件可以不放标记。' : `从有事实依据的候选中满足至少 ${min} 个标记。`}不得为了凑数编造人物、动作或剧情；结束前核对数量和分布。`;
+${STREAM_SCENE_SUBJECT_RULE}
+本次插件数量范围与选图条件优先；已有提示中的不同数量或按字数均匀插图要求以本条为准。按真实视觉事件和剧情节奏选择位置，自然分散放置，不集中在开头或结尾。${min === 0 ? '没有值得绘制的事件可以不放标记。' : `从符合人物在场条件、且有事实依据的候选中满足至少 ${min} 个标记。`}不得为了凑数编造人物、动作或剧情；结束前核对数量和分布。`;
 }
 export function markerRuleText(min: number, max: number): string {
   return `【正文配图标记规则】
 写剧情时，在值得配图的段落之后放单独一行 [img: 一句中文画面意图]。每条意图不超过30字，不写英文tag。
-标记对应一个有视觉价值的事件，可表现动作、互动、场景变化或人物状态。未提供其它密度建议时可参考约400~600字一个标记，实际间隔服从数量与剧情。
+标记对应一个有视觉价值的事件，意图中点明主要女性角色及其动作、互动或状态；位置服从事件发展和自然阅读节奏。
 ${markerCountRuleText(min, max)}`;
 }
 export function syncMarkerInjection(): void {

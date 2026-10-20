@@ -17,6 +17,7 @@ import { rebaseImagePositions } from '@/autoTag/rebase';
 import { captureRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
 import { StreamRun, streamBatchSizes, type StreamJob } from '@/autoTag/streamCore';
 import { prepareStreamBatch, splitStreamBatch } from '@/autoTag/streamBatch';
+import { STREAM_SCENE_SUBJECT_RULE } from '@/autoTag/sceneRules';
 import { mergeStreamProfiles } from '@/autoTag/streamProfiles';
 import { registerStreamActions, updateStreamSlot, forgetStreamSlot } from '@/autoTag/streamState';
 import { planChangeOps } from '@/autoTag/changeOps';
@@ -189,9 +190,10 @@ function fastComicAnalysis(s: Session): boolean {
   return s.profile.mode !== 'illustration' && s.promptEnvironment.nai?.comicAnalysisMode === 'fast';
 }
 function analysisScope(s: Session): string {
-  return simpleComicAnalysis(s)
+  const scope = simpleComicAnalysis(s)
     ? '【当前流式任务范围】目标正文仅指本批带P编号的段落；只为这些段落选图和检查角色建档。角色卡、世界书、记忆与此前正文仅作参考。已建档角色直接复用，段外角色不补建档，不把后文状态提前套用。一张图是一整页漫画。'
     : STREAM_ANALYSIS_SCOPE;
+  return `${scope}\n${STREAM_SCENE_SUBJECT_RULE}`;
 }
 function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
   const floor = s.binding?.floor ?? s.referenceFloor;
@@ -242,7 +244,7 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
   const scanText=jobs.at(-1)!.input.prefix+'\n'+jobs.map(job=>job.input.text).join('\n');
   const ctx=getContext()!,floor=s.binding?.floor??s.referenceFloor,analysisContext={...ctx,chat:[...ctx.chat]};
   analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
-  const note='极速模式仅输出简短分镜。只为下列标记生成pages，id照抄M编号，按M编号顺序输出。\n'+batch.groups.map(g=>
+  const note='极速模式仅输出简短分镜。只为下列标记生成pages，id照抄M编号，按M编号顺序输出。\n'+STREAM_SCENE_SUBJECT_RULE+'\n'+batch.groups.map(g=>
     '标记 '+g.markerId+'：'+g.intent+'；对应正文 '+g.positions.join('、')+'；图片 position 固定填 "'+g.markerId+'"。').join('\n')+
     '\n'+continuity.note+'\n此前尚未概括的正文，仅作连续性依据：\n'+continuity.prefix+
     (jobs.length===1&&jobs[0].analysisError?'\n【当前页修复】上次校验未通过：'+jobs[0].analysisError+'。只修复当前页；以前批次编号不沿用，本次以当前给定M编号和P位置为准。':'');
@@ -516,7 +518,7 @@ async function supplement(s: Session, count: number): Promise<void> {
   if (!candidates.length) return;
   const target = { segments: candidates, promptText: candidates.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n') };
   const priorImages = parseImageTags(s.body).map(raw => parseImageTagContent(raw).tag.slice(0, 300)).join('；');
-  const note = `文末补充配图：已接受 ${count} 张，最多补 ${maximum} 张，至少补 ${needed} 张。已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
+  const note = `文末补充配图：已接受 ${count} 张，最多补 ${maximum} 张，至少补 ${needed} 张。${STREAM_SCENE_SUBJECT_RULE}已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
   const controller = s.controller;
   let plan: ReturnType<typeof parseImagePlan> | undefined;
   let lastError: unknown;
@@ -580,7 +582,9 @@ function inlineSnapshot(s:Session):InlinePreviewSnapshot|null{
   const owner=s.inlineOwner;
   if(owner&&(owner.processor!==processor||owner.floor!==floor||!isSameMessage(message,owner.message)||swipe(message)!==owner.swipe))return null;
   const chat=document.getElementById('chat'),root=chat?.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
-  if(!chat||!root||root.querySelector('textarea')){inlineDiagnostic(s,'message-not-rendered');return null;}
+  // Preset thought viewers also use hidden textareas as data stores. Only the
+  // host's actual message editor suspends previews, not arbitrary preset inputs.
+  if(!chat||!root||root.querySelector('textarea.edit_textarea,textarea#curEditTextarea')){inlineDiagnostic(s,'message-not-rendered');return null;}
   const segments=markerSegments(message.mes,s.stripTags),markers=segments.map(segment=>segment.marker);
   const jobs=s.core.jobs.filter(job=>job.result&&!job.attached&&!job.saved&&job.phase!=='cancelled'&&markers[job.ordinal]?.raw===job.input.raw&&sameInlineStorySegment(segments[job.ordinal].segment,job.input.text));
   if(!jobs.length&&s.core.jobs.some(job=>job.result&&!job.attached&&!job.saved))inlineDiagnostic(s,'story-marker-mismatch',{markers:markers.length});
