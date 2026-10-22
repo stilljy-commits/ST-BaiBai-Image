@@ -51,7 +51,7 @@ export function parseComicSections(source:string):ComicSections|null {
   return page;
 }
 export function comicSectionCharacters(page:ComicSections):ImageCharacterPrompt[]{
-  return page.panels.flatMap(panel=>panel.characters.map(({id:_,...character})=>({...character,panel:panelLocation(panel.description)})));
+  return page.panels.flatMap(panel=>panel.characters.map(({id:_,...character})=>({...character,panel:panelLocation(panel.description),framing:panel.description})));
 }
 export function comicSectionBase(page:ComicSections):string {
   const parts=[page.base,page.nonCharacter,...page.panels.flatMap(p=>[p.description,p.nonCharacter])].filter(Boolean);

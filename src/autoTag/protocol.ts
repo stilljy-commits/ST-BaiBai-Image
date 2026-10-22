@@ -17,6 +17,8 @@ export interface ImageCharacterPrompt {
   outfit?: string;
   panel?: string;
   clothingVisible?: boolean;
+  /** Internal V1 panel description used only for crop-aware wardrobe completion. */
+  framing?: string;
 }
 
 export interface ImageInsertion {

@@ -1385,10 +1385,10 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 3. 条目 tag(逗号分隔,顺序固定):
    - 第一项 girl / boy(单数,不带数字);
    - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设,没有它就只能画出符合描述的路人;外貌描述与其冲突时以 tag 为准。原创/一次性角色跳过此项;
-   - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着单列outfit，不在tag重复；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
+   - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着及已知cosplay对象/作品/服装版本单列outfit，不在tag重复，不写入本人的fandom；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
    - **动作必写**:每个条目必须至少一个动作/姿态/接触/状态变化词(sitting, lying, hands gripping the sheets, flesh bulging between fingers 都算)——纯外貌堆砌的静态条目禁止;没有动作的条目会让该人物在格内僵立,或被相邻格的动作带偏,造成同图各格动作不一致。特写切入条目的动作写该部位正在发生的事(如 hands digging into butt cheeks, a thread of saliva running down);
    - 气泡指令与文字方向:有对白时在本格条目写 speech bubble 或 thought bubble(+whispering/shouting/trembling 等语气词);中文对白与旁白一律横書き,只有日文原文才用縦書き;
-   - 取景词:该格对该人物的取景(close-up / upper body / medium shot / neck and chest view 等);特写切入小格的条目用部位取景词锁定焦点(如 neck and chest view)。
+   - 取景词:沿用所属画格景别，不无故另写冲突的full body或close-up；实际遮挡、身高造成的裁切可不同。局部特写条目用部位取景锁定焦点，只写可见的关键衣饰，不为鞋靴强拉全身。
 4. 条目对白:该人物本格有对白时,在 tag 末尾**另起一行**写 Text: 对白原句(与前面的 tag 用换行 \\n 分隔,保留原文与标点,中文对白写中文);无对白不写。旁白与拟音不写进人物条目。
 5. 条目 nl:恒为空字符串 ""。
 

@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {comicFixedFields,finalizeComicCharacters,ComicWardrobeLedger} from './characters';
+import {comicFixedFields,finalizeComicCharacters,visibleComicOutfit,ComicWardrobeLedger} from './characters';
 import {finalizeComicPlan} from './plan';
 import {parseComicSections,comicSectionCharacters,writeComicSections} from './sections';
 import {parseImageTagContent,serializeImageTag} from '@/st/imageTagRegex';
@@ -9,6 +9,39 @@ const entry=(name:string,outfit:string,source:CharTagEntry['source']='manual',fa
 const person=(name:string,extra:Partial<ImageCharacterPrompt>={}):ImageCharacterPrompt=>({name,tag:'girl, holding a map, medium shot',nl:'',...extra});
 const image=(sourceLine:number,characters:ImageCharacterPrompt[])=>({position:'P'+(sourceLine+1),sourceLine,tag:'SFW, 2girls, comic, station',characters,nl:'',negative:'',size:'portrait' as const});
 describe('shared comic appearance and clothing completion',()=>{
+ it('keeps cosplay source and costume version temporary and owned by the wearer',()=>{
+  const original=entry('甲','red coat','ai'),other=entry('乙','blue coat');
+  const outfit="cosplay, She is wearing Hero's Festival costume from Example Work., white jacket, gold trim, blue leggings, white boots";
+  const outfits:Record<string,string>={};
+  const chars=finalizeComicCharacters([person('甲',{outfit,panel:'upper right panel'}),person('乙',{panel:'upper right panel'})],{entries:[original,other],outfits});
+  expect(chars[0].tag).toContain("Hero's Festival costume from Example Work");
+  expect(chars[0].tag).toContain('white jacket');expect(chars[0].tag).not.toContain('red coat');
+  expect(chars[1].tag).toContain('blue coat');expect(chars[1].tag).not.toMatch(/cosplay|Festival|white jacket/);
+  expect(outfits.甲).toBe(outfit);expect(original.fields.fandom).toBe('');
+  expect(comicFixedFields(original).hair).toBe('silver hair');expect(original.fields.outfit).toBe('red coat');
+ });
+ it('does not restore casual library clothes when an existing tag already names a cosplay or leggings',()=>{
+  for(const tag of ['girl, cosplay as Hero, medium shot','girl, sky-blue leggings, full body']){
+   const result=finalizeComicCharacters([person('甲',{tag})],{entries:[entry('甲','red coat')]});
+   expect(result[0].tag).toBe(tag);
+  }
+ });
+ it('keeps the full wardrobe across an upper-body crop and a later full-body panel',()=>{
+  const outfits:Record<string,string>={},outfit="cosplay, She is wearing Hero's Festival costume from Example Work., white jacket, gold trim, sky-blue leggings, white over-knee heeled boots";
+  const cropped=finalizeComicCharacters([person('甲',{tag:'girl, silver hair, upper body\nText: 你好。',outfit})],{outfits});
+  expect(cropped[0].tag).toContain('white jacket');expect(cropped[0].tag).toContain('Festival costume');
+  expect(cropped[0].tag).not.toMatch(/leggings|boots/);expect(cropped[0].tag.endsWith('\nText: 你好。')).toBe(true);
+  expect(outfits.甲).toBe(outfit);
+  const next=finalizeComicCharacters([person('甲',{tag:'girl, full body'})],{outfits});
+  expect(next[0].tag).toContain('sky-blue leggings');expect(next[0].tag).toContain('white over-knee heeled boots');
+ });
+ it('does not guess which clauses to delete from mixed sentences, named costumes or ambiguous framing',()=>{
+  const sentence="She is wearing a white jacket and white boots from Hero's costume.";
+  expect(visibleComicOutfit(sentence,'girl, upper body')).toBe(sentence);
+  expect(visibleComicOutfit('Boots of Dawn costume, white jacket','girl, upper body')).toBe('Boots of Dawn costume, white jacket');
+  expect(visibleComicOutfit('white boots','girl, medium shot')).toBe('white boots');
+  expect(visibleComicOutfit('white boots','girl, upper body, full body')).toBe('white boots');
+ });
  it('fills each missing visible outfit from its own profile and excludes only color-swapped same garments',()=>{
   const chars=finalizeComicCharacters([person('甲',{panel:'upper right panel'}),person('乙',{panel:'upper right panel'})],{entries:[entry('甲','red coat, white shirt'),entry('乙','blue coat, white shirt')]});
   expect(chars[0].tag).toContain('red coat');expect(chars[1].tag).toContain('blue coat');

@@ -15,6 +15,25 @@ const fields={position:'M1',nl:'',negative:'',size:'portrait'};
 const v1='<image>\n@page\nSFW, 2girls, comic, 2 panels\n@panel P1\nThis is the upper right panel. Medium shot.\n@character C1 甲\ngirl, holding a map\n@outfit\nred coat\n@negative\nblue coat\n@panel P2\nThis is the lower main panel. Medium shot.\n@character C2 乙\ngirl, receiving a map\n@outfit\nblue coat\n@negative\nred coat\n</image>';
 describe('same per-person rendering pipeline in every comic analysis mode',()=>{
  for(const mode of ['standard','simple','fast'] as const)for(const comicV2 of [false,true]){
+  it(`${mode} ${comicV2?'V2':'V1'} sends a temporary cosplay costume only to its wearer with nl disabled`,()=>{
+   const nai:NaiSettings={...settings.nai,model:'nai-diffusion-5-full',comicMode:true,comicV2,comicAnalysisMode:mode,comicText:false,naturalLanguage:false,comicPanelStyle:'universal',activeArtistId:'',undesiredContent:'',qualityTags:''};
+   // Synthetic outfit: verify source/version transport, not a canonical costume reconstruction.
+   const outfit="cosplay, She is wearing Hero's Festival costume from Example Work., white jacket, blue leggings, white boots";
+   const source=v1.replace('Medium shot.','Upper body.').replace('red coat\n@negative',outfit+'\n@negative');
+   const plan=mode==='fast'?compileComicPage({id:'M1',scene:'station, afternoon',profiles:[],changes:[],shots:[{camera:'upper body',actors:[{name:'甲',action:'holding a map',face:'front',omit:[],outfit}]},{camera:'medium shot',actors:[{name:'乙',action:'receiving a map',face:'front',omit:[]}]}]},
+    {nai,target:batch.target,markers:batch.markerTargets,entries,locked:new Set(),size:'portrait',min:1,max:1}).plan:
+    parseImagePlan(JSON.stringify({changes:[],images:[{...fields,tag:comicV2?'SFW, 2girls, comic, 2 panels, station':source,characters:comicV2?[{name:'甲',tag:'girl, silver hair, upper body',nl:'',outfit,panel:'This is the upper right panel.'},{name:'乙',tag:'girl, brown hair, medium shot',nl:'',panel:'This is the lower main panel.'}]:[]}]}),batch.target.segments,1,1,batch.markerTargets);
+   if(mode!=='fast')finalizeComicPlan(plan,entries);
+   const saved=parseImageTagContent(serializeImageTag(plan.images[0]));
+   const caption=(buildNaiParameters(nai,{prompt:saved.tag,characters:saved.characters,seed:42}).v4_prompt as any).caption;
+   expect(caption.base_caption).not.toMatch(/Festival|cosplay|white jacket/);
+   expect(caption.char_captions[0].char_caption).toContain("Hero's Festival costume from Example Work");
+   expect(caption.char_captions[0].char_caption).toContain('white jacket');
+   expect(caption.char_captions[0].char_caption).not.toMatch(/red coat|white boots|blue leggings/);
+   expect(caption.char_captions[1].char_caption).toContain('blue coat');
+   expect(caption.char_captions[1].char_caption).not.toMatch(/cosplay|Festival|white jacket/);
+   expect(entries[0].fields.fandom).toBe('');expect(plan.changes).toEqual([]);
+  });
   it(`${mode} ${comicV2?'V2':'V1'} preserves clothing, locations and exclusions through save/load and actual NAI assembly`,()=>{
    const nai:NaiSettings={...settings.nai,model:'nai-diffusion-5-full',comicMode:true,comicV2,comicAnalysisMode:mode,comicText:false,comicPanelStyle:'universal',activeArtistId:'',undesiredContent:'',qualityTags:''};
    const plan=mode==='fast'?compileComicPage({id:'M1',scene:'station, afternoon',profiles:[],changes:[],layout:'grid',shots:names.map((name,i)=>({camera:'medium shot',actors:[{name,action:i?'receiving a map':'holding a map',face:'front',omit:[],outfit:i?'blue coat':'red coat',negative:i?'red coat':'blue coat'}]}))},

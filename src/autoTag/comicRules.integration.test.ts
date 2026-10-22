@@ -5,6 +5,7 @@ import { compactComicSpec } from './compactComic';
 import { DEFAULT_COMIC_ENGINEERING_RULES, DEFAULT_COMIC_NSFW_RULES, settings } from '@/state/settings';
 import { normalizeComicRuleTabs, selectComicRuleTab, updateComicRuleText } from '@/state/comicRuleTabs';
 import type { STContext } from '@/st/context';
+import { COMIC_VISUAL_RULES } from '@/comic/rules';
 
 const prose = '成年旅客小雪在车站查看地图，然后向同伴挥手。';
 const ctx = { chat: [{ name: 'Char', is_user: false, is_system: false, mes: prose }], name1: 'User', name2: 'Char', chatMetadata: {} } as unknown as STContext;
@@ -25,6 +26,11 @@ describe('comic engineering switch and active natural-language rules across all 
         batch.target, undefined, batch.instructions, profile, environment, 'fixed-markers',
         compactComicSpec({ nai: environment.nai, target: batch.target, markers: batch.markerTargets, entries: [], locked: new Set(), size: 'portrait', min: 1, max: 1 }));
       const text = (await build()).map(message => message.content).join('\n');
+      expect(text.split(COMIC_VISUAL_RULES)).toHaveLength(2);
+      expect(text).toContain('cosplay是临时穿着');
+      expect(text).toContain('服装/皮肤版本');
+      expect(text).toContain('关闭nl也保留这句在outfit中');
+      expect(text).toContain('不无故叠加medium shot、full body');
       expect(text).toContain('此作品专用三号规则：保留蓝色围巾，突出友好的互动。');
       expect(text).not.toContain('此作品专用一号规则');
       expect(text.includes(DEFAULT_COMIC_ENGINEERING_RULES)).toBe(enabled);

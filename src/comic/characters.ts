@@ -1,7 +1,8 @@
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { CharTagEntry, CharTagField } from '@/state/charTags';
 
-const apparel = /\b(?:coat|jacket|blazer|cardigan|hoodie|sweater|shirt|blouse|vest|uniform|dress|skirt|pants|trousers|shorts|robe|kimono|yukata|suit|apron|scarf|gloves|hat|cap|boots|shoes|socks|stockings|tights|clothes|clothing|outfit)\b/i;
+const apparel = /\b(?:coat|jacket|blazer|cardigan|hoodie|sweater|shirt|blouse|vest|uniform|dress|skirt|pants|trousers|shorts|robe|kimono|yukata|suit|apron|scarf|gloves|hat|cap|boots|shoes|socks|stockings|tights|leggings|swimsuit|leotard|bodysuit|armor|armour|cape|costume|clothes|clothing|outfit)\b/i;
+const cosplay = /\b(?:cosplay(?:ing)?|dressed as)\b/i;
 const colors = /\b(?:red|blue|green|yellow|white|black|brown|purple|pink|orange|grey|gray|silver|golden|navy|beige)\b/gi;
 const parts=(value:string)=>value.split(/[,;\n]/).map(v=>v.trim()).filter(Boolean);
 const key=(value:string)=>value.toLowerCase().replace(/\s+/g,' ').trim();
@@ -35,6 +36,19 @@ export function visibleClothing(tag:string):boolean {
   return !/\b(?:face|head|eyes?|mouth)\s+(?:close[- ]?up|only)|\bclose[- ]?up of (?:the )?(?:face|head|eyes?|mouth)|\b(?:headshot|portrait)\b/i.test(body)||
     /\b(?:upper body|medium shot|full body|wide shot|waist|torso)\b/i.test(body);
 }
+/** Filter only standalone garment tags for an unambiguous upper-body crop.
+ * Keep the complete wardrobe for later panels. Free-form sentences, costume
+ * names and mixed garment descriptions are left to the model, never rewritten. */
+export function visibleComicOutfit(outfit:string,tag:string):string {
+  if(!visibleClothing(tag))return '';
+  if(!/\b(?:upper body|bust shot|waist[- ]up|chest close[- ]?up|(?:neck|chest|torso) and (?:chest|neck|torso) view)\b/i.test(head(tag))||
+    /\b(?:full body|wide shot|lower body|cowboy shot)\b/i.test(head(tag)))return outfit;
+  return parts(outfit).filter(part=>{
+    // Only adjective + a single recognized lower garment, not a named costume
+    // or a sentence which may also describe visible clothing or a held object.
+    return !/^(?:(?:white|black|blue|red|green|yellow|pink|purple|brown|grey|gray|gold|golden|silver|navy|beige|sky[- ]blue|light|dark|matte|opaque|sheer|tight|seamless|pleated|long|short|knee[- ]high|over[- ]knee|thigh[- ]high|high[- ]heeled|heeled|leather|silk|cotton)\s+)*(?:boots|shoes|socks|stockings|tights|leggings|pants|trousers|shorts|skirt)$/i.test(part);
+  }).join(', ');
+}
 function safeNegative(value:string,positive:string):string {
   const own=key(head(positive));
   return [...new Set(parts(value).filter(v=>{
@@ -65,17 +79,18 @@ export function finalizeComicCharacters(characters:readonly ImageCharacterPrompt
   const outfits=context.outfits??{},entries=new Map(context.entries?.map(e=>[e.name,e]));
   const result=characters.map(character=>{
     const entry=entries.get(character.name),old=outfits[character.name];
-    const {outfit,panel,negative,clothingVisible,...plain}=character;
-    const showClothes=clothingVisible!==false&&visibleClothing(character.tag);
+    const {outfit,panel,negative,clothingVisible,framing,...plain}=character;
+    const frame=framing?`${framing}, ${head(character.tag)}`:character.tag;
+    const showClothes=clothingVisible!==false&&visibleClothing(frame);
     let tag=character.tag;
     if(outfit!==undefined){
       tag=without(tag,[entry?.fields.outfit??'',old??'']);
       outfits[character.name]=outfit;
-      if(showClothes)tag=append(tag,outfit);
-    }else if(showClothes&&!apparel.test(head(tag))){
+      if(showClothes)tag=append(tag,visibleComicOutfit(outfit,frame));
+    }else if(showClothes&&!apparel.test(head(tag))&&!cosplay.test(head(tag))){
       const fallback=Object.hasOwn(outfits,character.name)?outfits[character.name]:
         entry&&(!entry.fields.fandom||confirmedAppearanceField(entry,'outfit'))?entry.fields.outfit:undefined;
-      if(fallback!==undefined)tag=append(tag,fallback);
+      if(fallback!==undefined)tag=append(tag,visibleComicOutfit(fallback,frame));
     }
     if(panel?.trim()&&!head(tag).includes(panel.trim()))tag=panel.trim()+' '+tag;
     return {...plain,tag,...(negative?.trim()?{negative:negative.trim()}: {})};
