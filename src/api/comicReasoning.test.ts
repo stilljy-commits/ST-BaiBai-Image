@@ -13,6 +13,9 @@ describe('per model task reasoning preferences',()=>{
   expect(comicReasoningKey({...channel,url:'https://user:pass@api.deepseek.com/v1?key=secret'})).not.toMatch(/pass|secret/);
   expect(comicReasoningKey({...channel,model:'other'})).not.toBe(comicReasoningKey(channel));
   expect(comicReasoningKey({...channel,id:'another'})).not.toBe(comicReasoningKey(channel));
+  expect(comicReasoningKey(channel,'fast')).toBe(comicReasoningKey(channel));
+  expect(comicReasoningKey(channel,'standard')).not.toBe(comicReasoningKey(channel));
+  expect(comicReasoningKey(channel,'standard')).not.toBe(comicReasoningKey(channel,'simple'));
  });
  it('does not send DeepSeek parameters to unknown endpoints or unrecognized model aliases',()=>{
   expect(comicReasoningOverride({...channel,url:'https://proxy.example/v1'},'off')).toBeUndefined();
@@ -30,5 +33,6 @@ describe('per model task reasoning preferences',()=>{
  it('normalizes stored maps without converting arbitrary truthy values to a mode',()=>{
   expect(normalizeComicReasoningMap({a:'off',b:'low',c:'follow',d:'none',e:true})).toEqual({a:'off',b:'low',c:'follow'});
   expect(normalizeComicReasoningMap([])).toEqual({});
+  expect(normalizeComicReasoningMap({a:'adaptive'})).toEqual({});
  });
 });

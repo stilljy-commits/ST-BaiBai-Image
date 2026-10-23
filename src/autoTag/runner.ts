@@ -294,6 +294,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       compact ? compactComicSpec(compact) : undefined,
     );
     const channel = getTagGenChannel();
+    const reasoningMode = renderProfile.mode !== 'illustration'
+      ? environment.nai.comicReasoningByModel?.[comicReasoningKey(channel,environment.nai.comicAnalysisMode ?? 'standard')] ?? 'follow'
+      : 'follow';
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
     // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
     // 解析/校验放进 validate 回调:不过则请求历史如实记为失败(而非「HTTP 拿到文本」的绿色成功),
@@ -336,11 +339,13 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             ? `自动 tag(第 ${floor} 楼 · 第 ${attempt + 1} 次)`
             : `自动 tag(第 ${floor} 楼)`;
         if (channel) {
+          const reasoningOverride=comicReasoningOverride(channel,reasoningMode);
           await requestCompletion(channel, messages, {
             signal: controller.signal,
             source,
             validate,
-            ...(compact ? {stream:true,reasoningOverride:comicReasoningOverride(channel,environment.nai.comicReasoningByModel?.[comicReasoningKey(channel)] ?? 'follow')} : {}),
+            ...(compact ? {stream:true} : {}),
+            ...(reasoningOverride?{reasoningOverride}:{}),
           });
         } else {
           await requestViaMainApi(messages, {

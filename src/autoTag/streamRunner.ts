@@ -2,6 +2,7 @@ import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage,
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
 import { ComicWardrobeLedger } from '@/comic/characters';
 import { finalizeComicPlan } from '@/comic/plan';
+import { standardPagePrefix } from './standardPages';
 import { StreamInlinePreview, inlineStoryText, type InlinePreviewSnapshot } from '@/autoTag/streamInlinePreview';
 import { openLightbox } from '@/floor/lightbox';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
@@ -173,9 +174,14 @@ export function feedStreamText(text: string): void {
   updateInlinePreview(s);
 }
 
-async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图'): Promise<void> {
+async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图', onContent?: (raw:string)=>void): Promise<void> {
+  const mode=s.profile.mode!=='illustration'?s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel,s.promptEnvironment.nai.comicAnalysisMode??'standard')]??'follow':'follow';
+  const reasoningOverride=comicReasoningOverride(s.channel,mode);
   if (s.channel) await requestCompletion(s.channel, messages, { signal, source, validate,
-    ...(fastComicAnalysis(s)?{stream:true,reasoningOverride:comicReasoningOverride(s.channel,s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel)]??'follow')}:{}) });
+    ...(fastComicAnalysis(s)?{stream:true}:{}),
+    ...(onContent?{stream:true,onContent}:{}),
+    ...(reasoningOverride?{reasoningOverride}:{}),
+  });
   else await requestViaMainApi(messages, { signal, source, validate });
 }
 const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
@@ -364,7 +370,9 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
   const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, scanText, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(jobs[0].input.prefix, jobs[0].input.text);
-  const note = `${analysisScope(s)}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
+  const progressive=!!s.channel&&s.profile.mode!=='illustration'&&s.promptEnvironment.nai.comicProgressivePages===true;
+  const batchInstructions=progressive?batch.instructions.replace('输出顺序不限。',''):batch.instructions;
+  const note = `${analysisScope(s)}\n${batchInstructions}${progressive?'\n仅调整返回顺序：先完整输出changes，再输出images；images按本批M编号先后写，每页写完不回改。输出字段、画面要求不变。':''}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
   const ctx = getContext()!;
   const analysisContext = { ...ctx, chat: [...ctx.chat] };
   const floor = s.binding?.floor ?? s.referenceFloor;
@@ -378,14 +386,57 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
   for (const job of jobs) job.controller.signal.addEventListener('abort', cancel);
   cancel();
   let responseChars = 0, payloads: Payload[] | undefined;
+  const accepted=new Map<number,Payload>(),fingerprints=new Map<number,string>();let changesFingerprint:string|undefined,scannedLength=0;
+  const consume=(raw:string)=>{
+    responseChars=raw.length;
+    const appended=raw.slice(scannedLength),reset=raw.length<scannedLength;scannedLength=raw.length;
+    if(!reset&&!appended.includes('}'))return;
+    const part=standardPagePrefix(raw);if(!part||controller.signal.aborted||!ownerValid(s))return;
+    const byId=new Map<string,unknown>(),duplicates=new Set<string>();
+    for(const value of part.images)if(value&&typeof value==='object'){
+      const id=String((value as any).position??(value as any).id??'').trim().toUpperCase();
+      if(byId.has(id))duplicates.add(id);byId.set(id,value);
+    }
+    for(let index=0;index<jobs.length;index++){
+      const job=jobs[index],id=batch.groups[index].markerId;
+      if(job.controller.signal.aborted||accepted.has(index))continue;
+      if(!byId.has(id)||duplicates.has(id))break;
+      try{
+        const parsed=parseImagePlan(JSON.stringify({changes:part.changes,images:[byId.get(id)]}),batch.target.segments,1,1,batch.markerTargets);
+        if(!batch.groups[index].positions.includes(parsed.images[0].position))throw new Error('逐页返回错配标记');
+        const fingerprint=JSON.stringify(parsed.images[0]),changes=JSON.stringify(parsed.changes);
+        if(changesFingerprint!==undefined&&changesFingerprint!==changes)throw new Error('逐页返回修改了已确认的角色变化');
+        const plan=preparePlan(s,parsed,anchors),payload={image:{...plan.images[0],renderProfile:s.profile},changes:plan.changes};
+        accepted.set(index,payload);fingerprints.set(index,fingerprint);changesFingerprint=changes;
+        job.analysisError=undefined;ready?.(index,payload);
+        log('stream:page-ready',{job:job.id,batchSize:jobs.length,elapsedMs:Math.round(performance.now()-requestStart)});
+      }catch(error){job.analysisError=error instanceof Error?error.message:String(error);break;}
+    }
+  };
   try {
     await completion(s, messages, controller.signal, raw => {
+      if(controller.signal.aborted||!ownerValid(s))throw new DOMException('Cancelled','AbortError');
       responseChars = raw.length;
       const parsed = parseImagePlan(raw, batch.target.segments, jobs.length, jobs.length, batch.markerTargets);
-      splitStreamBatch(parsed, batch); // Check ownership before mutating the shared appearance library.
+      const ordered=splitStreamBatch(parsed, batch); // Check ownership before mutating the shared appearance library.
+      if(progressive){
+        const part=standardPagePrefix(raw);
+        if(part){
+          const ids=part.images.map((im:any)=>String(im?.position??im?.id??'').trim().toUpperCase());
+          if(new Set(ids).size!==ids.length||part.images.length!==jobs.length)throw new Error('逐页返回重复或遗漏了标记');
+        }
+        if(accepted.size){
+          if(changesFingerprint!==JSON.stringify(parsed.changes)||[...fingerprints].some(([index,value])=>value!==JSON.stringify(ordered[index])))throw new Error('最终返回修改了已开始出图的页');
+        }
+        if(part)consume(raw);
+        if(accepted.size){
+          if(jobs.some((job,index)=>!job.controller.signal.aborted&&!accepted.has(index)))throw new Error('部分漫画页未通过检查');
+          payloads=jobs.map((_,index)=>accepted.get(index)!);return;
+        }
+      }
       const plan = preparePlan(s, parsed, anchors);
       payloads = splitStreamBatch(plan, batch).map(image => ({ image: { ...image, renderProfile: s.profile }, changes: plan.changes }));
-    },`流式配图 · 合并${jobs.length}张`);
+    },`流式配图 · 合并${jobs.length}张`,progressive?consume:undefined);
     if (!payloads) throw new Error('批量分析未返回有效图片');
     return payloads;
   } finally {

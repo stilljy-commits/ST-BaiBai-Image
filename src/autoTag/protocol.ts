@@ -2,6 +2,7 @@ import type { RenderProfile } from '@/autoTag/renderProfile';
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import type { TargetSegment } from '@/autoTag/clean';
 import { FORBIDDEN_SUBTAG, serializeImageTag } from '@/st/imageTagRegex';
+import { readComicCosplay, type ComicCosplay } from '@/comic/costume';
 import {
   CHAR_TAG_FIELDS,
   type CharTagField,
@@ -15,6 +16,9 @@ export interface ImageCharacterPrompt {
   negative?: string;
   /** Optional AI metadata, consumed by the comic finalizer before persistence. */
   outfit?: string;
+  /** Complete temporary clothing update; outfit alone describes the visible crop. */
+  wardrobe?: string;
+  cosplay?: ComicCosplay;
   panel?: string;
   clothingVisible?: boolean;
   /** Internal V1 panel description used only for crop-aware wardrobe completion. */
@@ -177,12 +181,13 @@ function sanitizeCharacters(value: unknown, imageIndex: number): ImageCharacterP
       );
       const nl = sanitizeContent(item.nl, `characters[${index}].nl`, imageIndex);
       const optional:Partial<ImageCharacterPrompt>={};
-      for(const field of ['negative','outfit','panel'] as const)if(typeof item[field]==='string'){
+      for(const field of ['negative','outfit','wardrobe','panel'] as const)if(typeof item[field]==='string'){
         try{const value=sanitizeContent(item[field],`characters[${index}].${field}`,imageIndex);
-          if(value||field==='outfit')optional[field]=value;
+          if(value||field==='outfit'||field==='wardrobe')optional[field]=value;
         }catch{/* Bad optional metadata must not discard the person or cause a retry. */}
       }
       if(typeof item.clothingVisible==='boolean')optional.clothingVisible=item.clothingVisible;
+      const cosplay=readComicCosplay(item.cosplay);if(cosplay)optional.cosplay=cosplay;
       if (name && tag) characters.push({ name, tag, nl, ...optional });
     } catch {
       // A malformed character prompt must not discard an otherwise valid image plan.

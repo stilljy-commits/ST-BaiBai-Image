@@ -3,11 +3,13 @@ import type { ApiChannel } from '@/state/settings';
 export type ComicReasoning = 'follow' | 'low' | 'off';
 export interface ReasoningCapability { low: boolean; off: boolean; label: string; }
 /** Connection/model scoped; no credentials or query parameters enter persisted keys. */
-export function comicReasoningKey(channel: ApiChannel | null): string {
+export function comicReasoningKey(channel: ApiChannel | null, analysisMode: 'standard' | 'simple' | 'fast' = 'fast'): string {
   if (!channel) return '';
   let endpoint = channel.url.trim().replace(/\/+$/, '');
   try { const url = new URL(endpoint); endpoint = url.origin + url.pathname.replace(/\/+$/, ''); } catch { endpoint = ''; }
-  return JSON.stringify([channel.id, channel.provider ?? 'openai', endpoint, channel.model.trim()]);
+  const identity = [channel.id, channel.provider ?? 'openai', endpoint, channel.model.trim()];
+  // Preserve existing fast preferences without silently applying them to another engine.
+  return JSON.stringify(analysisMode === 'fast' ? identity : [...identity, analysisMode]);
 }
 export function comicReasoningCapability(channel: ApiChannel | null): ReasoningCapability {
   if (!channel) return { low: false, off: false, label: '跟随主 API，单独控制推理需要指派副 API 渠道' };

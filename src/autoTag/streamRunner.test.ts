@@ -48,7 +48,7 @@ beforeEach(()=>{
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.channels=[];settings.assignments.tagGen='';
-  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';
+  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';settings.nai.comicProgressivePages=false;settings.nai.comicReasoningByModel={};
   Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamInlinePreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
@@ -416,6 +416,73 @@ describe('compact pages integrated with real task lifecycle',()=>{
   task.o.validate(JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{state:{complete:true,facts:'已确认的先前事实'+i,outfits:{}}}))}));task.resolve();await flush();
   feedStreamText(story(6));await flush();const note=h.analyses[1].m[0].note;
   expect(note).toContain('已确认的此前连续状态');expect(note).toContain('已确认的先前事实2');expect(note).not.toContain('事件0发生');
+ });
+});
+
+describe('native comic reasoning and progressive dispatch',()=>{
+ const nativePage=(position:string,extra:any={})=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[],...extra});
+ function nativeMode(mode:'standard'|'simple'='standard',progressive=true){
+  useCompactChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicProgressivePages:progressive});settings.autoTag.maxImages=3;
+ }
+ it.each(['standard','simple'] as const)('applies a %s request override without changing its native protocol or stored channel',async(mode)=>{
+  nativeMode(mode,false);const {comicReasoningKey}=await import('@/api/comicReasoning');
+  const before=JSON.stringify(settings.channels[0]);settings.nai.comicReasoningByModel={[comicReasoningKey(settings.channels[0],mode)]:'off'};
+  beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  expect(task.o.reasoningOverride).toEqual({thinking:{type:'disabled'}});expect(task.m[0].compactSpec).toBeUndefined();
+  expect(task.o).not.toHaveProperty('onContent');expect(JSON.stringify(settings.channels[0])).toBe(before);
+  finishAnalysis(0);await flush();expect(h.images).toHaveLength(3);
+ });
+ it.each(['standard','simple'] as const)('dispatches a complete %s page before EOF and never generates it twice',async(mode)=>{
+  nativeMode(mode);beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  expect(task.o.stream).toBe(true);expect(task.m[0].note).toContain('先完整输出changes');expect(task.m[0].note).not.toContain('输出顺序不限');
+  task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();expect(h.images).toHaveLength(1);
+  task.o.validate(JSON.stringify({changes:[],images:['M1','M2','M3'].map(id=>nativePage(id))}));task.resolve();await flush();
+  expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);
+ });
+ it('does not dispatch images-first replies or drafts before the full valid plan arrives',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent('<thinking>{"changes":[],"images":['+JSON.stringify(nativePage('M1')));await flush();expect(h.images).toHaveLength(0);
+  const raw=JSON.stringify({images:['M1','M2','M3'].map(id=>nativePage(id)),changes:[]});
+  task.o.onContent(raw);await flush();expect(h.images).toHaveLength(0);task.o.validate(raw);task.resolve();await flush();expect(h.images).toHaveLength(3);
+ });
+ it('waits for complete shared changes and never dispatches an unfinished first page',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent('{"changes":[{"name":"小雪"');await flush();expect(h.images).toHaveLength(0);
+  const prefix='{"changes":[],"images":[';
+  task.o.onContent(prefix+'{"position":"M1","tag":"unfinished');await flush();expect(h.images).toHaveLength(0);
+  task.o.onContent(prefix+JSON.stringify(nativePage('M1'))+',');await flush();expect(h.images).toHaveLength(1);
+  task.o.validate(JSON.stringify({changes:[],images:['M1','M2','M3'].map(id=>nativePage(id))}));task.resolve();await flush();expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);
+ });
+ it('keeps every accepted native page after a late transport failure without another analysis',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent(JSON.stringify({changes:[],images:['M1','M2','M3'].map(id=>nativePage(id))}));await flush();expect(h.images).toHaveLength(3);
+  task.reject(Error('connection closed after final page'));await flush();expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);
+ });
+ it('validates source ownership and carries a full main outfit past a later crop',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  const actor=(extra:any={})=>({name:'小雪',tag:'girl, full body',nl:'',...extra});
+  const pages=[nativePage('M1',{characters:[actor({outfit:'white jacket, blue trousers, black boots'}),actor({tag:'girl, face close-up',outfit:'blue hat'})]}),nativePage('M2',{characters:[actor()]}),nativePage('M3')];
+  task.o.onContent('{"changes":[],"images":['+JSON.stringify(pages[0])+',');await flush();
+  task.o.validate(JSON.stringify({changes:[],images:pages}));task.resolve();await flush();
+  expect(h.images[1].input.characters[0].tag).toContain('white jacket, blue trousers, black boots');
+  expect(h.images[1].input.characters[0].tag).not.toContain('blue hat');expect(h.images).toHaveLength(3);
+ });
+ it('preserves an accepted page and retries only unfinished pages after transport failure',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();
+  task.reject(Error('network ended'));await flush();expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].options.maxImages).toBe(1);
+  finishAnalysis(1);await flush();finishAnalysis(2);await flush();expect(h.images).toHaveLength(3);
+  expect(h.images.filter(image=>image.input.prompt==='SFW, 1girl, comic, 1 panel')).toHaveLength(1);
+ });
+ it('does not silently replace a page or its change prefix after rendering has started',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();
+  expect(()=>task.o.validate(JSON.stringify({changes:[],images:[nativePage('M1',{tag:'different scene'}),nativePage('M2'),nativePage('M3')]}))).toThrow('修改');
+  task.reject(Error('modified accepted page'));await flush();expect(h.images).toHaveLength(1);expect(h.analyses).toHaveLength(2);
+ });
+ it('stops late page dispatch after the chat owner changes',async()=>{
+  nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  h.ctx.getCurrentChatId=()=> 'B';task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();expect(h.images).toHaveLength(0);
  });
 });
 

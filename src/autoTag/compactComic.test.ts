@@ -11,6 +11,22 @@ function context():CompactComicContext{
  return {target:batch.target,markers:batch.markerTargets,entries:[entry()],locked:new Set(),nai:{...settings.nai,comicV2:true,comicText:false,comicPanelStyle:'universal',comicGutter:'boxed',comicExtraRules:''},size:'portrait',min:1,max:1};
 }
 describe('compact comic compilation',()=>{
+ it('expands temporary wig and contact colors without changing the fixed identity or losing the full wardrobe to a cut-in',()=>{
+  const c=context(),costume={character:'Hero',work:'Example Work',costume:'Festival'},wardrobe='white jacket, blue trousers, black boots';
+  const result=compileComicPage(page({shots:[{camera:'full body',actors:[actor({look:{hair:'long blue wig',eyes:'purple eyes'},wardrobe,outfit:wardrobe,cosplay:costume})]},
+   {camera:'close-up on face',actors:[actor({look:{hair:'long blue wig',eyes:'purple eyes'},outfit:'blue cap',cosplay:costume})]}]}),c);
+  for(const person of result.plan.images[0].characters){expect(person.tag).toContain('long blue wig');expect(person.tag).toContain('purple eyes');expect(person.tag).not.toMatch(/long black hair|blue eyes/);}
+  expect(result.wardrobe.小雪).toContain('black boots');expect(result.wardrobe.小雪).toContain("Hero's Festival outfit");
+  expect(result.wardrobe.小雪).not.toContain('blue cap');expect(result.plan.changes).toEqual([]);
+  expect(c.entries[0].fields.hair).toBe('long black hair');expect(c.entries[0].fields.fandom).toBe('');
+ });
+ it('carries costume provenance through a complete continuity summary and clears it with an explicit empty wardrobe',()=>{
+  const costume={character:'Hero',work:'Example Work'},outfit='white jacket, blue trousers';
+  const result=compileComicPage(page({shots:[{camera:'full body',actors:[actor({wardrobe:outfit,outfit,cosplay:costume})]}],state:{complete:true,facts:'人物留在车站。',outfits:{小雪:outfit}}}),context());
+  expect(result.state.outfits.小雪).toContain("Hero's outfit from Example Work");
+  const cleared=compileComicPage(page({shots:[{camera:'upper body',actors:[actor({wardrobe:'',outfit:'',cosplay:costume})]}],state:{complete:true,facts:'已清空旧衣着状态。',outfits:{小雪:''}}}),context());
+  expect(cleared.wardrobe.小雪).toBe('');expect(cleared.plan.images[0].characters[0].tag).not.toContain('cosplay');
+ });
  it('extracts complete direct pages across arbitrary cuts, escaped quotes and brace-containing strings',()=>{
   const a=page({scene:'station "A" {safe}'}),b=page({id:'M2'}),raw=JSON.stringify({pages:[a,b]});
   const close=raw.indexOf('},{"id":"M2"')+1;

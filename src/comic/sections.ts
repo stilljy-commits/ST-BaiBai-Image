@@ -1,4 +1,5 @@
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
+import { readComicCosplay } from './costume';
 
 interface SectionCharacter extends ImageCharacterPrompt { id:string; }
 interface Panel { id:string; description:string; nonCharacter:string; characters:SectionCharacter[]; }
@@ -17,7 +18,7 @@ export function parseComicSections(source:string):ComicSections|null {
   let write:((value:string)=>void)|undefined,lines:string[]=[];
   const flush=()=>{write?.(lines.join('\n').trim());lines=[];};
   for(const line of text.split('\n')){
-    const marker=line.match(/^\s*@(page|panel|character|negative|non_character|outfit|position|center)\b(?:[ \t]+(.*?))?[ \t]*$/i);
+    const marker=line.match(/^\s*@(page|panel|character|negative|non_character|outfit|wardrobe|cosplay|position|center)\b(?:[ \t]+(.*?))?[ \t]*$/i);
     if(!marker){if(/^\s*@\w+/.test(line))return null;if(write)lines.push(line);else if(line.trim())return null;continue;}
     flush();write=undefined;
     const kind=marker[1].toLowerCase(),value=marker[2]?.trim()??'';
@@ -40,6 +41,10 @@ export function parseComicSections(source:string):ComicSections|null {
       else write=v=>{page.negative=v;};
     }else if(kind==='outfit'){
       if(!character)return null;const owned=character;write=v=>{owned.outfit=v;};
+    }else if(kind==='wardrobe'){
+      if(!character)return null;const owned=character;write=v=>{owned.wardrobe=v;};
+    }else if(kind==='cosplay'){
+      if(!character)return null;const owned=character;write=v=>{try{owned.cosplay=readComicCosplay(JSON.parse(value||v));}catch{/* Optional provenance must not invalidate a saved page. */}};
     }else if(kind==='non_character'){
       character=undefined;
       if(panel){const owned=panel;write=v=>{owned.nonCharacter=v;};}
@@ -71,6 +76,8 @@ export function writeComicSections(page:ComicSections,characters?:ImageCharacter
       const character=characters?.[index++]??original;
       out.push('@character '+original.id+(original.name!==original.id?' '+original.name:''),character.tag);
       if(character.outfit!==undefined)out.push('@outfit',character.outfit);
+      if(character.wardrobe!==undefined)out.push('@wardrobe',character.wardrobe);
+      if(character.cosplay)out.push('@cosplay',JSON.stringify(character.cosplay));
       if(character.negative)out.push('@negative',character.negative);
     }
   }

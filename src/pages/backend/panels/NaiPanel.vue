@@ -475,10 +475,10 @@ const comicReasoningOptions = computed(() => [
   ...(comicReasoningCaps.value.off ? [{value:'off',label:'关闭推理'}] : []),
 ]);
 const comicReasoning = computed({get:() => {
-  const key=comicReasoningKey(getTagGenChannel()); const value=settings.nai.comicReasoningByModel?.[key] ?? 'follow';
+  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode??'standard'); const value=settings.nai.comicReasoningByModel?.[key] ?? 'follow';
   return comicReasoningOptions.value.some(o=>o.value===value)?value:'follow';
 },set:(value:string) => {
-  const key=comicReasoningKey(getTagGenChannel());if(key) settings.nai.comicReasoningByModel={...settings.nai.comicReasoningByModel,[key]:value as ComicReasoning};
+  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode??'standard');if(key) settings.nai.comicReasoningByModel={...settings.nai.comicReasoningByModel,[key]:value as ComicReasoning};
 }});
 const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.label }));
 const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
@@ -1310,18 +1310,25 @@ async function removeVibe(vibe: NaiVibe) {
             : comicAnalysisMode === 'simple'
               ? '简单模式：沿用此前的精简分析规则，由AI直接编写完整生图提示词。'
               : '标准模式：沿用完整的分镜、细节与连续性要求。' }}
-          升级保留原来的选择。切换从下一次分析生效；进行中的流式轮次沿用开始时的模式。人物身份、分镜风格、对白和NAI参数继续使用原设置；标准和简单模式的推理强度沿用渠道。
+          升级保留原来的选择。切换从下一次分析生效；进行中的流式轮次沿用开始时的模式。人物身份、分镜风格、对白和NAI参数继续使用原设置。
         </p>
         <p v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-field-hint">
           自定义附加规则及已开启的工程规则仍生效；其中要求的细节越多，提速空间越有限。
         </p>
 
-        <div v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-num-row">
-          <span class="bbi-field-label">极速模式推理方式</span>
-          <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="极速模式推理方式" />
+        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+          <span class="bbi-field-label">当前模式推理方式</span>
+          <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="当前漫画模式推理方式" />
         </div>
-        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-field-hint" aria-live="polite">
-          {{ comicReasoningCaps.label }}。按副API渠道和模型分别保存；换到未适配模型时跟随渠道。关闭推理可能降低复杂情节的理解准确性，可随时恢复；不影响主API正文和其他副API任务。
+        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+          {{ comicReasoningCaps.label }}。按副API渠道、模型和分析模式分别保存，默认跟随渠道；原极速模式设置不改变标准或简单模式。关闭推理保留本模式全部画面规则，但可能降低复杂情节的理解准确性；不影响主API正文和其他副API任务。
+        </p>
+        <label v-if="settings.nai.comicMode && comicAnalysisMode !== 'fast'" class="bbi-switch-row">
+          <span class="bbi-field-label">合批分析逐页启动出图</span>
+          <input v-model="settings.nai.comicProgressivePages" type="checkbox" class="bbi-checkbox" />
+        </label>
+        <p v-if="settings.nai.comicMode && comicAnalysisMode !== 'fast'" class="bbi-field-hint">
+          流式生图指派副API时，每页提示词完整并通过检查后就启动NAI，无需等待整批返回。不增加分析请求、不改变分镜规则；模型未按顺序返回时自动等整批完成。默认关闭。
         </p>
 
         <label v-if="settings.nai.comicMode" class="bbi-switch-row">

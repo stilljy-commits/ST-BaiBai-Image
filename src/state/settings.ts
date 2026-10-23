@@ -306,7 +306,10 @@ export interface NaiSettings extends BackendConn {
   comicV2?: boolean;
   /** 保留 standard / simple；fast 为独立的简短分镜引擎，不自动迁移旧选择。 */
   comicAnalysisMode?: 'standard' | 'simple' | 'fast';
+  /** Connection/model/engine scoped task overrides; older fast keys remain valid. */
   comicReasoningByModel?: Record<string, ComicReasoning>;
+  /** Opt-in native-plan page dispatch, without changing page content or adding calls. */
+  comicProgressivePages?: boolean;
   /**
    * 漫画页对白上画(comicMode 开启时生效)。开启 = Text/气泡指令正常输出;
    * 关闭 = 页面纯视觉叙事,不写 Text、不画文字——发送端会剥掉模型仍写出的
@@ -1291,7 +1294,7 @@ export function buildComicAddenda(nai: {
   if (style.rule) lines.push(`附加分镜风格:${style.rule}`);
   lines.push(`13. ${gutter.rule}`);
   lines.push(
-    '14. 色彩与光影(全彩):页面用 full color;人物保持固有发色、瞳色与服装色。' +
+    '14. 色彩与光影(全彩):页面用 full color;人物保持本镜头已确认的发色、瞳色与服装色，包含正文明确的临时变化。' +
       (nai.comicLighting
         ? '连续场景光影:为每个连续场景确定主光源方向、环境色与明暗关系,同一地点同一时间段内各页沿用同一光影依据;只有转场、时间经过或光源变化时才更新;人物固有颜色与环境照明分开描述。'
         : ''),
@@ -1384,7 +1387,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 2. 条目 name:正文角色名照抄,不音译不翻译(中文名保持中文)。
 3. 条目 tag(逗号分隔,顺序固定):
    - 第一项 girl / boy(单数,不带数字);
-   - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设,没有它就只能画出符合描述的路人;外貌描述与其冲突时以 tag 为准。原创/一次性角色跳过此项;
+   - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设;正文明确的假发、美瞳与换装按当前状态写，省略被替代的原值。原创/一次性角色跳过此项;
    - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着及已知cosplay对象/作品/服装版本单列outfit，不在tag重复，不写入本人的fandom；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
    - **动作必写**:每个条目必须至少一个动作/姿态/接触/状态变化词(sitting, lying, hands gripping the sheets, flesh bulging between fingers 都算)——纯外貌堆砌的静态条目禁止;没有动作的条目会让该人物在格内僵立,或被相邻格的动作带偏,造成同图各格动作不一致。特写切入条目的动作写该部位正在发生的事(如 hands digging into butt cheeks, a thread of saliva running down);
    - 气泡指令与文字方向:有对白时在本格条目写 speech bubble 或 thought bubble(+whispering/shouting/trembling 等语气词);中文对白与旁白一律横書き,只有日文原文才用縦書き;
@@ -1631,6 +1634,7 @@ function naiDefaults(): NaiSettings {
     comicV2: true,
     comicAnalysisMode: 'standard',
     comicReasoningByModel: {},
+    comicProgressivePages: false,
     comicText: true,
     comicPanelStyle: 'eromanga',
     comicGutter: 'bleed',
@@ -2180,6 +2184,7 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     comicV2: typeof o.comicV2 === 'boolean' ? o.comicV2 : def.comicV2,
     comicAnalysisMode: o.comicAnalysisMode === 'fast' ? 'fast' : o.comicAnalysisMode === 'simple' ? 'simple' : 'standard',
     comicReasoningByModel: normalizeComicReasoningMap(o.comicReasoningByModel),
+    comicProgressivePages: o.comicProgressivePages === true,
     comicText: typeof o.comicText === 'boolean' ? o.comicText : def.comicText,
     comicPanelStyle:
       COMIC_PANEL_STYLES.find(s => s.id === o.comicPanelStyle)?.id ?? def.comicPanelStyle,

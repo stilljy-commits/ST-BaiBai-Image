@@ -1,5 +1,6 @@
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { CharTagEntry, CharTagField } from '@/state/charTags';
+import { withComicCosplay } from './costume';
 
 const apparel = /\b(?:coat|jacket|blazer|cardigan|hoodie|sweater|shirt|blouse|vest|uniform|dress|skirt|pants|trousers|shorts|robe|kimono|yukata|suit|apron|scarf|gloves|hat|cap|boots|shoes|socks|stockings|tights|leggings|swimsuit|leotard|bodysuit|armor|armour|cape|costume|clothes|clothing|outfit)\b/i;
 const cosplay = /\b(?:cosplay(?:ing)?|dressed as)\b/i;
@@ -8,6 +9,10 @@ const parts=(value:string)=>value.split(/[,;\n]/).map(v=>v.trim()).filter(Boolea
 const key=(value:string)=>value.toLowerCase().replace(/\s+/g,' ').trim();
 const garmentKey=(value:string)=>key(value).replace(/^(?:wearing|dressed in|clad in)\s+(?:(?:a|an|the)\s+)?/,'');
 const head=(tag:string)=>tag.split(/\nText:/i)[0];
+function withoutTemplateIdentity(tag:string):string {
+  const at=tag.search(/\nText:/i),body=at<0?tag:tag.slice(0,at),tail=at<0?'':tag.slice(at);
+  return parts(body).filter(value=>!/^character name\s*\((?:copyright|work) name\)$/i.test(value)).join(', ')+tail;
+}
 function append(tag:string,value:string):string {
   if(!value.trim())return tag;
   const at=tag.search(/\nText:/i),body=at<0?tag:tag.slice(0,at),tail=at<0?'':tag.slice(at);
@@ -16,7 +21,7 @@ function append(tag:string,value:string):string {
 }
 function without(tag:string,values:string[]):string {
   const at=tag.search(/\nText:/i),body=at<0?tag:tag.slice(0,at),tail=at<0?'':tag.slice(at);
-  const excluded=new Set(values.flatMap(parts).map(garmentKey));
+  const excluded=new Set(values.flatMap(parts).filter(value=>apparel.test(value)||cosplay.test(value)).map(garmentKey));
   return parts(body).filter(v=>!excluded.has(garmentKey(v))).join(', ')+tail;
 }
 export function userAppearanceField(entry:CharTagEntry,field:CharTagField):boolean {
@@ -73,24 +78,50 @@ export interface ComicCharacterContext {
   /** Mutable only within one source-ordered analysis result. Empty means no default garment. */
   outfits?: Record<string,string>;
 }
+const frameOf=(character:ImageCharacterPrompt)=>character.framing?`${character.framing}, ${head(character.tag)}`:head(character.tag);
+/** A detail cut-in cannot replace a complete wardrobe. Trust ordered Base/V1
+ * body views for later changes; without a reliable panel frame use the first
+ * legacy body entry. A first detail may seed missing state. Explicit wardrobe wins. */
+export function comicWardrobeUpdates(characters:readonly ImageCharacterPrompt[],known:Record<string,string>={}):Record<string,string> {
+  const updates:Record<string,string>={},explicit=new Set<string>(),bodySeen=new Set<string>();
+  for(const character of characters){
+    const {name,wardrobe,outfit}=character;
+    if(wardrobe!==undefined){updates[name]=wardrobe?withComicCosplay(wardrobe,character.cosplay):'';explicit.add(name);continue;}
+    if(outfit===undefined||explicit.has(name)||character.clothingVisible===false)continue;
+    // Native outfit means complete current clothing. A main upper-body view can
+    // therefore update it; a face/hand cut-in cannot. Base/V1 framing is trusted
+    // for state ownership even if the actor accidentally says "full body".
+    const stateFrame=character.framing??head(character.tag);
+    const detail=/\b(?:close[- ]?up|headshot|portrait|(?:face|head|hands?|neck|chest|torso) (?:only|view))\b/i.test(stateFrame)||
+      outfit===''&&/\b(?:upper body|bust shot|waist[- ]up)\b/i.test(stateFrame);
+    if(detail&&(Object.hasOwn(known,name)||Object.hasOwn(updates,name)))continue;
+    if(!detail){if(bodySeen.has(name)&&!character.framing)continue;bodySeen.add(name);}
+    updates[name]=outfit?withComicCosplay(outfit,character.cosplay):'';
+  }
+  return updates;
+}
 /** No model calls, no semantic clothing guesses, and no error/retry for optional
  * fields. Metadata is consumed into final tags, so manual tag edits stay final. */
 export function finalizeComicCharacters(characters:readonly ImageCharacterPrompt[],context:ComicCharacterContext={}):ImageCharacterPrompt[] {
   const outfits=context.outfits??{},entries=new Map(context.entries?.map(e=>[e.name,e]));
+  const previous={...outfits};
+  Object.assign(outfits,comicWardrobeUpdates(characters,outfits));
   const result=characters.map(character=>{
-    const entry=entries.get(character.name),old=outfits[character.name];
-    const {outfit,panel,negative,clothingVisible,framing,...plain}=character;
-    const frame=framing?`${framing}, ${head(character.tag)}`:character.tag;
+    const entry=entries.get(character.name),old=previous[character.name];
+    const {outfit,wardrobe,cosplay:costume,panel,negative,clothingVisible,framing,...plain}=character;
+    const frame=frameOf(character);
     const showClothes=clothingVisible!==false&&visibleClothing(frame);
-    let tag=character.tag;
-    if(outfit!==undefined){
-      tag=without(tag,[entry?.fields.outfit??'',old??'']);
-      outfits[character.name]=outfit;
-      if(showClothes)tag=append(tag,visibleComicOutfit(outfit,frame));
+    let tag=withoutTemplateIdentity(character.tag);
+    if(outfit!==undefined||wardrobe!==undefined){
+      tag=without(tag,[entry?.fields.outfit??'',old??'',outfit??'',wardrobe??'']);
+      const visible=outfit??wardrobe!;
+      if(showClothes&&visible)tag=append(tag,visibleComicOutfit(withComicCosplay(visible,costume),frame));
     }else if(showClothes&&!apparel.test(head(tag))&&!cosplay.test(head(tag))){
       const fallback=Object.hasOwn(outfits,character.name)?outfits[character.name]:
         entry&&(!entry.fields.fandom||confirmedAppearanceField(entry,'outfit'))?entry.fields.outfit:undefined;
-      if(fallback!==undefined)tag=append(tag,visibleComicOutfit(fallback,frame));
+      if(fallback!==undefined||costume)tag=append(tag,visibleComicOutfit(withComicCosplay(fallback??'',costume),frame));
+    }else if(showClothes&&costume){
+      tag=append(tag,withComicCosplay('',costume));
     }
     if(panel?.trim()&&!head(tag).includes(panel.trim()))tag=panel.trim()+' '+tag;
     return {...plain,tag,...(negative?.trim()?{negative:negative.trim()}: {})};

@@ -10,6 +10,14 @@ beforeEach(()=>{
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('comic analysis mode settings migration',()=>{
+  it.each([undefined,false,true,'true',1])('enables progressive pages only for an explicit saved boolean: %j',async(value)=>{
+    h.context={extensionSettings:{baibai_image:{nai:{comicProgressivePages:value,comicAnalysisMode:'standard',comicReasoningByModel:{old:'adaptive',manual:'low'}}}},saveSettingsDebounced:vi.fn()};
+    const {settings,hydrateSettings}=await import('./settings');await hydrateSettings();
+    expect(settings.nai.comicProgressivePages).toBe(value===true);
+    expect(settings.nai.comicAnalysisMode).toBe('standard');
+    expect(settings.nai.comicReasoningByModel).toEqual({manual:'low'});
+    expect(settings.nai).not.toHaveProperty('comicReasoningTimeoutSec');
+  });
   it.each([true,false])('migrates legacy extra rules and keeps the engineering switch at %s',async(enabled)=>{
     const original='旧作品要求\n保留蓝色围巾。';
     h.context={extensionSettings:{baibai_image:{nai:{comicExtraRules:original,comicNsfwRules:enabled}}},saveSettingsDebounced:vi.fn()};

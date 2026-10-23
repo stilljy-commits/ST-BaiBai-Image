@@ -51,7 +51,7 @@ characters中每格每人一条，按格顺序、格内从左到右排列。同�
     `【字段】images有position、tag、characters、nl、negative、size；人物有name、tag、nl及上述panel/outfit/可选negative。图片及人物nl、图片negative填空串；size填${lockedSize ?? 'portrait'}。changes新建用name、field:"new"、fields、position、reason；更新用name、field、value、position、reason。`,
     `【所选分镜】${nativeRule(style.rule) || '仅用共同分镜，按事件自然分配主次。'}`,
     `【所选留白】${nativeRule(gutter.rule)}`,
-    `【色彩】full color，保留人物固有发色、瞳色与服装主色。${nai.comicLighting ? '连续场景沿用简明环境光与色调，正文转场、时间或光源明确改变时再更新，不额外推算光源方向。' : ''}`,
+    `【色彩】full color，保留本镜头已确认的发色、瞳色与服装主色，包含正文明确的临时变化。${nai.comicLighting ? '连续场景沿用简明环境光与色调，正文转场、时间或光源明确改变时再更新，不额外推算光源方向。' : ''}`,
   ];
   if (!v2 && nai.comicAntiPossession) lines.push('【同人画风排除】可在页尾@negative写可靠的原作画风关联标签，无法确认时省略；不排除角色本人的正确特征。');
   // Preserve explicit opt-ins and editable rules; simple mode never rewrites user content.
