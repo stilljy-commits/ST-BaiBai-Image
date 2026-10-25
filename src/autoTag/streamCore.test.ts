@@ -5,6 +5,29 @@ import { normalizeStreamBatchSize } from './batchSettings';
 function deferred<T>() { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;}); return {promise,resolve}; }
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 const input={raw:'[img: 门口相见]',intent:'门口相见',text:'她打开门。',prefix:'',sourceLine:0};
+describe('earlier analysis dependency for local costume completion',()=>{
+ it('releases when earlier analysis finishes, without waiting for its image',async()=>{
+  const analysis=deferred<string>(),image=deferred<string>();
+  const run=new StreamRun<string,string>('ordered',3,1,true,{analyze:()=>analysis.promise,generate:()=>image.promise,commit:async()=>false,changed:()=>{},release:()=>{}},1);
+  run.add(input);const later=run.add(input,'later')!;let ready=false;const wait=run.earlierAnalysesReady(later).then(()=>ready=true);
+  await flush();expect(ready).toBe(false);analysis.resolve('first');await wait;expect(run.jobs[0].phase).toBe('generating');
+  image.resolve('done');await run.settled();
+ });
+ it('does not wait forever after an earlier analysis failure or cancellation',async()=>{
+  for(const cancel of [true,false]){
+   const pending=deferred<string>();
+   const run=new StreamRun<string,string>('blocked',2,1,false,{analyze:()=>cancel?pending.promise:Promise.reject(Error('failure')),generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}},1);
+   const first=run.add(input)!,later=run.add(input,'later')!,wait=run.earlierAnalysesReady(later);
+   if(cancel)run.cancelJob(first);await wait;pending.resolve('ignored');await run.settled();
+  }
+ });
+ it('cancels the dependent wait immediately when its own image is cancelled',async()=>{
+  const pending=deferred<string>();
+  const run=new StreamRun<string,string>('cancel-wait',2,1,false,{analyze:()=>pending.promise,generate:async p=>p,commit:async()=>false,changed:()=>{},release:()=>{}},1);
+  run.add(input);const later=run.add(input,'later')!,wait=expect(run.earlierAnalysesReady(later)).rejects.toHaveProperty('name','AbortError');
+  run.cancelJob(later);await wait;pending.resolve('done');await run.settled();
+ });
+});
 describe('streamed task lifetime',()=>{
   it.each([1,2,3,5,10,50])('uses configurable batches of %s and flushes the tail within concurrency two',async size=>{
     const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];

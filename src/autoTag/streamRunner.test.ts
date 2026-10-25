@@ -389,6 +389,26 @@ function useCompactChannel(){
  settings.assignments.tagGen='compact';Object.assign(settings.autoTag,{maxImages:6,minImages:0,streamAnalysisConcurrency:1});
 }
 const compactPage=(id:string,extra:any={})=>({id,scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}],...extra});
+describe('source ordered costume completion before NAI',()=>{
+ for(const mode of ['standard','simple','fast'] as const)for(const v2 of [true,false]){
+  it(`${mode} V2=${v2} repairs a later batch that finished before the first cosplay source`,async()=>{
+   useCompactChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;
+   beginStreamSession('A');feedStreamText(Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n'));await flush();expect(h.analyses).toHaveLength(2);
+   const response=(first:boolean)=>{
+    const cosplay={character:'Hero',work:'Example Work',costume:'Festival'};
+    if(mode==='fast')return JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{profiles:!i?[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}]:[],
+     shots:[{camera:'medium shot',actors:[{name:'小雪',action:'standing',face:'front',omit:[],outfit:'white jacket',...(first&&!i?{cosplay}:{})}]}]}))});
+    return JSON.stringify({changes:[],images:['M1','M2','M3'].map((position,i)=>({position,tag:v2?'SFW, 1girl, comic, 1 panel, This single panel fills the page. Medium shot.':
+     '<image>\n@page\nSFW, 1girl, comic\n@panel P1\nThis single panel fills the page. Medium shot.\n@character C1 小雪\ngirl, black hair, standing\n@outfit\nwhite jacket'+(first&&!i?'\n@cosplay\n'+JSON.stringify(cosplay):'')+'\n</image>',nl:'',negative:'',size:'portrait',
+     characters:v2?[{name:'小雪',tag:'girl, black hair, standing',panel:'This single panel fills the page.',outfit:'white jacket',nl:'',...(first&&!i?{cosplay}:{})}]:[]}))});
+   };
+   h.analyses[1].o.validate(response(false));h.analyses[1].resolve();await flush();expect(h.images).toHaveLength(0);
+   h.analyses[0].o.validate(response(true));h.analyses[0].resolve();await flush();expect(h.images).toHaveLength(6);
+   expect(h.analyses).toHaveLength(2); // Local completion does not issue extra model requests.
+   for(const image of h.images){const text=v2?image.input.characters[0].tag:image.input.prompt;expect(text).toContain("Hero's Festival outfit from Example Work.");}
+  });
+ }
+});
 describe('compact pages integrated with real task lifecycle',()=>{
  it('keeps an explicit uncommon garment through dispatch and carries it across incomplete-summary batches',async()=>{
   useCompactChannel();const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');

@@ -32,7 +32,7 @@ export function buildSimpleComicPrompt(options: SimpleComicOptions): string {
   const format = v2
     ? `【V2输出】图片tag是一行英文Base，依次写分级、去重人数、comic、N panels、各格位置和大致大小及景别/核心事件、留白、简明环境光、high complexity${text ? '、text, chinese text' : ''}。人物外貌、服装和表情不进Base。每格保留简短取景和事件作为人物归属锚点。
 characters中每格每人一条，按格顺序、格内从左到右排列。同人跨格分别写，name照抄原名；tag写girl/boy、本人的可靠fandom、可见必要外貌、核心动作/表情和与本格一致的景别。panel填与Base相同的位置短句；当前衣着与cosplay来源单列outfit，tag不重复衣着。可选negative仅列可靠互斥项。自己的特征和台词只归本人；空镜不虚构人物。tag不用旧标记包装，只有Text行可换行。`
-    : `【V1输出】tag用<image>...</image>包装；@page、@panel P1、@character C1 原名独占一行。@page写分级、去重人数、comic page、N panels、布局留白、full color和简明环境光${text ? '及chinese text' : ''}；@panel写位置、大小、取景和核心事件。每格每人独立@character，写girl/boy、本人的可靠fandom、必要可见外貌、动作表情；当前衣着与cosplay来源写紧随的@outfit段，空段表示明确不补默认衣物；专属排除项可写@negative段。人物C编号同页稳定，图片characters返回[]。`;
+    : `【V1输出】tag用<image>...</image>包装；@page、@panel P1、@character C1 原名独占一行。@page写分级、去重人数、comic page、N panels、布局留白、full color和简明环境光${text ? '及chinese text' : ''}；@panel写位置、大小、取景和核心事件。每格每人独立@character，写girl/boy、本人的可靠fandom、必要可见外貌、动作表情；当前衣着写@outfit，空段表示明确不补默认衣物；cosplay对象变化用其后的@cosplay段写JSON对象，结束写null，未变省略。专属排除项可写@negative段。人物C编号同页稳定，图片characters返回[]。`;
   const dialogue = text
     ? `对白从本事件中选择适量原句，保留所选原文、标点和说话人，不创造台词，也不追求把整段对白全部放上画面。${v2 ? '放在对应人物tag末尾' : '放在对应@character段末尾'}，另起一行Text: 对白原句，前面写speech bubble或thought bubble及必要语气。中文横排，日文原句可纵排。`
     : '本次关闭对白上画：不写Text行、台词、气泡、旁白、拟音、文字语言或文字方向指令；用表情与动作表达情绪。示例和附加规则中的文字要求在本次不适用。';

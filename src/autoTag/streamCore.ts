@@ -48,6 +48,7 @@ export class StreamRun<P, R> {
   private singles = new Set<string>();
   private inputFinished = false;
   private analysisWaiters = new Set<() => void>();
+  private orderedWaiters = new Set<() => void>();
   readonly batchSize: number;
   constructor(readonly id: string, readonly max: number, readonly concurrency: number,
     readonly autoGenerate: boolean, readonly dependencies: StreamDependencies<P, R>, batchSize = 3) {
@@ -73,6 +74,7 @@ export class StreamRun<P, R> {
     job.controller.abort(); job.phase = 'cancelled';
     if (job.result) { this.dependencies.release(job.result); job.result = undefined; }
     this.dependencies.changed(job); this.pump(); this.dependencies.idle?.();
+    this.notifyOrdered();
   }
   cancel(): void { this.stopped = true; this.queue = []; for (const job of this.jobs) this.cancelJob(job); }
 
@@ -84,6 +86,24 @@ export class StreamRun<P, R> {
     if (!this.analyzing && !this.queue.length) return;
     await new Promise<void>(resolve => this.analysisWaiters.add(resolve));
   }
+  /** Wait for earlier text analysis only, never earlier NAI generation or uploads. */
+  hasEarlierAnalysesPending(job:StreamJob<P,R>):boolean{
+    return this.jobs.some(previous=>previous.ordinal<job.ordinal&&!previous.payload&&previous.phase==='analyzing'&&!previous.controller.signal.aborted);
+  }
+  async earlierAnalysesReady(job:StreamJob<P,R>):Promise<void>{
+    const pending=()=>this.hasEarlierAnalysesPending(job);
+    if(job.controller.signal.aborted||this.stopped)throw new DOMException('Cancelled','AbortError');
+    if(!pending())return;
+    await new Promise<void>((resolve,reject)=>{
+      const check=()=>{
+        if(!job.controller.signal.aborted&&!this.stopped&&pending())return;
+        this.orderedWaiters.delete(check);job.controller.signal.removeEventListener('abort',check);
+        if(job.controller.signal.aborted||this.stopped)reject(new DOMException('Cancelled','AbortError'));else resolve();
+      };
+      this.orderedWaiters.add(check);job.controller.signal.addEventListener('abort',check,{once:true});check();
+    });
+  }
+  private notifyOrdered():void{for(const check of [...this.orderedWaiters])check();}
 
   /** Reserve a real analysis slot so a manual retry cannot overlap a supplemental call. */
   async additionalAnalysis<T>(task: () => Promise<T>): Promise<T> {
@@ -112,6 +132,7 @@ export class StreamRun<P, R> {
   }
   private touch(job: StreamJob<P, R>): void {
     job.revision++; this.dependencies.changed(job);
+    this.notifyOrdered();
     if (job.attached && job.payload && !job.controller.signal.aborted) this.commit(job);
   }
   private pump(): void {
@@ -192,5 +213,6 @@ export class StreamRun<P, R> {
     if (job.controller.signal.aborted) return;
     job.phase = 'error'; job.error = error instanceof Error ? error.message : String(error);
     this.dependencies.changed(job);
+    this.notifyOrdered();
   }
 }

@@ -1,5 +1,31 @@
 /** Temporary costume provenance, never a character's permanent fandom. */
 export interface ComicCosplay { character:string; work?:string; costume?:string; }
+/** Independent temporary provenance. Null explicitly ends cosplay; omission keeps it. */
+export type ComicCostumes = Record<string,string|null>;
+const pieces=(value:string)=>normalizeComicOutfit(value).split(/[,;\n]/).map(v=>v.trim()).filter(Boolean);
+const sourcePart=(value:string)=>/^(?:(?:she|he|they) (?:is |are )?)?wearing .+['’]s .*(?:outfit|costume)\b/i.test(value)||
+  /^cosplay(?:ing)? as .+/i.test(value)||/\(cosplay\)$/i.test(value);
+/** Recover only an explicitly labelled source, never guess it from garment names. */
+export function comicCosplayPrefix(value:string):string|undefined {
+  const parts=pieces(value),sources=parts.filter(sourcePart);
+  return sources.length&&parts.some(v=>/^cosplay$/i.test(v)||sourcePart(v))?['cosplay',...sources].join(', '):undefined;
+}
+export function withComicCostume(outfit:string,prefix:string|null|undefined):string {
+  outfit=normalizeComicOutfit(outfit);
+  if(prefix===undefined)return outfit;
+  if(prefix!==null&&comicCosplayPrefix(outfit)===prefix)return outfit;
+  return [prefix,...pieces(outfit).filter(v=>!/^cosplay$/i.test(v)&&!sourcePart(v))].filter(Boolean).join(', ');
+}
+/** Fill only missing fields of the same explicitly named cosplay target. */
+export function inheritComicCosplay(next:ComicCosplay,previous:string|null|undefined):ComicCosplay{
+  if(!previous)return next;
+  const name=next.character.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const pattern=new RegExp(`^(?:(?:she|he|they) (?:is |are )?)?wearing ${name}['’]s(?: (.*?))? (?:outfit|costume)(?: from (.*?))?[.]?$`,'i');
+  const match=pieces(previous).map(part=>part.match(pattern)).find(value=>!!value);if(!match)return next;
+  const work=match[2]?.trim(),costume=match[1]?.trim();
+  if(next.work&&work&&next.work.toLowerCase()!==work.toLowerCase())return next;
+  return {...next,...(!next.work&&work?{work}:{}),...(!next.costume&&costume?{costume}:{})};
+}
 /** Remove only self-declared placeholders, not an actually named/default costume.
  * Old native prompts stay valid; this needs no new model field or request. */
 export function normalizeComicOutfit(outfit:string):string {
@@ -25,10 +51,10 @@ export function readComicCosplay(value:unknown):ComicCosplay|undefined {
     ...(costume&&!/^(?:costume|costume name|outfit|skin|unknown|unspecified|未知|未指定)$/i.test(costume)?{costume}: {})};
 }
 /** One fixed, short phrase. Unknown costume versions are simply omitted. */
-export function withComicCosplay(outfit:string,cosplay?:ComicCosplay):string {
+export function withComicCosplay(outfit:string,cosplay?:ComicCosplay|null):string {
   outfit=normalizeComicOutfit(outfit);
+  if(cosplay===null)return withComicCostume(outfit,null);
   if(!cosplay)return outfit;
   const phrase=`wearing ${cosplay.character}'s${cosplay.costume?' '+cosplay.costume:''} outfit${cosplay.work?' from '+cosplay.work:''}.`;
-  const garments=outfit.split(/[,;\n]/).map(v=>v.trim()).filter(v=>v&&!/^cosplay$/i.test(v)&&!/^wearing .+\boutfit(?: from .+)?\.$/i.test(v));
-  return ['cosplay',phrase,...garments].join(', ');
+  return withComicCostume(outfit,['cosplay',phrase].join(', '));
 }

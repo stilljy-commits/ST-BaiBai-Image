@@ -29,7 +29,7 @@ describe('comic engineering switch and active natural-language rules across all 
       expect(text.split(COMIC_VISUAL_RULES)).toHaveLength(2);
       expect(text).toContain('cosplay是临时穿着');
       expect(text).toContain('服装/皮肤版本');
-      expect(text).toContain('关闭nl也保留这句在outfit中');
+      expect(text).toContain('结束cosplay明确写cosplay:null');
       expect(text).toContain('不无故叠加medium shot、full body');
       expect(text).toContain('此作品专用三号规则：保留蓝色围巾，突出友好的互动。');
       expect(text).not.toContain('此作品专用一号规则');

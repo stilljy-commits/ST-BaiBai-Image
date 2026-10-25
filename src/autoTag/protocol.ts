@@ -18,7 +18,7 @@ export interface ImageCharacterPrompt {
   outfit?: string;
   /** Complete temporary clothing update; outfit alone describes the visible crop. */
   wardrobe?: string;
-  cosplay?: ComicCosplay;
+  cosplay?: ComicCosplay|null;
   panel?: string;
   clothingVisible?: boolean;
   /** Internal V1 panel description used only for crop-aware wardrobe completion. */
@@ -187,7 +187,7 @@ function sanitizeCharacters(value: unknown, imageIndex: number): ImageCharacterP
         }catch{/* Bad optional metadata must not discard the person or cause a retry. */}
       }
       if(typeof item.clothingVisible==='boolean')optional.clothingVisible=item.clothingVisible;
-      const cosplay=readComicCosplay(item.cosplay);if(cosplay)optional.cosplay=cosplay;
+      const cosplay=readComicCosplay(item.cosplay);if(item.cosplay===null||cosplay)optional.cosplay=item.cosplay===null?null:cosplay;
       if (name && tag) characters.push({ name, tag, nl, ...optional });
     } catch {
       // A malformed character prompt must not discard an otherwise valid image plan.

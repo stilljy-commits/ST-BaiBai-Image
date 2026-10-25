@@ -1,6 +1,7 @@
 import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
-import { ComicWardrobeLedger } from '@/comic/characters';
+import { ComicWardrobeLedger, needsComicClothingHistory } from '@/comic/characters';
+import { parseComicSections, comicSectionCharacters } from '@/comic/sections';
 import { finalizeComicPlan } from '@/comic/plan';
 import { standardPagePrefix } from './standardPages';
 import { restoreStreamMarkers } from './streamHandoff';
@@ -34,7 +35,9 @@ import { parseImageTags, parseImageTagContent, serializeImageTag } from '@/st/im
 import { randomUuid } from '@/randomUuid';
 import { effectiveOrientation, parseSize, pickSize } from '@/backends/size';
 
-interface Payload { image: ImageInsertion; changes: CharChange[]; }
+interface Payload { image: ImageInsertion; changes: CharChange[]; refresh?:()=>ImageInsertion; needsClothingHistory?:boolean; }
+const refreshPlans=new WeakMap<ImageInsertion,{refresh:()=>ImageInsertion;needsClothingHistory:boolean}>();
+const imagePayload=(s:Session,image:ImageInsertion,changes:CharChange[]):Payload=>({image:{...image,renderProfile:s.profile},changes,...refreshPlans.get(image)});
 type Job = StreamJob<Payload, GenerateOutput>;
 interface Session {
   id: string; chatId: string; context: STContext; referenceFloor: number;
@@ -122,6 +125,13 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
         log('stream:batch-fallback', { jobs: jobs.map(job => job.id), batchSize:jobs.length, code, reason: '批量分析未通过，按原单张流程重试' });
       },
       generate: async (payload, job) => {
+        if(payload.refresh){
+          if(payload.needsClothingHistory&&s.core.hasEarlierAnalysesPending(job))await s.core.earlierAnalysesReady(job);
+          if(!ownerValid(s))throw new DOMException('Cancelled','AbortError');
+          const refreshed=payload.refresh();
+          // Preserve slot identity and ownership; only refresh local visual completion.
+          payload.image.tag=refreshed.tag;payload.image.characters=refreshed.characters;
+        }
         const start = performance.now();
         const output = await generateImage({ prompt: payload.image.tag, nl: payload.image.nl,
         negative: payload.image.negative, characters: payload.image.characters, size: payload.image.size,
@@ -235,7 +245,15 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
   }
   // Fast pages already pass the same character finalizer inside compilation.
   // Re-running after metadata was consumed could restore an old default outfit.
-  if(s.profile.mode!=='illustration'&&!fastComicAnalysis(s))finalizeComicPlan(plan,anchors.entries,s.wardrobe,locked);
+  if(s.profile.mode!=='illustration'&&!fastComicAnalysis(s)){
+    const changes=jsonCopy(plan.changes),entries=jsonCopy(anchors.entries);
+    for(const image of plan.images){
+      const draft=jsonCopy(image);
+      const sections=parseComicSections(draft.tag),characters=sections?comicSectionCharacters(sections):draft.characters;
+      refreshPlans.set(image,{needsClothingHistory:needsComicClothingHistory(characters),refresh:()=>{const fresh={images:[jsonCopy(draft)],changes};finalizeComicPlan(fresh,entries,s.wardrobe,locked);return fresh.images[0];}});
+    }
+    finalizeComicPlan(plan,anchors.entries,s.wardrobe,locked);
+  }
   return plan;
 }
 async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
@@ -249,7 +267,7 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
     if(entry&&!lockedCharTagNames().has(change.name)&&Object.hasOwn(entry.fields,change.field)) entry.fields[change.field as keyof typeof entry.fields]=change.value;
   }
   const compact:CompactComicContext={target:batch.target,markers:batch.markerTargets,entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,
-    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits,...s.wardrobe.before(jobs[0].input.sourceLine)}};
+    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits,...s.wardrobe.before(jobs[0].input.sourceLine)},costumes:s.wardrobe.costumesBefore(jobs[0].input.sourceLine)};
   const scanText=jobs.at(-1)!.input.prefix+'\n'+jobs.map(job=>job.input.text).join('\n');
   const ctx=getContext()!,floor=s.binding?.floor??s.referenceFloor,analysisContext={...ctx,chat:[...ctx.chat]};
   analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
@@ -288,10 +306,18 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
         }
         const result=compileComicPage(candidate,{...compact,priorChanges:[...continuity.changes,...acceptedChanges]},introduced);
         if(controller.signal.aborted||job.controller.signal.aborted||!ownerValid(s))return;
-        const plan=preparePlan(s,result.plan,anchors),payload={image:{...plan.images[0],renderProfile:s.profile},changes:plan.changes};
+        const plan=preparePlan(s,result.plan,anchors),line=plan.images[0].sourceLine;
+        const snapshot=jsonCopy({...compact,priorChanges:[...continuity.changes,...acceptedChanges]}),profiles=jsonCopy(introduced),draft=jsonCopy(candidate);
+        refreshPlans.set(plan.images[0],{needsClothingHistory:result.needsClothingHistory,refresh:()=>{
+          const fresh=compileComicPage(draft,{...snapshot,locked:compact.locked,markers:compact.markers,target:compact.target,
+            outfits:{...snapshot.outfits,...s.wardrobe.before(line)},costumes:{...snapshot.costumes,...s.wardrobe.costumesBefore(line)}},profiles);
+          s.wardrobe.accept(line,fresh.wardrobe,fresh.costumes);return fresh.plan.images[0];
+        }});
+        const payload=imagePayload(s,plan.images[0],plan.changes);
         payloads.set(id,payload);errors.delete(id);job.analysisError=undefined;acceptedChanges.push(...plan.changes);
         compact.outfits={...compact.outfits,...result.wardrobe};
-        s.wardrobe.accept(plan.images[0].sourceLine,result.wardrobe);
+        compact.costumes={...compact.costumes,...result.costumes};
+        s.wardrobe.accept(plan.images[0].sourceLine,result.wardrobe,result.costumes);
         const introOps=planChangeOps({images:[],changes:plan.changes.filter(change=>change.field==='new')}).map(item=>item.op);
         introduced.splice(0,introduced.length,...applyCharTagOps(introduced,introOps,floor,compact.locked));
         s.continuity.accept({ordinal:job.ordinal,text:job.input.text,marker:job.input.raw,sourceLine:batch.target.segments.find(segment=>segment.id===batch.groups[index].positions.at(-1))!.sourceLine,state:result.state,changes:plan.changes});
@@ -351,7 +377,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
         splitStreamBatch(parsed, batch);
         const plan = preparePlan(s, parsed, anchors);
         const image = plan.images[0];
-        payload = { image: { ...image, renderProfile: s.profile }, changes: plan.changes };
+        payload = imagePayload(s,image,plan.changes);
       },'流式配图 · 单张');
       log('stream:analysis-timing', { job: job.id, queueMs: Math.round(start-job.createdAt), prepareMs: Math.round(preparedAt-start),
         apiMs: Math.round(performance.now()-requestStart), attempt: attempt+1, promptChars, responseChars, removedDuplicateChars: job.input.prefix.length-prefix.length, ok: !!payload });
@@ -409,7 +435,7 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
         if(!batch.groups[index].positions.includes(parsed.images[0].position))throw new Error('逐页返回错配标记');
         const fingerprint=JSON.stringify(parsed.images[0]),changes=JSON.stringify(parsed.changes);
         if(changesFingerprint!==undefined&&changesFingerprint!==changes)throw new Error('逐页返回修改了已确认的角色变化');
-        const plan=preparePlan(s,parsed,anchors),payload={image:{...plan.images[0],renderProfile:s.profile},changes:plan.changes};
+        const plan=preparePlan(s,parsed,anchors),payload=imagePayload(s,plan.images[0],plan.changes);
         accepted.set(index,payload);fingerprints.set(index,fingerprint);changesFingerprint=changes;
         job.analysisError=undefined;ready?.(index,payload);
         log('stream:page-ready',{job:job.id,batchSize:jobs.length,elapsedMs:Math.round(performance.now()-requestStart)});
@@ -438,7 +464,7 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
         }
       }
       const plan = preparePlan(s, parsed, anchors);
-      payloads = splitStreamBatch(plan, batch).map(image => ({ image: { ...image, renderProfile: s.profile }, changes: plan.changes }));
+      payloads = splitStreamBatch(plan, batch).map(image => imagePayload(s,image,plan.changes));
     },`流式配图 · 合并${jobs.length}张`,progressive?consume:undefined);
     if (!payloads) throw new Error('批量分析未返回有效图片');
     return payloads;

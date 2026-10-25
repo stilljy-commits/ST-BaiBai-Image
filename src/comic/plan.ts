@@ -1,6 +1,7 @@
 import type { ImagePlan } from '@/autoTag/protocol';
 import type { CharTagEntry } from '@/state/charTags';
-import { comicWardrobeUpdates, finalizeComicCharacters, type ComicWardrobeLedger } from './characters';
+import { comicWardrobeUpdates, comicCostumeUpdates, finalizeComicCharacters, type ComicWardrobeLedger } from './characters';
+import type { ComicCostumes } from './costume';
 import { parseComicSections, comicSectionCharacters, writeComicSections } from './sections';
 
 /** Use an exact, already shared panel location to recover its Base camera.
@@ -20,9 +21,11 @@ function nativeFraming(image:ImagePlan['images'][number]):ImagePlan['images'][nu
  * accepted wardrobe states are shared, keyed by original source order. */
 export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[],ledger?:ComicWardrobeLedger,locked:ReadonlySet<string>=new Set()):void {
   let outfits:Record<string,string>={};
+  let costumes:ComicCostumes={};
   let previousLine=-Infinity;
   for(const image of [...plan.images].sort((a,b)=>a.sourceLine-b.sourceLine)){
     outfits={...outfits,...ledger?.before(image.sourceLine)};
+    costumes={...costumes,...ledger?.costumesBefore(image.sourceLine)};
     const current=entries.map(e=>({...e,fields:{...e.fields}}));
     for(const change of plan.changes){
       if(change.field==='new'&&!current.some(e=>e.name===change.name)){
@@ -36,18 +39,19 @@ export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[]
         entry.fields[change.field as keyof typeof entry.fields]=change.value;
         if(change.field==='outfit'&&change.sourceLine>previousLine){
           outfits[change.name]=change.value;
-          ledger?.accept(change.sourceLine,{[change.name]:change.value});
+          costumes[change.name]=null;
+          ledger?.accept(change.sourceLine,{[change.name]:change.value},{[change.name]:null});
         }
       }
     }
     const sections=parseComicSections(image.tag);
     const draft=sections?comicSectionCharacters(sections):nativeFraming(image);
-    const updates=comicWardrobeUpdates(draft,outfits);
+    const updates=comicWardrobeUpdates(draft,outfits,costumes),costumeUpdates=comicCostumeUpdates(draft,outfits,costumes);
     if(sections){
-      const characters=finalizeComicCharacters(draft,{entries:current,outfits});
+      const characters=finalizeComicCharacters(draft,{entries:current,outfits,costumes});
       image.tag=writeComicSections(sections,characters);image.characters=[];
-    }else image.characters=finalizeComicCharacters(draft,{entries:current,outfits});
-    ledger?.accept(image.sourceLine,updates);
+    }else image.characters=finalizeComicCharacters(draft,{entries:current,outfits,costumes});
+    ledger?.accept(image.sourceLine,updates,costumeUpdates);
     previousLine=image.sourceLine;
   }
 }

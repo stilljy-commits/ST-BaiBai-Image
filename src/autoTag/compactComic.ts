@@ -4,8 +4,8 @@ import { CHAR_TAG_FIELDS, type CharTagEntry, type CharTagField } from '@/state/c
 import { parseImagePlan, type ImagePlan, type MarkerTargets } from './protocol';
 import type { PreparedTargetText } from './clean';
 import type { Orientation } from '@/backends/size';
-import { comicFixedFields, comicWardrobeUpdates, finalizeComicCharacters } from '@/comic/characters';
-import { readComicCosplay, withComicCosplay, type ComicCosplay } from '@/comic/costume';
+import { comicFixedFields, comicWardrobeUpdates, comicCostumeUpdates, finalizeComicCharacters, needsComicClothingHistory } from '@/comic/characters';
+import { readComicCosplay, comicCosplayPrefix, withComicCosplay, withComicCostume, type ComicCostumes } from '@/comic/costume';
 import { comicPanelLocation } from '@/comic/layout';
 import { COMIC_VISUAL_RULES } from '@/comic/rules';
 
@@ -21,9 +21,10 @@ export interface CompactComicContext {
   /** Accepted earlier changes only, in original physical source coordinates. */
   priorChanges?: ImagePlan['changes'];
   outfits?: Record<string,string>;
+  costumes?: ComicCostumes;
 }
 export interface ComicContinuity { complete: boolean; facts: string; outfits: Record<string, string>; }
-export interface CompiledComicPage { id: string; plan: ImagePlan; state: ComicContinuity; wardrobe:Record<string,string>; }
+export interface CompiledComicPage { id: string; plan: ImagePlan; state: ComicContinuity; wardrobe:Record<string,string>; costumes:ComicCostumes; needsClothingHistory:boolean; }
 const object = (value: unknown): Record<string, any> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('漫画数据必须是对象');
   return value as Record<string, any>;
@@ -154,7 +155,7 @@ export function compileComicPage(raw: unknown, context: CompactComicContext, ear
   const people = new Map<string,string>(), characters: any[] = [], panels: string[] = [];
   const groups:{framing:string;start:number;end:number;ids:number[]}[]=[];
   const wardrobeTimeline=new Map<string,{at:number;outfit:string}>();
-  const cosplayTimeline=new Map<string,{at:number;value:ComicCosplay}>();
+  const cosplayTimeline=new Map<string,{at:number;value:string|null}>();
   const mode=['auto','grid','stacked','focus-top','focus-bottom'].includes(page.layout)?page.layout:'auto';
   const main=Number.isInteger(page.main)&&page.main>=1&&page.main<=shots.length?page.main-1:undefined;
   for (const [index,value] of shots.entries()) {
@@ -183,7 +184,7 @@ export function compileComicPage(raw: unknown, context: CompactComicContext, ear
       const priorWardrobe=wardrobeTimeline.get(name);
       if(priorWardrobe&&priorWardrobe.at<=sourceLine)fields.outfit=priorWardrobe.outfit;
       for(const change of changes) if(change.name===name&&change.field==='outfit'&&segments.get(change.position)!.sourceLine<=sourceLine) fields.outfit=change.value;
-      const costume=readComicCosplay(actor.cosplay);
+      let costume=actor.cosplay===null?null:readComicCosplay(actor.cosplay);
       const fullWardrobe=typeof actor.wardrobe==='string'?text(actor.wardrobe,'wardrobe',false):undefined;
       if(fullWardrobe!==undefined)fields.outfit=fullWardrobe?withComicCosplay(fullWardrobe,costume):'';
       if (actor.outfit !== undefined) fields.outfit = text(actor.outfit,'outfit',false);
@@ -201,20 +202,25 @@ export function compileComicPage(raw: unknown, context: CompactComicContext, ear
       let outfit:string|undefined;
       if(actor.outfit!==undefined||fullWardrobe!==undefined||priorWardrobe&&priorWardrobe.at<=sourceLine||Object.hasOwn(context.outfits??{},name)||changes.some(c=>c.name===name&&c.field==='outfit'&&segments.get(c.position)!.sourceLine<=sourceLine))outfit=fields.outfit??'';
       else if(visible.outfit&&!omit.has('outfit'))outfit=visible.outfit;
-      const character={name,tag,nl:'',panel:location,...(omit.has('outfit')?{clothingVisible:false}:{}),...(outfit!==undefined?{outfit}:{}),...(fullWardrobe!==undefined?{wardrobe:fullWardrobe}:{}),...(costume?{cosplay:costume}:{}),...(typeof actor.negative==='string'&&actor.negative.trim()?{negative:text(actor.negative,'negative',false)}:{})};
+      if(costume===undefined&&!comicCosplayPrefix(outfit??'')&&changes.some(c=>c.name===name&&c.field==='outfit'&&
+        segments.get(c.position)!.sourceLine<=sourceLine&&segments.get(c.position)!.sourceLine>(priorWardrobe?.at??-Infinity)))costume=null;
+      const character={name,tag,nl:'',panel:location,...(omit.has('outfit')?{clothingVisible:false}:{}),...(outfit!==undefined?{outfit}:{}),...(fullWardrobe!==undefined?{wardrobe:fullWardrobe}:{}),...(costume!==undefined?{cosplay:costume}:{}),...(typeof actor.negative==='string'&&actor.negative.trim()?{negative:text(actor.negative,'negative',false)}:{})};
       characters.push(character);
       const known={...context.outfits,...(priorWardrobe&&priorWardrobe.at<=sourceLine?{[name]:priorWardrobe.outfit}:{})};
-      const update=comicWardrobeUpdates([{...character,...(actor.outfit===undefined?{outfit:undefined}:{})}],known)[name];
+      const priorCostume=cosplayTimeline.get(name),costumes={...context.costumes,...(priorCostume&&priorCostume.at<=sourceLine?{[name]:priorCostume.value}:{})};
+      const update=comicWardrobeUpdates([{...character,...(actor.outfit===undefined?{outfit:undefined}:{})}],known,costumes)[name];
       if(update!==undefined&&(!priorWardrobe||sourceLine>priorWardrobe.at||sourceLine===priorWardrobe.at&&fullWardrobe!==undefined))wardrobeTimeline.set(name,{at:sourceLine,outfit:update});
-      if(costume&&sourceLine>=(cosplayTimeline.get(name)?.at??-Infinity))cosplayTimeline.set(name,{at:sourceLine,value:costume});
+      const costumeUpdate=comicCostumeUpdates([character],known,costumes);
+      if(Object.hasOwn(costumeUpdate,name)&&sourceLine>=(priorCostume?.at??-Infinity))cosplayTimeline.set(name,{at:sourceLine,value:costumeUpdate[name]});
       people.set(name,sex); actions.push(`${sex}, ${action}`);ids.push([...people.keys()].indexOf(name)+1);
     }
     const framing = `${location} ${camera}. ${actions.join('; ')}`;
     panels.push(framing);groups.push({framing,start,end:characters.length,ids});
   }
   if (characters.length > 22) throw new Error('本页人物实例超过 NAI V5 支持范围，请精简重复画格');
-  const finalCharacters=finalizeComicCharacters(characters,{entries:[...entries.values()],outfits:{...context.outfits}});
+  const finalCharacters=finalizeComicCharacters(characters,{entries:[...entries.values()],outfits:{...context.outfits},costumes:{...context.costumes}});
   const wardrobe=Object.fromEntries([...wardrobeTimeline].map(([name,value])=>[name,value.outfit]));
+  const costumes=Object.fromEntries([...cosplayTimeline].map(([name,value])=>[name,value.value]));
   const v1=groups.map((group,index)=>`@panel P${index+1}\n${group.framing}\n\n`+finalCharacters.slice(group.start,group.end).map((c,i)=>
     `@character C${group.ids[i]} ${c.name}\n${c.tag}${characters[group.start+i].outfit!==undefined?'\n@outfit\n'+characters[group.start+i].outfit:''}${c.negative?'\n@negative\n'+c.negative:''}`).join('\n\n'));
   const counts = ['girl','boy','other'].map(sex=>{const n=[...people.values()].filter(s=>s===sex).length;return n?`${n}${sex}${n===1?'':'s'}`:''}).filter(Boolean);
@@ -227,10 +233,10 @@ export function compileComicPage(raw: unknown, context: CompactComicContext, ear
   const rawState = page.state && typeof page.state === 'object' ? object(page.state) : {};
   const outfits: Record<string,string> = {};
   if (rawState.outfits && typeof rawState.outfits==='object') for (const [name,value] of Object.entries(rawState.outfits)) {
-    if (!entries.has(name)) throw new Error('连续状态引用未知人物');const current=text(value,'state.outfits',false);outfits[name]=current?withComicCosplay(current,cosplayTimeline.get(name)?.value):'';
+    if (!entries.has(name)) throw new Error('连续状态引用未知人物');const current=text(value,'state.outfits',false);outfits[name]=current?withComicCostume(current,{...context.costumes,...costumes}[name]):'';
   }
   const complete=rawState.complete===true&&typeof rawState.facts==='string'&&!!rawState.facts.trim();
-  return {id,plan,wardrobe:{...wardrobe,...(complete?outfits:{})},state:{complete,facts:typeof rawState.facts==='string'?rawState.facts.trim():'',outfits}};
+  return {id,plan,wardrobe:{...wardrobe,...(complete?outfits:{})},costumes,needsClothingHistory:needsComicClothingHistory(characters),state:{complete,facts:typeof rawState.facts==='string'?rawState.facts.trim():'',outfits}};
 }
 
 export function parseCompactComic(raw: string, context: CompactComicContext): ImagePlan {
@@ -241,9 +247,11 @@ export function parseCompactComic(raw: string, context: CompactComicContext): Im
   pages.sort((a,b)=>source(a)-source(b));
   const seen = new Set<string>(), plan: ImagePlan = {images:[],changes:[]}, earlier: CharTagEntry[] = [];
   let outfits={...context.outfits};
+  let costumes={...context.costumes};
   for (const page of pages) {
-    const compiled=compileComicPage(page,{...context,outfits,priorChanges:[...(context.priorChanges??[]),...plan.changes.filter(c=>c.field!=='new')]},earlier); if (seen.has(compiled.id)) throw new Error('重复的漫画页标记'); seen.add(compiled.id);
+    const compiled=compileComicPage(page,{...context,outfits,costumes,priorChanges:[...(context.priorChanges??[]),...plan.changes.filter(c=>c.field!=='new')]},earlier); if (seen.has(compiled.id)) throw new Error('重复的漫画页标记'); seen.add(compiled.id);
     outfits={...outfits,...compiled.wardrobe};
+    costumes={...costumes,...compiled.costumes};
     plan.images.push(...compiled.plan.images); plan.changes.push(...compiled.plan.changes);
     for (const change of compiled.plan.changes) if (change.field==='new') {
       let fields: CharTagEntry['fields']; try { fields=JSON.parse(change.value); } catch { continue; }

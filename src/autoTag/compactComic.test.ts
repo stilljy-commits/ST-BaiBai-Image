@@ -11,6 +11,20 @@ function context():CompactComicContext{
  return {target:batch.target,markers:batch.markerTargets,entries:[entry()],locked:new Set(),nai:{...settings.nai,comicV2:true,comicText:false,comicPanelStyle:'universal',comicGutter:'boxed',comicExtraRules:''},size:'portrait',min:1,max:1};
 }
 describe('compact comic compilation',()=>{
+ it('clears a previous cosplay source when this page explicitly establishes a permanent new outfit',()=>{
+  const c=context();c.costumes={小雪:"cosplay, wearing Hero's outfit from Example Work."};c.outfits={小雪:'white jacket'};
+  const result=compileComicPage(page({changes:[{name:'小雪',field:'outfit',value:'blue shirt',position:'P2'}],shots:[{camera:'medium shot',actors:[actor({at:'P3'})]}]}),c);
+  expect(result.plan.images[0].characters[0].tag).toContain('blue shirt');expect(result.plan.images[0].characters[0].tag).not.toContain('Hero');expect(result.costumes.小雪).toBeNull();
+ });
+ it.each([true,false])('inherits cosplay separately across pages and supports explicit end for V2=%s',v2=>{
+  const c=context();c.nai.comicV2=v2;
+  const first=compileComicPage(page({shots:[{camera:'medium shot',actors:[actor({outfit:'white jacket',cosplay:{character:'Hero',work:'Example Work',costume:'Festival'}})]}]}),c);
+  const next=compileComicPage(page({shots:[{camera:'medium shot',actors:[actor({outfit:'white jacket'})]}]}),{...c,outfits:first.wardrobe,costumes:first.costumes});
+  const visible=(result:typeof first)=>v2?result.plan.images[0].characters[0].tag:result.plan.images[0].tag;
+  expect(visible(next)).toContain("Hero's Festival outfit from Example Work.");
+  const clear=compileComicPage(page({shots:[{camera:'medium shot',actors:[actor({outfit:'blue shirt',cosplay:null})]}]}),{...c,outfits:next.wardrobe,costumes:{...first.costumes,...next.costumes}});
+  expect(clear.costumes.小雪).toBeNull();expect(visible(clear)).not.toContain('Hero');
+ });
  it('expands temporary wig and contact colors without changing the fixed identity or losing the full wardrobe to a cut-in',()=>{
   const c=context(),costume={character:'Hero',work:'Example Work',costume:'Festival'},wardrobe='white jacket, blue trousers, black boots';
   const result=compileComicPage(page({shots:[{camera:'full body',actors:[actor({look:{hair:'long blue wig',eyes:'purple eyes'},wardrobe,outfit:wardrobe,cosplay:costume})]},

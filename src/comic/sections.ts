@@ -44,7 +44,7 @@ export function parseComicSections(source:string):ComicSections|null {
     }else if(kind==='wardrobe'){
       if(!character)return null;const owned=character;write=v=>{owned.wardrobe=v;};
     }else if(kind==='cosplay'){
-      if(!character)return null;const owned=character;write=v=>{try{owned.cosplay=readComicCosplay(JSON.parse(value||v));}catch{/* Optional provenance must not invalidate a saved page. */}};
+      if(!character)return null;const owned=character;write=v=>{try{const raw=JSON.parse(value||v);owned.cosplay=raw===null?null:readComicCosplay(raw);}catch{/* Optional provenance must not invalidate a saved page. */}};
     }else if(kind==='non_character'){
       character=undefined;
       if(panel){const owned=panel;write=v=>{owned.nonCharacter=v;};}
@@ -77,7 +77,7 @@ export function writeComicSections(page:ComicSections,characters?:ImageCharacter
       out.push('@character '+original.id+(original.name!==original.id?' '+original.name:''),character.tag);
       if(character.outfit!==undefined)out.push('@outfit',character.outfit);
       if(character.wardrobe!==undefined)out.push('@wardrobe',character.wardrobe);
-      if(character.cosplay)out.push('@cosplay',JSON.stringify(character.cosplay));
+      if(character.cosplay!==undefined)out.push('@cosplay',JSON.stringify(character.cosplay));
       if(character.negative)out.push('@negative',character.negative);
     }
   }
