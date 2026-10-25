@@ -30,6 +30,10 @@ describe('comic engineering switch and active natural-language rules across all 
       expect(text).toContain('cosplay是临时穿着');
       expect(text).toContain('服装/皮肤版本');
       expect(text).toContain('结束cosplay明确写cosplay:null');
+      expect(text).toContain('每张图中每位cosplay穿着者的首次入镜都必须');
+      expect(text).toContain('程序已确认表用于照抄完整字段，不是少写许可');
+      expect(text).not.toContain('未变可省略由程序继承');
+      expect(text).not.toContain('当前衣着及已知cosplay对象/作品/服装版本单列outfit');
       expect(text).toContain('不无故叠加medium shot、full body');
       expect(text).toContain('此作品专用三号规则：保留蓝色围巾，突出友好的互动。');
       expect(text).not.toContain('此作品专用一号规则');

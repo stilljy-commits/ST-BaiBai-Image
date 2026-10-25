@@ -2,6 +2,7 @@ import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage,
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
 import { ComicWardrobeLedger, needsComicClothingHistory } from '@/comic/characters';
 import { parseComicSections, comicSectionCharacters } from '@/comic/sections';
+import { comicCosplayContext } from '@/comic/costume';
 import { finalizeComicPlan } from '@/comic/plan';
 import { standardPagePrefix } from './standardPages';
 import { restoreStreamMarkers } from './streamHandoff';
@@ -273,7 +274,7 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
   analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
   const note='极速模式仅输出简短分镜。只为下列标记生成pages，id照抄M编号，按M编号顺序输出。\n'+STREAM_SCENE_SUBJECT_RULE+'\n'+batch.groups.map(g=>
     '标记 '+g.markerId+'：'+g.intent+'；对应正文 '+g.positions.join('、')+'；图片 position 固定填 "'+g.markerId+'"。').join('\n')+
-    '\n'+continuity.note+'\n此前尚未概括的正文，仅作连续性依据：\n'+continuity.prefix+
+    '\n'+comicCosplayContext(compact.costumes??{})+'\n'+continuity.note+'\n此前尚未概括的正文，仅作连续性依据：\n'+continuity.prefix+
     (jobs.length===1&&jobs[0].analysisError?'\n【当前页修复】上次校验未通过：'+jobs[0].analysisError+'。只修复当前页；以前批次编号不沿用，本次以当前给定M编号和P位置为准。':'');
   const messages=await buildAutoTagMessages(analysisContext,floor,{...s.options,minImages:jobs.length,maxImages:jobs.length},
     readBookMemory(floor,scanText,s.context.name1),batch.target,compactLibrary(compact),note,s.promptEnvironment.profile,s.promptEnvironment,'fixed-markers',compactComicSpec(compact));
@@ -358,7 +359,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   const anchors = analysisAnchors(s);
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, job.input.prefix + job.input.text, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(job.input.prefix, job.input.text);
-  const note = `${analysisScope(s)}\n${batch.instructions}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
+  const note = `${analysisScope(s)}\n${batch.instructions}\n${s.profile.mode==='illustration'?'':comicCosplayContext(s.wardrobe.costumesBefore(job.input.sourceLine))}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据：\n${prefix}`;
   const analysisContext = { ...getContext()!, chat: [...getContext()!.chat] };
   const analysisFloor = s.binding?.floor ?? s.referenceFloor;
   analysisContext.chat[analysisFloor] = { name: s.context.name2 || 'Assistant', is_user: false, is_system: false, mes: job.input.prefix + '\n' + job.input.text };
@@ -401,7 +402,7 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
   const prefix = contextWithoutRepeatedTarget(jobs[0].input.prefix, jobs[0].input.text);
   const progressive=!!s.channel&&s.profile.mode!=='illustration'&&s.promptEnvironment.nai.comicProgressivePages===true;
   const batchInstructions=progressive?batch.instructions.replace('输出顺序不限。',''):batch.instructions;
-  const note = `${analysisScope(s)}\n${batchInstructions}${progressive?'\n仅调整返回顺序：先完整输出changes，再输出images；images按本批M编号先后写，每页写完不回改。输出字段、画面要求不变。':''}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
+  const note = `${analysisScope(s)}\n${batchInstructions}${progressive?'\n仅调整返回顺序：先完整输出changes，再输出images；images按本批M编号先后写，每页写完不回改。输出字段、画面要求不变。':''}\n${s.profile.mode==='illustration'?'':comicCosplayContext(s.wardrobe.costumesBefore(jobs[0].input.sourceLine))}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
   const ctx = getContext()!;
   const analysisContext = { ...ctx, chat: [...ctx.chat] };
   const floor = s.binding?.floor ?? s.referenceFloor;

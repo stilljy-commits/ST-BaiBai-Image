@@ -64,7 +64,7 @@ scene：简短英文地点、必要地标与环境光，不写人物衣着。
 profiles：只给本批首次出现且缺档的正式角色建档，{name,fields,position:"P编号"}；姓名照抄，fields限fandom/sex/hair/eyes/skin/body/extra/outfit。原创至少sex/hair/eyes；同人有可靠fandom和sex即可，未确认外貌留空，不重新设计原作服装。无新增为[]，不重复建档，不改locked。
 changes：只有永久外貌变化，{name,field,value,position:"P编号"}，无变化为[]。position 必须是目标正文已有P编号，不能把后文变化提前应用。临时衣服、动作、道具状态不进changes。
 shots：按阅读顺序给自然数量的画格，不统一限定2～3格；${style.id === 'yonkoma' ? '本次经典四格必须恰好4格。' : '按核心事件取舍，不拆重复镜头。'}每格 {camera,actors}，每个可见人物一项。可选页layout填grid/stacked/focus-top/focus-bottom；有主格时main填其1起始序号，无需坐标或面积。程序统一展开每格位置。
-人物{name,action,face,omit}：姓名照抄；action简短英文动作、表情和必要道具，不抄外貌衣着、不同于camera的景别或画外表情；face填front/side/back/hidden，omit填不可见库字段数组。outfit单列简短当前衣着（含已知cosplay对象/作品/服装版本），或空串明确不补默认衣物；头部特写用omit:["outfit"]，裁切不改变后续衣着。可选negative仅填少量可靠互斥项，无项省略。无名路人用anonymous:true和fields，不编姓名、不建档。本格状态早于段末时用at填本段P编号。
+人物{name,action,face,omit}：姓名照抄；action简短英文动作、表情和必要道具，不抄外貌衣着、不同于camera的景别或画外表情；face填front/side/back/hidden，omit填不可见库字段数组。outfit单列当前关键衣着，或空串明确不补默认衣物。cosplay字段含character/work及已明确的costume，按共同规则每张图首次入镜给完整已知来源，不能用角色名加costume缩写代替。头部特写用omit:["outfit"]，裁切不改变后续衣着。可选negative仅填少量可靠互斥项，无项省略。无名路人用anonymous:true和fields，不编姓名、不建档。本格状态早于段末时用at填本段P编号。
 固定外貌由程序展开，不抄写；旧库缺字段才用fields补齐。明确假发、美瞳等临时外观写look:{hair:当前头发,eyes:当前瞳色}，只给改变的项并覆盖对应原值，不写到action/outfit/changes。本批永久变化仍写changes，locked不覆盖。并发前批未完时以本格正文事实为准。
 ${nai.comicText === false ? '本次关闭对白：不输出台词、气泡、拟音或Text行。' : '可选 dialogue 放在对应说话人物，照抄目标正文中适量原句，不改字、不编造；speech填speech或thought。'}
 state是本标记段末{complete:true,facts:"简明地点、道具归属与持续状态",outfits:{"原名":"当前英文衣着及已知cosplay来源/服装版本"}}，包括未入画的明确变化，不因裁切丢失衣饰，不猜未来；不能可靠概括时complete:false，程序保留原文。下一批复用，不重复证明。

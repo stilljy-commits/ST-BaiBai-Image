@@ -390,6 +390,20 @@ function useCompactChannel(){
 }
 const compactPage=(id:string,extra:any={})=>({id,scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}],...extra});
 describe('source ordered costume completion before NAI',()=>{
+ it.each(['standard','simple','fast'] as const)('passes confirmed source fields to the next %s batch without waiting for NAI',async mode=>{
+  useCompactChannel();settings.nai.comicAnalysisMode=mode;
+  beginStreamSession('A');feedStreamText(Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n'));await flush();
+  expect(h.analyses[0].m[0].note).toContain('【程序已确认cosplay来源】{}');
+  const cosplay={character:'Hero',work:'Example Work',costume:'Festival'};
+  const raw=mode==='fast'?{pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{profiles:!i?[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}]:[],
+   shots:[{camera:'medium shot',actors:[{name:'小雪',action:'standing',face:'front',omit:[],outfit:'white jacket',...(!i?{cosplay}:{})}]}]}))}:
+   {changes:[],images:['M1','M2','M3'].map((position,i)=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[{name:'小雪',tag:'girl, black hair, standing',outfit:'white jacket',panel:'This single panel fills the page.',nl:'',...(!i?{cosplay}:{})}],nl:'',negative:'',size:'portrait'}))};
+  h.analyses[0].o.validate(JSON.stringify(raw));h.analyses[0].resolve();await flush();
+  expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(2);
+  const note=h.analyses[1].m[0].note,stored=JSON.parse(note.match(/【程序已确认cosplay来源】([^\n]+)/)![1]);
+  expect(stored.小雪).toEqual({character:'Hero',work:'Example Work',costume:'Festival'});
+  expect(note).toContain('不是省略许可');
+ });
  for(const mode of ['standard','simple','fast'] as const)for(const v2 of [true,false]){
   it(`${mode} V2=${v2} repairs a later batch that finished before the first cosplay source`,async()=>{
    useCompactChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;

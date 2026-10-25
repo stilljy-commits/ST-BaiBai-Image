@@ -1388,7 +1388,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 3. 条目 tag(逗号分隔,顺序固定):
    - 第一项 girl / boy(单数,不带数字);
    - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设;正文明确的假发、美瞳与换装按当前状态写，省略被替代的原值。原创/一次性角色跳过此项;
-   - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着及已知cosplay对象/作品/服装版本单列outfit，不在tag重复，不写入本人的fandom；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
+   - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着单列outfit，不在tag重复；cosplay另列cosplay对象，每张图中穿着者首次入镜时写character、正文或资料已明确的work及已明确的costume，不写入本人的fandom；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
    - **动作必写**:每个条目必须至少一个动作/姿态/接触/状态变化词(sitting, lying, hands gripping the sheets, flesh bulging between fingers 都算)——纯外貌堆砌的静态条目禁止;没有动作的条目会让该人物在格内僵立,或被相邻格的动作带偏,造成同图各格动作不一致。特写切入条目的动作写该部位正在发生的事(如 hands digging into butt cheeks, a thread of saliva running down);
    - 气泡指令与文字方向:有对白时在本格条目写 speech bubble 或 thought bubble(+whispering/shouting/trembling 等语气词);中文对白与旁白一律横書き,只有日文原文才用縦書き;
    - 取景词:沿用所属画格景别，不无故另写冲突的full body或close-up；实际遮挡、身高造成的裁切可不同。局部特写条目用部位取景锁定焦点，只写可见的关键衣饰，不为鞋靴强拉全身。

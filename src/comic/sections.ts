@@ -44,7 +44,7 @@ export function parseComicSections(source:string):ComicSections|null {
     }else if(kind==='wardrobe'){
       if(!character)return null;const owned=character;write=v=>{owned.wardrobe=v;};
     }else if(kind==='cosplay'){
-      if(!character)return null;const owned=character;write=v=>{try{const raw=JSON.parse(value||v);owned.cosplay=raw===null?null:readComicCosplay(raw);}catch{/* Optional provenance must not invalidate a saved page. */}};
+      if(!character)return null;const owned=character;write=v=>{const source=value||v;try{const raw=JSON.parse(source);owned.cosplay=raw===null?null:readComicCosplay(raw);}catch{owned.cosplay=readComicCosplay(source);}};
     }else if(kind==='non_character'){
       character=undefined;
       if(panel){const owned=panel;write=v=>{owned.nonCharacter=v;};}

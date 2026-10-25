@@ -1,6 +1,6 @@
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import type { CharTagEntry, CharTagField } from '@/state/charTags';
-import { comicCosplayPrefix, inheritComicCosplay, withComicCostume, withComicCosplay, type ComicCostumes } from './costume';
+import { comicCosplayPrefix, inheritComicCostume, inheritComicCosplay, withComicCostume, withComicCosplay, type ComicCostumes } from './costume';
 import { conflictingClothing, conflictsWithOwnClothing, isBareColor } from './clothingExclusions';
 
 const apparel = /\b(?:coat|jacket|blazer|cardigan|hoodie|sweater|shirt|blouse|vest|uniform|dress|skirt|pants|trousers|shorts|robe|kimono|yukata|suit|apron|scarf|gloves|hat|cap|boots|shoes|socks|stockings|tights|leggings|swimsuit|leotard|bodysuit|armor|armour|cape|costume|clothes|clothing|outfit)\b/i;
@@ -82,7 +82,8 @@ function costumeTimeline(characters:readonly ImageCharacterPrompt[],known:Record
   const values=characters.map(character=>{
     const {name}=character;
     const explicit=character.cosplay===null||character.wardrobe===''||character.outfit===''&&!detailClothes(character)&&character.clothingVisible!==false?null:
-      character.cosplay?withComicCosplay('',inheritComicCosplay(character.cosplay,current[name])):comicCosplayPrefix(character.wardrobe??'')??comicCosplayPrefix(character.outfit??'')??comicCosplayPrefix(head(character.tag));
+      character.cosplay?withComicCosplay('',inheritComicCosplay(character.cosplay,current[name])):
+        inheritComicCostume(comicCosplayPrefix(character.wardrobe??'')??comicCosplayPrefix(character.outfit??'')??comicCosplayPrefix(head(character.tag)),current[name]);
     if(explicit!==undefined){current[name]=explicit;updates[name]=explicit;}
     return current[name];
   });

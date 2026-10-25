@@ -31,8 +31,8 @@ export function buildSimpleComicPrompt(options: SimpleComicOptions): string {
     : `从目标正文选择${min}～${max}个值得绘制的可见事件，每个事件一页，按剧情先后返回。${min === 0 ? '没有可画事件可以返回空数组。' : `必须满足下限${min}页。`}达到下限后不为接近上限凑数。图片position填目标正文已有的P编号，放在该画面事实成立的段落之后。`;
   const format = v2
     ? `【V2输出】图片tag是一行英文Base，依次写分级、去重人数、comic、N panels、各格位置和大致大小及景别/核心事件、留白、简明环境光、high complexity${text ? '、text, chinese text' : ''}。人物外貌、服装和表情不进Base。每格保留简短取景和事件作为人物归属锚点。
-characters中每格每人一条，按格顺序、格内从左到右排列。同人跨格分别写，name照抄原名；tag写girl/boy、本人的可靠fandom、可见必要外貌、核心动作/表情和与本格一致的景别。panel填与Base相同的位置短句；当前衣着与cosplay来源单列outfit，tag不重复衣着。可选negative仅列可靠互斥项。自己的特征和台词只归本人；空镜不虚构人物。tag不用旧标记包装，只有Text行可换行。`
-    : `【V1输出】tag用<image>...</image>包装；@page、@panel P1、@character C1 原名独占一行。@page写分级、去重人数、comic page、N panels、布局留白、full color和简明环境光${text ? '及chinese text' : ''}；@panel写位置、大小、取景和核心事件。每格每人独立@character，写girl/boy、本人的可靠fandom、必要可见外貌、动作表情；当前衣着写@outfit，空段表示明确不补默认衣物；cosplay对象变化用其后的@cosplay段写JSON对象，结束写null，未变省略。专属排除项可写@negative段。人物C编号同页稳定，图片characters返回[]。`;
+characters中每格每人一条，按格顺序、格内从左到右排列。同人跨格分别写，name照抄原名；tag写girl/boy、本人的可靠fandom、可见必要外貌、核心动作/表情和与本格一致的景别。panel填与Base相同的位置短句；当前衣着单列outfit，cosplay来源按共同规则单列cosplay字段，tag不重复衣着。可选negative仅列可靠互斥项。自己的特征和台词只归本人；空镜不虚构人物。tag不用旧标记包装，只有Text行可换行。`
+    : `【V1输出】tag用<image>...</image>包装；@page、@panel P1、@character C1 原名独占一行。@page写分级、去重人数、comic page、N panels、布局留白、full color和简明环境光${text ? '及chinese text' : ''}；@panel写位置、大小、取景和核心事件。每格每人独立@character，写girl/boy、本人的可靠fandom、必要可见外貌、动作表情；当前衣着写@outfit，空段表示明确不补默认衣物。每张图中cosplay穿着者首次入镜时，用其后的@cosplay段写包含角色、已知作品和明确版本的JSON对象；同图后续格可沿用，结束写null。专属排除项可写@negative段。人物C编号同页稳定，图片characters返回[]。`;
   const dialogue = text
     ? `对白从本事件中选择适量原句，保留所选原文、标点和说话人，不创造台词，也不追求把整段对白全部放上画面。${v2 ? '放在对应人物tag末尾' : '放在对应@character段末尾'}，另起一行Text: 对白原句，前面写speech bubble或thought bubble及必要语气。中文横排，日文原句可纵排。`
     : '本次关闭对白上画：不写Text行、台词、气泡、旁白、拟音、文字语言或文字方向指令；用表情与动作表达情绪。示例和附加规则中的文字要求在本次不适用。';
@@ -48,7 +48,7 @@ characters中每格每人一条，按格顺序、格内从左到右排列。同�
     format,
     `【对白】${dialogue}`,
     `【角色与状态】正式角色只按库中同名条目判断已建档，直接复用；缺档用changes的field:"new"，无名路人不建档。原创新档至少sex/hair/eyes；同人有可靠fandom和sex即可，未确认外貌留空。用户/锁定资料不覆盖，自动同人档案不强制逐项抄写。临时衣着不进固定档案。永久变化用field/value和生效P位置，不能提前；field限sex/hair/eyes/skin/body/extra/outfit/fandom。新建position填首次出现P位置，仅作记录；无新增永久变化填changes:[]。${profileNl?'每条field:"new"还必须附nl，只含简短固定外貌，不含临时状态。':''}`,
-    `【字段】images有position、tag、characters、nl、negative、size；人物有name、tag、nl及上述panel/outfit/可选negative。图片及人物nl、图片negative填空串；size填${lockedSize ?? 'portrait'}。changes新建用name、field:"new"、fields、position、reason；更新用name、field、value、position、reason。`,
+    `【字段】images有position、tag、characters、nl、negative、size；人物有name、tag、nl及上述panel/outfit/cosplay/可选negative。cosplay包含character/work及已明确的costume；不能从字段列表漏掉来源。图片及人物nl、图片negative填空串；size填${lockedSize ?? 'portrait'}。changes新建用name、field:"new"、fields、position、reason；更新用name、field、value、position、reason。`,
     `【所选分镜】${nativeRule(style.rule) || '仅用共同分镜，按事件自然分配主次。'}`,
     `【所选留白】${nativeRule(gutter.rule)}`,
     `【色彩】full color，保留本镜头已确认的发色、瞳色与服装主色，包含正文明确的临时变化。${nai.comicLighting ? '连续场景沿用简明环境光与色调，正文转场、时间或光源明确改变时再更新，不额外推算光源方向。' : ''}`,

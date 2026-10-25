@@ -129,7 +129,7 @@ function backendPromptSpec(options: AutoTagSettings, nlOn: boolean, naiCharPromp
       // 附加块(风格/留白/光影/附加规则)两套共用,V2 规范自带术语映射把旧称呼对到新结构。
       let spec = (environment.nai.comicV2 ? DEFAULT_NAI_COMIC_V2_SPEC : DEFAULT_NAI_COMIC_SPEC)
         + buildComicAddenda(environment.nai)+'\n\n'+COMIC_VISUAL_RULES+
-        (environment.nai.comicV2?'\n人物条目新增panel位置短句和outfit当前衣着，tag不重复衣着；negative可选，只归本人。':'\n人物标记写@character C编号 原名；当前衣着用@outfit，cosplay对象变化用其后的@cosplay段写JSON对象，结束写null；专属排除词用@negative。程序转成NAI人物结构。');
+        (environment.nai.comicV2?'\n人物条目包含panel位置、outfit衣着，以及cosplay来源字段（character/work/已明确的costume）；每张图中穿着者首次入镜时写完整已知来源。negative可选，只归本人。':'\n人物标记写@character C编号 原名；当前衣着用@outfit；每张图中cosplay穿着者首次入镜时，用@cosplay段写包含角色、已知作品和明确版本的JSON对象，结束写null；专属排除词用@negative。程序转成NAI人物结构。');
       if (planning === 'fixed-markers') spec = spec
         .replace('- position:不变,仍是正文 P 编号。', '- position:直接照抄本次标记的 M 编号,图片插入位置由插件处理;正文 P 编号仅供角色变化时序使用。')
         .replaceAll('"position":"P2"', '"position":"M1"');
