@@ -99,6 +99,30 @@ describe('real stream runner with fixed groups of three',()=>{
     await reconcileStreamFloor(1,'A');await flush();expect(inline.handoff&&inline.finished&&inline.disposed).toBe(true);
     expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledTimes(1);
   });
+  it('retains completed images when final cleanup removes only image markers',async()=>{
+    const text=story(3);await inlineStory(text);finishImage(1);finishImage(2);await flush();
+    h.ctx.chat[1].mes=text.replace(/\[img:[^\]]+\]/g,'');
+    await reconcileStreamFloor(1,'A');await flush();
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledTimes(3);expect(h.analyses).toHaveLength(1);
+  });
+  it('does not cancel previews when the host initializes the first swipe array',async()=>{
+    const text=story(3);await inlineStory(text);
+    h.ctx.chat[1].swipes=[text];h.ctx.chat[1].swipe_id=0;invalidateStreamOwners();
+    expect(h.inlines[0].disposed).toBe(false);
+    await reconcileStreamFloor(1,'A');await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledOnce();
+  });
+  it('reuses a completed image when final formatting changes only marker whitespace',async()=>{
+    const text=story(3);await inlineStory(text);finishImage(1);finishImage(2);await flush();
+    h.ctx.chat[1].mes=text.replaceAll('[img: ','[img:');
+    await reconcileStreamFloor(1,'A');await flush();
+    expect(saveImageResult).toHaveBeenCalledTimes(3);expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(3);
+  });
+  it('repairs a one-time final host overwrite before discarding completed previews',async()=>{
+    const text=story(3);await inlineStory(text);finishImage(1);finishImage(2);await flush();
+    h.ctx.eventSource.emit.mockImplementationOnce(async()=>{h.ctx.chat[1].mes=text;});
+    await reconcileStreamFloor(1,'A');await flush();
+    expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledTimes(3);expect(h.analyses).toHaveLength(1);
+  });
   it('keeps floating preview for fallback results and restores it when inline display is disabled',async()=>{
     const hosts=await inlineStory();settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);
     const first=h.inlines[0];settings.autoTag.streamInlinePreview=false;refreshStreamPreviews();expect(first.disposed).toBe(true);expect(hosts.size).toBe(2);

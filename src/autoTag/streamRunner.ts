@@ -3,6 +3,7 @@ import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
 import { ComicWardrobeLedger } from '@/comic/characters';
 import { finalizeComicPlan } from '@/comic/plan';
 import { standardPagePrefix } from './standardPages';
+import { restoreStreamMarkers } from './streamHandoff';
 import { StreamInlinePreview, inlineStoryText, type InlinePreviewSnapshot } from '@/autoTag/streamInlinePreview';
 import { openLightbox } from '@/floor/lightbox';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
@@ -42,7 +43,7 @@ interface Session {
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
   stripTags: string[];
-  promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText;
+  promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText; latestText?:string;
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
   inline?: StreamInlinePreview;
   inlineOwner?: { processor: NonNullable<STContext['streamingProcessor']>; floor: number; message: STMessage; swipe: number | null };
@@ -62,7 +63,7 @@ function ownerValid(s: Session): boolean {
   if (!ctx || ctx.getCurrentChatId() !== s.chatId) return false;
   if (!s.binding) {
     const owner=s.inlineOwner;
-    return !owner || (!!ctx.chat[owner.floor]&&isSameMessage(ctx.chat[owner.floor],owner.message)&&swipe(ctx.chat[owner.floor])===owner.swipe&&(!ctx.streamingProcessor||ctx.streamingProcessor===owner.processor));
+    return !owner || (!!ctx.chat[owner.floor]&&isSameMessage(ctx.chat[owner.floor],owner.message)&&(swipe(ctx.chat[owner.floor])??0)===(owner.swipe??0)&&(!ctx.streamingProcessor||ctx.streamingProcessor===owner.processor));
   }
   const { floor, message, expectedSwipe } = s.binding;
   return !!ctx.chat[floor] && isSameMessage(ctx.chat[floor], message) && swipe(ctx.chat[floor]) === expectedSwipe;
@@ -157,12 +158,14 @@ export function invalidateStreamOwners(): void {
     s.controller.abort(); s.core.cancel();
     disposeInlinePreview(s);
     document.getElementById(`bbi-preview-${id}`)?.remove(); sessions.delete(id);
+    if(current===s)current=undefined;
   } else s.inline?.refresh();
 }
 
 export function feedStreamText(text: string): void {
   const s = current;
   if (!s || !ownerValid(s) || !settings.autoTag.streamGen || !settings.enabled || !settings.autoTag.enabled) return;
+  s.latestText=text;
   const all = markerSegments(text,s.stripTags);
   for (const marker of s.scanner.take(all.map(segment=>segment.marker))) {
     const ordinal = all.findIndex(item => item.marker.index === marker.index && item.marker.raw === marker.raw);
@@ -501,8 +504,11 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   if (!settings.autoTag.streamGen) return false;
   const ctx = getContext(), message = ctx?.chat[floor];
   if (!ctx || ctx.getCurrentChatId() !== chatId || !message || message.is_user) return false;
-  const final = message.mes;
+  const pending=current?.chatId===chatId&&ownerValid(current)&&!current.controller.signal.aborted?current:undefined;
   const stripTags=current?.chatId===chatId?current.stripTags:[...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS];
+  const recover=(text:string)=>pending?restoreStreamMarkers(text,pending.latestText??'',new Set(pending.core.jobs.filter(job=>job.phase!=='cancelled').map(job=>job.ordinal)),stripTags,pending.continuing)??text:text;
+  const final = recover(message.mes);
+  if(final!==message.mes)log('stream:handoff-recovered-markers',{run:pending!.id,floor});
   const segments = markerSegments(final,stripTags);
   if (!segments.length) { if (current && current.chatId === chatId) stopCurrentStream(); return false; }
   if (!current || current.chatId !== chatId) beginStreamSession(chatId);
@@ -513,7 +519,8 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   s.body = final; s.prepared = prepareTargetText(maskStreamStorySource(final,s.stripTags),s.stripTags);
   const unused = [...s.core.jobs]; const attached: Job[] = [];
   const matched = segments.map(seg => {
-    const index = unused.findIndex(job => job.input.raw === seg.marker.raw && job.phase !== 'cancelled');
+    const index = unused.findIndex(job => job.phase !== 'cancelled'&&(job.input.raw === seg.marker.raw||
+      job.input.intent===seg.marker.intent&&sameInlineStorySegment(seg.segment,job.input.text)));
     return index >= 0 ? unused.splice(index, 1)[0] : undefined;
   });
   // Free the budget of markers removed or rewritten by final formatting before adding replacements.
@@ -527,11 +534,26 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   });
   // Reserve every accepted slot before awaiting uploads or any image task.
   const finishInline=s.inline?.beginHandoff();
-  const ok = await serial(s, () => applyMessageText(floor, text => {
+  const reserve=(text:string)=>{
+    // A late host write may keep some of our slots and remove others. Convert
+    // only this run's own slots back to their original marker before checking.
+    for(const tag of parseImageTags(text)){
+      const id=parseImageTagContent(tag).slotId,job=attached.find(item=>item.id===id);
+      if(job)text=text.replace(tag,job.input.raw);
+    }
+    text=recover(text);
     const liveMarkers = findMarkers(text,s.stripTags);
     if (liveMarkers.length !== segments.length || liveMarkers.some((marker, i) => marker.raw !== segments[i].marker.raw)) return null;
     return replaceMarkers(text, replacements,s.stripTags);
-  }, chatId, s.binding!.expectedSwipe, message)).catch(error=>{disposeInlinePreview(s);finishInline?.();throw error;});
+  };
+  const hasSlots=()=>ownerValid(s)&&attached.every(job=>parseImageTags(getContext()!.chat[floor].mes).some(tag=>parseImageTagContent(tag).slotId===job.id));
+  const ok = await serial(s, async()=>{
+    let result=await applyMessageText(floor,reserve,chatId,s.binding!.expectedSwipe,message);
+    // One bounded repair for a finalization listener which writes a stale copy.
+    // The builder still requires the same marker sequence or unchanged story.
+    if(result==='saved'&&!hasSlots())result=await applyMessageText(floor,reserve,chatId,s.binding!.expectedSwipe,message);
+    return result==='saved'&&!hasSlots()?'build-failed':result;
+  }).catch(error=>{disposeInlinePreview(s);finishInline?.();throw error;});
   if (ok !== 'saved') { disposeInlinePreview(s);finishInline?.();s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
   s.completed = true; current = undefined; updatePreview(s); s.core.attach(attached); s.core.finishInput();
   hydrateMessage(floor, ctx);finishInline?.(); void ensureFloorRendered(ctx, message, floor, chatId);
@@ -631,7 +653,7 @@ function inlineSnapshot(s:Session):InlinePreviewSnapshot|null{
   if(!ctx||!processor||processor.isStopped||typeof floor!=='number'||!Number.isInteger(floor)||floor<0){inlineDiagnostic(s,'host-owner-unavailable');return null;}
   const message=ctx.chat[floor];if(!message||message.is_user)return null;
   const owner=s.inlineOwner;
-  if(owner&&(owner.processor!==processor||owner.floor!==floor||!isSameMessage(message,owner.message)||swipe(message)!==owner.swipe))return null;
+  if(owner&&(owner.processor!==processor||owner.floor!==floor||!isSameMessage(message,owner.message)||(swipe(message)??0)!==(owner.swipe??0)))return null;
   const chat=document.getElementById('chat'),root=chat?.querySelector<HTMLElement>(`.mes[mesid="${floor}"] .mes_text`);
   // Preset thought viewers also use hidden textareas as data stores. Only the
   // host's actual message editor suspends previews, not arbitrary preset inputs.
