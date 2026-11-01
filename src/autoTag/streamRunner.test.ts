@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
-const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],inlines:[] as any[],saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
+const h=vi.hoisted(()=>({ctx:null as any,analyses:[] as any[],images:[] as any[],inlines:[] as any[],holdImageStart:false,saveWait:null as Promise<void>|null,profile:{nl:false,naiCharPrompts:true,lockedSize:null as string|null}}));
 vi.mock('@/autoTag/streamInlinePreview',async importOriginal=>({...await importOriginal<typeof import('@/autoTag/streamInlinePreview')>(),StreamInlinePreview:class {
  snapshot:any;disposed=false;handoff=false;finished=false;
  constructor(public read:()=>any,public changed:()=>void){h.inlines.push(this);}
@@ -18,7 +18,7 @@ vi.mock('@/floor/hydrate',()=>({hydrateMessage:vi.fn()}));
 vi.mock('@/floor/storage',()=>({saveImageResult:vi.fn(async()=>{if(h.saveWait)await h.saveWait;return {};})}));
 vi.mock('@/st/messageEdit',async importOriginal=>({ ...await importOriginal<typeof import('@/st/messageEdit')>(),ensureFloorRendered:vi.fn(async()=>true) }));
 vi.mock('@/generate',()=>({captureGenerationSnapshot:()=>({backend:'nai',nai:{seed:42,model:'nai-diffusion-5-full'},status:{configured:true},comfy:{},orientation:'auto'}),decideSeed:()=>42,
-  generateImage:(input:any,signal:any)=>new Promise(resolve=>h.images.push({input,signal,resolve}))}));
+  generateImage:(input:any,signal:any,progress:any={})=>new Promise(resolve=>{h.images.push({input,signal,progress,resolve});if(!h.holdImageStart)progress.onStart?.();})}));
 import { settings } from '@/state/settings';
 import { STREAM_SCENE_SUBJECT_RULE } from './sceneRules';
 import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews, invalidateStreamOwners, stopCurrentStream } from './streamRunner';
@@ -44,7 +44,7 @@ function previewDocument(){
   return hosts;
 }
 beforeEach(()=>{
-  h.analyses=[];h.images=[];h.inlines=[];h.saveWait=null;vi.clearAllMocks();
+  h.analyses=[];h.images=[];h.inlines=[];h.holdImageStart=false;h.saveWait=null;vi.clearAllMocks();
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.channels=[];settings.assignments.tagGen='';
@@ -59,6 +59,15 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  it('shows queued until the NAI gate reports an actual request start',async()=>{
+    h.holdImageStart=true;settings.autoTag.maxImages=3;
+    beginStreamSession('A');feedStreamText(story(3));await flush();finishAnalysis(0);await flush();
+    await attachStory(story(3));
+    const id=parseImageTagContent(parseImageTags(h.ctx.chat[1].mes)[0]).slotId!;
+    expect(streamSlotState(id)?.phase).toBe('queued');
+    h.images[0].progress.onStart();expect(streamSlotState(id)?.phase).toBe('generating');
+    finishImage(0);await flush();expect(saveImageResult).toHaveBeenCalled();
+  });
   it.each(['standard','simple','fast'] as const)('carries the same female-subject rule through streamed %s analysis',async(mode)=>{
     Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:mode});
     settings.autoTag.maxImages=3;beginStreamSession('A');feedStreamText(story(3));await flush();

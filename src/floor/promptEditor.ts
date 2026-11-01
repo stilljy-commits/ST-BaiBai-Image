@@ -1,3 +1,4 @@
+import { startMarkedFloorGeneration } from '@/floor/generateSlot';
 import { cancelStreamSlot } from '@/autoTag/streamState';
 import { h, render } from 'vue';
 
@@ -107,7 +108,7 @@ async function writeBack(
   const previous = parseImageTagContent(at.rawTag);
   const nextTag = serializeImageTag({ ...content, slotId: previous.slotId, renderProfile: previous.renderProfile });
   if (previous.slotId) cancelStreamSlot(previous.slotId);
-  // 标记必须挂在写回**之前**:写回即触发重水合、卡片挂载时消费标记(同 autoTag/runner.ts)。
+  // 保存成功后由任务层消费标记并出图，不等待卡片挂载。
   // force 模式无条件开跑 —— 用户点的就是「重新生成」,即便这条提示词以前出过图。
   if (regenerate) {
     markForAutoGenerate(at.chatId, at.messageId, at.swipeId, at.seq, 'force');
@@ -127,6 +128,8 @@ async function writeBack(
       at.chatId,
       at.swipeId,
       message,
+      undefined,
+      { afterSave: () => { if (regenerate) startMarkedFloorGeneration(at.chatId, at.messageId, at.swipeId); } },
     );
   } catch (error) {
     // 撤销标记:只取回自己这一枚,不能用 clearAutoGenerateForFloor(会连累同楼兄弟槽位)

@@ -134,10 +134,17 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
           payload.image.tag=refreshed.tag;payload.image.characters=refreshed.characters;
         }
         const start = performance.now();
+        if (s.generation.backend === 'nai') { job.phase = 'queued'; publish(s, job); }
         const output = await generateImage({ prompt: payload.image.tag, nl: payload.image.nl,
         negative: payload.image.negative, characters: payload.image.characters, size: payload.image.size,
         seed: s.generation.backend === 'nai' && s.generation.nai.seed > 0 ? s.generation.nai.seed : decideSeed(s.generation.backend),
-        renderProfile: s.profile }, job.controller.signal, {}, s.generation);
+        renderProfile: s.profile }, job.controller.signal, {
+          onStart: () => {
+            if (job.controller.signal.aborted) return;
+            job.phase = 'generating'; publish(s, job);
+            log('stream:image-request-start', { job: job.id, at: Date.now(), queueMs: Math.round(performance.now() - start) });
+          },
+        }, s.generation);
         log('stream:image-timing', { job: job.id, queueAndGenerateMs: Math.round(performance.now() - start) });
         return output;
       },

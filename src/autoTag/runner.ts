@@ -1,3 +1,4 @@
+import { startMarkedFloorGeneration } from '@/floor/generateSlot';
 import { compactComicSpec, compactLibrary, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
 import { finalizeComicPlan } from '@/comic/plan';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
@@ -473,8 +474,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       return;
     }
 
-    // 触发 MESSAGE_EDITED / MESSAGE_UPDATED,卡片水合挂载时消费标记并自动开始生成
-    // (见 floor/autoGenerate.ts);写回失败则撤销标记。
+    // 先标记本次明确请求的槽位；保存成功即入队，不等待卡片显示。写回失败则撤销。
     // 单槽重写是用户在卡片上的显式意图(同提示词编辑弹窗的「应用并重新生成」),
     // 不受 autoTag.autoGenerate 开关约束,一律 force 出图。
     const markSwipeId = message.swipe_id ?? 0;
@@ -526,6 +526,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             key: BBI_CHAR_EXTRA_KEY,
             value: makeCharTagFloorDelta(floorOps, swipeId ?? 0),
           },
+      { afterSave: () => { if (marked) startMarkedFloorGeneration(chatId, floor, markSwipeId); } },
     );
     if (result === 'saved') {
       if (slot) {

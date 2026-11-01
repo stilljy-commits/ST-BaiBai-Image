@@ -131,7 +131,7 @@ export async function applyMessageText(
   expectedSwipeId: number | null,
   expectedMessage?: STMessage,
   extraUpdate?: MessageExtraUpdate,
-  options: { refresh?: 'image-slots' } = {},
+  options: { refresh?: 'image-slots'; afterSave?: () => void } = {},
 ): Promise<ApplyMessageResult> {
   const context = getContext();
   if (!context?.saveChat) return 'unavailable';
@@ -150,7 +150,8 @@ export async function applyMessageText(
 
   const textChanged = nextText !== message.mes;
   const extraChanged = !!extraUpdate && !sameExtra(message.extra?.[extraUpdate.key], extraUpdate.value);
-  if (!textChanged && !extraChanged) return 'saved';
+  const afterSave = () => { try { options.afterSave?.(); } catch (error) { console.warn('[柏宝绘] 正文已保存，自动出图启动失败', error); } };
+  if (!textChanged && !extraChanged) { afterSave(); return 'saved'; }
   // Caller hydrates the existing Vue cards. Emitting edit events here would let the host
   // replace .mes_text again, destroying those anchors and moving the reader's viewport.
   const patchSlots = options.refresh === 'image-slots' && sameImageSlotLayout(currentText, nextText);
@@ -183,6 +184,8 @@ export async function applyMessageText(
   if (!live.chat[floor] || !isSameMessage(live.chat[floor], message)) return 'floor-changed';
   if (currentSwipeId(live.chat[floor]) !== expectedSwipeId) return 'swipe-changed';
 
+  // Saved-task dispatch must precede host rendering/events, which may wait for visible DOM.
+  afterSave();
   if (patchSlots) {
     const editor = findMessage(floor)?.querySelector<HTMLTextAreaElement>('#curEditTextarea');
     if (editor && editor.value === editorText) editor.value = nextText;

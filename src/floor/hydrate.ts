@@ -198,8 +198,7 @@ export function hydrateMessage(messageId: number, ctx: STContext): void {
     const existing = slotRegistry.get(key);
     if (existing && existing.container.host === anchor) {
       // 同锚点:render 同类型组件 → props patch,不重挂 DOM、不重跑 onMounted。
-      // autoGenerate 标记由 onMounted 消费,但它只出现在「刚写入 tag」的锚点上
-      // (写正文必触发 ST 重渲染、锚点必重建),走不到这条分支。
+      // 自动出图由保存成功后的任务层启动；挂载与 props 更新均只负责展示。
       existing.vnode = vnode;
       render(vnode, existing.container);
     } else {
