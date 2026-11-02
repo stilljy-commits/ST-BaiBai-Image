@@ -15,7 +15,7 @@ import { buildAutoTagMessages, captureAutoTagEnvironment, type AutoTagEnvironmen
 import { maskStreamStorySource, prepareTargetText, type PreparedTargetText } from '@/autoTag/clean';
 import { readBookMemory } from '@/autoTag/bookMemory';
 import { applyPositionedCharRefs, resolveCharAnchors } from '@/autoTag/charAnchors';
-import { MarkerScanner, markerSegments, prefixBefore, replaceMarkers, findMarkers, contextWithoutRepeatedTarget } from '@/autoTag/markers';
+import { MarkerScanner, markerSegments, prefixBefore, replaceMarkers, findMarkers, stripMarkers, contextWithoutRepeatedTarget } from '@/autoTag/markers';
 import { injectImageTags, parseImagePlan, type ImageInsertion, type CharChange, type ImagePlan } from '@/autoTag/protocol';
 import { rebaseImagePositions } from '@/autoTag/rebase';
 import { captureRenderProfile, type RenderProfile } from '@/autoTag/renderProfile';
@@ -41,13 +41,13 @@ const refreshPlans=new WeakMap<ImageInsertion,{refresh:()=>ImageInsertion;needsC
 const imagePayload=(s:Session,image:ImageInsertion,changes:CharChange[]):Payload=>({image:{...image,renderProfile:s.profile},changes,...refreshPlans.get(image)});
 type Job = StreamJob<Payload, GenerateOutput>;
 interface Session {
-  id: string; chatId: string; context: STContext; referenceFloor: number;
+  id: string; chatId: string; type: string; context: STContext; referenceFloor: number;
   continuity: ComicContinuityLedger; seedEntries: CharTagEntry[];
   wardrobe: ComicWardrobeLedger;
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
   stripTags: string[];
-  promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText; latestText?:string;
+  promptEnvironment: AutoTagEnvironment; existingCount: number; continuing: boolean; inputFinished?: boolean; hostFinished?: boolean; baselineOps: CharTagAutoOp[]; channel: ReturnType<typeof getTagGenChannel>; body?: string; prepared?: PreparedTargetText; latestText?:string;
   binding?: { floor: number; message: STMessage; swipeId: number; expectedSwipe: number | null };
   inline?: StreamInlinePreview;
   inlineOwner?: { processor: NonNullable<STContext['streamingProcessor']>; floor: number; message: STMessage; swipe: number | null };
@@ -106,7 +106,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   current = undefined;
   if (!ctx || !settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen || isCurrentChatExcluded()) return;
   const state: Omit<Session, 'core'> = {
-    id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
+    id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, type, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
     continuity: new ComicContinuityLedger(), seedEntries: jsonCopy(charTagsBeforeFloor((ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0,ctx.chat.length-1)) + (type === 'continue' ? 1 : 0))),
     scanner: new MarkerScanner(), options: jsonCopy(settings.autoTag),
     stripTags: [...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS],
@@ -195,6 +195,38 @@ export function feedStreamText(text: string): void {
   updateInlinePreview(s);
 }
 
+/** A completed response releases the short final batch before any UI handoff. */
+export function finishStreamInput(): void {
+  const s = current;
+  if (!s || !ownerValid(s) || s.completed || s.controller.signal.aborted) return;
+  s.inputFinished = true;
+  s.core.finishInput();
+}
+
+/** Network EOF releases analysis, never permission to overwrite host prose. */
+export function markStreamHostFinished(): void {
+  const s = current;
+  if (s && ownerValid(s) && !s.controller.signal.aborted) s.hostFinished = true;
+}
+
+/** Recovery is read-only until both the host owner and its final story agree.
+ * A finished HTTP response alone is never permission to edit a streaming floor.
+ */
+export function streamRecoveryTarget(): { chatId: string; floor: number; type: string } | null {
+  const s = current, ctx = getContext();
+  if (!s || !ctx || !s.inputFinished || !s.hostFinished || !s.latestText || !ownerValid(s) || s.completed || s.controller.signal.aborted) return null;
+  // isFinished only means network input ended. TT may still be rewriting the
+  // message in onFinishStreaming; only an explicitly released owner is safe.
+  // Hosts without this capability retain the normal rendered-event handoff.
+  if (ctx.streamingProcessor !== null) return null;
+  const floor = s.inlineOwner?.floor ?? s.referenceFloor, message = ctx.chat[floor];
+  if (!message || message.is_user) return null;
+  const plain = (text: string) => inlineStoryText(stripMarkers(maskStreamStorySource(text, s.stripTags))).replace(/\s/g, '');
+  const expected = plain(s.latestText), actual = plain(message.mes);
+  if (!expected || (s.continuing ? !actual.endsWith(expected) : actual !== expected)) return null;
+  return { chatId: s.chatId, floor, type: s.type };
+}
+
 async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图', onContent?: (raw:string)=>void): Promise<void> {
   const mode=s.profile.mode!=='illustration'?s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel,s.promptEnvironment.nai.comicAnalysisMode??'standard')]??'follow':'follow';
   const reasoningOverride=comicReasoningOverride(s.channel,mode);
@@ -267,6 +299,7 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
 async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const started=performance.now(), batch=prepareStreamBatch(jobs,s.stripTags,true), anchors=analysisAnchors(s);
+  log('stream:analysis-prepare',{jobs:jobs.map(job=>job.id),at:Date.now()});
   const originalPrefix=contextWithoutRepeatedTarget(jobs[0].input.prefix,jobs[0].input.text);
   const continuity=s.continuity.context(jobs[0].ordinal,originalPrefix);
   const entries=anchors.entries.map(entry=>({...entry,fields:{...entry.fields}}));
@@ -285,6 +318,7 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
     (jobs.length===1&&jobs[0].analysisError?'\n【当前页修复】上次校验未通过：'+jobs[0].analysisError+'。只修复当前页；以前批次编号不沿用，本次以当前给定M编号和P位置为准。':'');
   const messages=await buildAutoTagMessages(analysisContext,floor,{...s.options,minImages:jobs.length,maxImages:jobs.length},
     readBookMemory(floor,scanText,s.context.name1),batch.target,compactLibrary(compact),note,s.promptEnvironment.profile,s.promptEnvironment,'fixed-markers',compactComicSpec(compact));
+  log('stream:analysis-request-start',{jobs:jobs.map(job=>job.id),at:Date.now(),prepareMs:Math.round(performance.now()-started)});
   const controller=new AbortController(),cancel=()=>{if(s.controller.signal.aborted||jobs.every(job=>job.controller.signal.aborted))controller.abort();};
   s.controller.signal.addEventListener('abort',cancel);for(const job of jobs)job.controller.signal.addEventListener('abort',cancel);cancel();
   const payloads=new Map<string,Payload>(),introduced:CharTagEntry[]=[],acceptedChanges:CharChange[]=[],errors=new Map<string,string>();
@@ -361,6 +395,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
     }throw last;
   }
   const start = performance.now();
+  log('stream:analysis-prepare',{jobs:[job.id],at:Date.now()});
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const batch = prepareStreamBatch([job], s.stripTags, simpleComicAnalysis(s)), target = batch.target;
   const anchors = analysisAnchors(s);
@@ -373,6 +408,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
   const messages = await buildAutoTagMessages(analysisContext, analysisFloor,
     { ...s.options, minImages: 1, maxImages: 1 }, memory, target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment, 'fixed-markers');
   const preparedAt = performance.now(), promptChars = messages.reduce((total, message) => total + message.content.length, 0);
+  log('stream:analysis-request-start',{jobs:[job.id],at:Date.now(),prepareMs:Math.round(preparedAt-start)});
   let payload: Payload | undefined;
   let error: unknown;
   for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
@@ -401,6 +437,7 @@ async function analyze(s: Session, job: Job): Promise<Payload> {
 async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
   if(fastComicAnalysis(s))return analyzeCompact(s,jobs,ready);
   const start = performance.now();
+  log('stream:analysis-prepare',{jobs:jobs.map(job=>job.id),at:Date.now()});
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const batch = prepareStreamBatch(jobs, s.stripTags, simpleComicAnalysis(s));
   const anchors = analysisAnchors(s);
@@ -417,6 +454,7 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
   const messages = await buildAutoTagMessages(analysisContext, floor, { ...s.options, minImages: jobs.length, maxImages: jobs.length },
     memory, batch.target, anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment, 'fixed-markers');
   const preparedAt = performance.now(), requestStart = preparedAt;
+  log('stream:analysis-request-start',{jobs:jobs.map(job=>job.id),at:Date.now(),prepareMs:Math.round(preparedAt-start)});
   const controller = new AbortController();
   const cancel = () => { if (s.controller.signal.aborted || jobs.every(job => job.controller.signal.aborted)) controller.abort(); };
   s.controller.signal.addEventListener('abort', cancel);

@@ -3,7 +3,8 @@ import { compactComicSpec, compactLibrary, parseCompactComic, type CompactComicC
 import { finalizeComicPlan } from '@/comic/plan';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import { planChangeOps } from '@/autoTag/changeOps';
-import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
+import { beginStreamSession, feedStreamText, finishStreamInput, markStreamHostFinished, streamRecoveryTarget, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
+import { StreamInput } from '@/autoTag/streamInput';
 import { captureRenderProfile } from '@/autoTag/renderProfile';
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
@@ -644,6 +645,39 @@ export function bindAutoTagging(): void {
   }
   bound = true;
   let lastChatId = context.getCurrentChatId();
+  let input: StreamInput | undefined;
+  let inputGeneration = 0;
+  const finalize = (floor: number, type: unknown, source: string) => {
+    const chatId = getContext()?.getCurrentChatId?.() ?? '';
+    if (!Number.isInteger(floor) || floor < 0 || !consumeGeneration(chatId, type)) return;
+    input?.stop();
+    diagnostic('stream:finalize', { chatId, floor, type, source });
+    if (settings.autoTag.streamGen) {
+      void reconcileStreamFloor(floor, chatId).then(handled => { if (!handled) scheduleForGeneratedFloor(floor, chatId); })
+        .catch(error => { diagnostic('stream:reconcile-failed', String(error)); toastr.warning('流式配图落位失败，正文保持可读，请查看配图日志', '柏宝绘'); });
+    } else scheduleForGeneratedFloor(floor, chatId);
+  };
+  const recover = () => {
+    const target = streamRecoveryTarget();
+    if (target) finalize(target.floor, target.type, 'completed-story-recovery');
+  };
+  if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
+    input = new StreamInput({ target: window, diagnostic });
+    input.install();
+    const resume = () => { if (document.visibilityState !== 'hidden') input?.recover(); };
+    window.addEventListener('focus', resume);
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('pageshow', resume);
+    const pagehide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      input?.dispose();
+      window.removeEventListener('focus', resume);
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('pageshow', resume);
+      window.removeEventListener('pagehide', pagehide);
+    };
+    window.addEventListener('pagehide', pagehide);
+  }
 
   diagnostic('bind', {
     generationStarted: events.GENERATION_STARTED,
@@ -661,49 +695,47 @@ export function bindAutoTagging(): void {
       );
       diagnostic('GENERATION_STARTED', { chatId, type, dryRun, eligible, options });
       beginGeneration(chatId, type, dryRun);
-      if (eligible) beginStreamSession(chatId, typeof type === 'string' ? type : 'normal');
+      if (eligible) {
+        beginStreamSession(chatId, typeof type === 'string' ? type : 'normal');
+        const generation = ++inputGeneration;
+        input?.begin({ chatId, type: String(type),
+          valid: () => Boolean(generation === inputGeneration && settings.enabled && settings.autoTag.enabled && settings.autoTag.streamGen && !isCurrentChatExcluded() && getContext()?.getCurrentChatId() === chatId),
+          text: feedStreamText, done: finishStreamInput, hostDone: markStreamHostFinished, recover });
+      }
     },
   );
   context.eventSource.on(events.STREAM_TOKEN_RECEIVED || 'stream_token_received', (text: unknown) => {
-    if (typeof text === 'string') feedStreamText(text);
+    if (typeof text === 'string') { if (input) input.hostText(text); else feedStreamText(text); }
   });
   context.eventSource.on(events.CHARACTER_MESSAGE_RENDERED, (messageId: unknown, type: unknown) => {
-    const chatId = getContext()?.getCurrentChatId?.() ?? '';
-    const matched = consumeGeneration(chatId, type);
-    diagnostic('CHARACTER_MESSAGE_RENDERED', { chatId, messageId, type, matched });
-    if (!matched) return;
     const floor = typeof messageId === 'number' ? messageId : Number(messageId);
-    if (!Number.isInteger(floor) || floor < 0) {
-      diagnostic('render:skip', { chatId, messageId, type, reason: 'invalid-floor' });
-      return;
-    }
-    if (settings.autoTag.streamGen) {
-      void reconcileStreamFloor(floor, chatId).then(handled => { if (!handled) scheduleForGeneratedFloor(floor, chatId); })
-        .catch(error => { diagnostic('stream:reconcile-failed', String(error)); toastr.warning('流式配图落位失败，正文保持可读，请查看配图日志', '柏宝绘'); });
-      return;
-    }
-    // Do not block ST finalization, and pin the deferred run to the originating chat.
-    scheduleForGeneratedFloor(floor, chatId);
+    finalize(floor, type, 'message-rendered');
   });
   if (events.GENERATION_ENDED) {
     context.eventSource.on(events.GENERATION_ENDED, (...args: unknown[]) => {
-      // ST may emit this before the final CHARACTER_MESSAGE_RENDERED; that render consumes the gate.
-      diagnostic('GENERATION_ENDED', { args, action: 'keep-pending-until-final-render' });
+      diagnostic('GENERATION_ENDED', { args, action: 'finish-input-independently-of-render' });
+      const processor = getContext()?.streamingProcessor;
+      if (processor && !processor.isFinished) return;
+      if (input) input.hostDone(); else { markStreamHostFinished(); finishStreamInput(); recover(); }
     });
   }
   if (events.GENERATION_STOPPED) {
     context.eventSource.on(events.GENERATION_STOPPED, (...args: unknown[]) => {
       diagnostic('GENERATION_STOPPED', { args });
       clearGeneration();
+      inputGeneration++; input?.stop();
       stopCurrentStream();
     });
   }
+  // TT/other extensions can replace fetch after bootstrap. Reattach at the
+  // final request-preparation event without reading or changing its payload.
+  if (events.CHAT_COMPLETION_SETTINGS_READY) context.eventSource.on(events.CHAT_COMPLETION_SETTINGS_READY, () => input?.install());
   context.eventSource.on(events.MESSAGE_DELETED, () => invalidateStreamOwners());
   context.eventSource.on(events.MESSAGE_SWIPED, () => invalidateStreamOwners());
   context.eventSource.on(events.CHAT_CHANGED, (...args: unknown[]) => {
     diagnostic('CHAT_CHANGED', { args, currentChatId: getContext()?.getCurrentChatId?.() ?? '' });
     const chatId = getContext()?.getCurrentChatId();
-    if (chatId !== lastChatId) { cancelAll(); cancelStreamSessions(chatId); }
+    if (chatId !== lastChatId) { inputGeneration++; input?.stop(); cancelAll(); cancelStreamSessions(chatId); }
     lastChatId = chatId;
   });
 }

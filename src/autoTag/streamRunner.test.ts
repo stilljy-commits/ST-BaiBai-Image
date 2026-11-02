@@ -21,7 +21,7 @@ vi.mock('@/generate',()=>({captureGenerationSnapshot:()=>({backend:'nai',nai:{se
   generateImage:(input:any,signal:any,progress:any={})=>new Promise(resolve=>{h.images.push({input,signal,progress,resolve});if(!h.holdImageStart)progress.onStart?.();})}));
 import { settings } from '@/state/settings';
 import { STREAM_SCENE_SUBJECT_RULE } from './sceneRules';
-import { beginStreamSession, feedStreamText, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews, invalidateStreamOwners, stopCurrentStream } from './streamRunner';
+import { beginStreamSession, feedStreamText, finishStreamInput, markStreamHostFinished, streamRecoveryTarget, reconcileStreamFloor, cancelStreamSessions, refreshStreamPreviews, invalidateStreamOwners, stopCurrentStream } from './streamRunner';
 import { saveImageResult } from '@/floor/storage';
 import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
 import { cancelStreamSlot, retryStreamSlot, streamSlotState } from '@/autoTag/streamState';
@@ -59,6 +59,33 @@ async function attachStory(text:string){h.ctx.chat.push(ai(text));await reconcil
 async function pendingStory(text=body){beginStreamSession('A');feedStreamText(text);await flush();await attachStory(text);}
 
 describe('real stream runner with fixed groups of three',()=>{
+  it('releases a short final batch and starts NAI before any final floor or rendered event exists',async()=>{
+    settings.autoTag.maxImages=10;beginStreamSession('A');feedStreamText(body);await flush();expect(h.analyses).toHaveLength(0);
+    finishStreamInput();finishStreamInput();await flush();expect(h.analyses).toHaveLength(1);expect(h.ctx.chat).toHaveLength(1);
+    finishAnalysis(0);await flush();expect(h.images).toHaveLength(2);expect(h.ctx.chat).toHaveLength(1);
+  });
+  it('recovers a completed matching floor without a rendered event, while preserving host streaming ownership',async()=>{
+    settings.autoTag.maxImages=3;beginStreamSession('A');feedStreamText(story(3));finishStreamInput();
+    h.ctx.chat.push(ai(story(3)));h.ctx.streamingProcessor={messageId:1,isFinished:false};expect(streamRecoveryTarget()).toBeNull();
+    h.ctx.streamingProcessor.isFinished=true;expect(streamRecoveryTarget()).toBeNull(); // HTTP EOF is not final prose ownership.
+    markStreamHostFinished();h.ctx.chat[1].mes=story(1);expect(streamRecoveryTarget()).toBeNull();
+    h.ctx.chat[1].mes=story(3);expect(streamRecoveryTarget()).toBeNull(); // Host finalization still owns its writes.
+    h.ctx.streamingProcessor=null;expect(streamRecoveryTarget()).toEqual({chatId:'A',floor:1,type:'normal'});
+    await reconcileStreamFloor(1,'A');expect(streamRecoveryTarget()).toBeNull();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);
+  });
+  it('does not recover a stopped, replaced, wrong-floor or wrong-chat generation',async()=>{
+    beginStreamSession('A');feedStreamText(body);finishStreamInput();markStreamHostFinished();h.ctx.chat.push(ai(body));
+    h.ctx.streamingProcessor={messageId:1,isFinished:true,isStopped:true};expect(streamRecoveryTarget()).toBeNull();
+    h.ctx.streamingProcessor={messageId:2,isFinished:true};expect(streamRecoveryTarget()).toBeNull();
+    h.ctx.streamingProcessor={messageId:1,isFinished:true};h.ctx.chat[1].mes='已经换成另一段故事';expect(streamRecoveryTarget()).toBeNull();
+    h.ctx.chat[1].mes=body;h.ctx.getCurrentChatId=()=> 'B';expect(streamRecoveryTarget()).toBeNull();
+  });
+  it('recovers after the host releases its processor and ignores removed presentation markers',async()=>{
+    const text='成年女主走进大厅并查看桌上的地图。\n[img: 查看地图]';beginStreamSession('A');feedStreamText(text);finishStreamInput();markStreamHostFinished();
+    h.ctx.chat.push(ai('成年女主走进大厅并查看桌上的地图。'));h.ctx.streamingProcessor=null;
+    expect(streamRecoveryTarget()).toEqual({chatId:'A',floor:1,type:'normal'});
+    await reconcileStreamFloor(1,'A');expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(1);
+  });
   it('shows queued until the NAI gate reports an actual request start',async()=>{
     h.holdImageStart=true;settings.autoTag.maxImages=3;
     beginStreamSession('A');feedStreamText(story(3));await flush();finishAnalysis(0);await flush();

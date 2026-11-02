@@ -73,7 +73,7 @@ export class StreamRun<P, R> {
   cancelJob(job: StreamJob<P, R>): void {
     job.controller.abort(); job.phase = 'cancelled';
     if (job.result) { this.dependencies.release(job.result); job.result = undefined; }
-    this.dependencies.changed(job); this.pump(); this.dependencies.idle?.();
+    this.changed(job); this.pump(); this.idle();
     this.notifyOrdered();
   }
   cancel(): void { this.stopped = true; this.queue = []; for (const job of this.jobs) this.cancelJob(job); }
@@ -111,7 +111,7 @@ export class StreamRun<P, R> {
     if (this.stopped) throw new DOMException('Cancelled', 'AbortError');
     this.analyzing++;
     try { return await task(); }
-    finally { this.analyzing--; this.pump(); this.dependencies.idle?.(); }
+    finally { this.analyzing--; this.pump(); this.idle(); }
   }
 
   retry(job: StreamJob<P, R>): void {
@@ -128,10 +128,10 @@ export class StreamRun<P, R> {
 
   private track(task: Promise<void>): void {
     this.active.add(task);
-    void task.finally(() => { this.active.delete(task); this.dependencies.idle?.(); });
+    void task.finally(() => { this.active.delete(task); this.idle(); });
   }
   private touch(job: StreamJob<P, R>): void {
-    job.revision++; this.dependencies.changed(job);
+    job.revision++; this.changed(job);
     this.notifyOrdered();
     if (job.attached && job.payload && !job.controller.signal.aborted) this.commit(job);
   }
@@ -202,7 +202,7 @@ export class StreamRun<P, R> {
           this.committed.set(job.id, revision);
           if (saved && result && job.result === result) {
             job.saved = true; this.dependencies.release(result); job.result = undefined;
-            job.phase = 'ready'; this.dependencies.changed(job);
+            job.phase = 'ready'; this.changed(job);
           }
         }
       } catch (error) { this.failed(job, error); }
@@ -212,7 +212,16 @@ export class StreamRun<P, R> {
   private failed(job: StreamJob<P, R>, error: unknown): void {
     if (job.controller.signal.aborted) return;
     job.phase = 'error'; job.error = error instanceof Error ? error.message : String(error);
-    this.dependencies.changed(job);
+    this.changed(job);
     this.notifyOrdered();
+  }
+  /** Preview/DOM failures must not prevent analysis or NAI dispatch. */
+  private changed(job: StreamJob<P, R>): void {
+    try { this.dependencies.changed(job); }
+    catch { console.warn('[BBI] 配图状态显示失败，生成任务继续'); }
+  }
+  private idle(): void {
+    try { this.dependencies.idle?.(); }
+    catch { console.warn('[BBI] 配图预览清理失败，生成任务继续'); }
   }
 }

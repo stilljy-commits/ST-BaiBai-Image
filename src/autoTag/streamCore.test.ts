@@ -29,6 +29,15 @@ describe('earlier analysis dependency for local costume completion',()=>{
  });
 });
 describe('streamed task lifetime',()=>{
+  it('continues all analysis, generation and commits when preview updates and cleanup throw',async()=>{
+    const generate=vi.fn(async(p:string)=>p),commit=vi.fn(async()=>true),warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+    try{
+      const run=new StreamRun<string,string>('no-ui',3,2,true,{analyze:async()=> 'single',analyzeBatch:async jobs=>jobs.map(job=>job.id),generate,commit,
+        changed:()=>{throw Error('detached preview');},idle:()=>{throw Error('detached cleanup');},release:()=>{}},3);
+      const jobs=Array.from({length:3},()=>run.add(input)!);run.attach(jobs);run.finishInput();await run.settled();
+      expect(generate).toHaveBeenCalledTimes(3);expect(jobs.every(job=>job.saved)).toBe(true);expect(warn).toHaveBeenCalled();
+    }finally{warn.mockRestore();}
+  });
   it.each([1,2,3,5,10,50])('uses configurable batches of %s and flushes the tail within concurrency two',async size=>{
     const requests:{jobs:any[],task:ReturnType<typeof deferred<string[]>>}[]=[];
     let running=0,peak=0;const start=(jobs:any[])=>{const task=deferred<string[]>();requests.push({jobs,task});peak=Math.max(peak,++running);return task.promise.finally(()=>running--);};
