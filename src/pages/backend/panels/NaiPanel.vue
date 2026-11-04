@@ -37,6 +37,7 @@ import {
   vibeMetaFromData,
 } from '@/backends/vibeStore';
 import NaiArtistManager from '@/pages/backend/panels/NaiArtistManager.vue';
+import NaiAccountBalance from '@/pages/backend/panels/NaiAccountBalance.vue';
 import ComicExtraRules from '@/pages/backend/panels/ComicExtraRules.vue';
 import { acquireNaiSlot } from '@/floor/genQueue';
 import { makeJpegThumbnail } from '@/st/imageFile';
@@ -901,6 +902,8 @@ async function removeVibe(vibe: NaiVibe) {
             </button>
           </span>
         </div>
+
+        <NaiAccountBalance :endpoint="endpoint" />
 
         <div class="bbi-field">
           <div class="bbi-field-head">

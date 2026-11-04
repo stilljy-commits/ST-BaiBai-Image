@@ -1,5 +1,6 @@
 import { unzipSync } from 'fflate';
 import { randomUuid } from '@/randomUuid';
+import { naiSubscriptionEndpoint } from './naiAccount';
 
 import type { ImageCharacterPrompt } from '@/autoTag/protocol';
 import { parseComicSections, comicSectionBase, comicSectionCharacters } from '@/comic/sections';
@@ -691,7 +692,7 @@ export async function testNaiConnection(
   signal?: AbortSignal,
 ): Promise<{ message: string }> {
   if (!nai.key.trim()) throw new NaiError('请先填写 API Key');
-  const resp = await fetch(naiEndpoint(nai.url, 'user/subscription'), {
+  const resp = await fetch(naiSubscriptionEndpoint(nai.url), {
     headers: { Authorization: `Bearer ${nai.key.trim()}` },
     signal,
   });
