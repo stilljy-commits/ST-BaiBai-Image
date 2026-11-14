@@ -436,3 +436,126 @@ describe('gallery multi-select delete', () => {
     expect(String(box.props.class ?? '')).toContain('bbi-checkbox');
   });
 });
+
+describe('gallery directory export', () => {
+  const original = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
+
+  async function selectAlpha(): Promise<TestNode> {
+    const root = await mount();
+    await click(find(root, '.gal-select-toggle')[0]);
+    await change(find(root, '.gal-group-check')[0].children[0]);
+    return root;
+  }
+
+  function mockDirectory(writeFailure = '') {
+    const files = new Map<string, Uint8Array>();
+    const getFileHandle = vi.fn(async (name: string, options?: { create: boolean }) => {
+      if (options?.create && !files.has(name)) files.set(name, new Uint8Array());
+      if (!files.has(name)) throw new DOMException('Missing file', 'NotFoundError');
+      return {
+        getFile: async () => ({ size: files.get(name)!.length }),
+        createWritable: async () => {
+          let pending: Uint8Array;
+          return {
+            write: async (blob: Blob) => {
+              if (name === writeFailure) throw new DOMException('Disk full', 'QuotaExceededError');
+              pending = new Uint8Array(await blob.arrayBuffer());
+            },
+            close: async () => { files.set(name, pending); },
+            abort: vi.fn().mockResolvedValue(undefined),
+          };
+        },
+      };
+    });
+    const pick = vi.fn().mockResolvedValue({
+      name: '导出目录',
+      getFileHandle,
+      removeEntry: async (name: string) => { files.delete(name); },
+    });
+    vi.stubGlobal('window', { showDirectoryPicker: pick });
+    return { files, pick };
+  }
+
+  function imageResponse(): Response {
+    return new Response(original, { headers: { 'Content-Type': 'image/png' } });
+  }
+
+  it('copies the whole selected group even when all thumbnails are folded, and keeps existing files', async () => {
+    const { files, pick } = mockDirectory();
+    files.set('bbi_Alpha_0.png', Uint8Array.of(42));
+    const fetchImage = vi.fn(async () => imageResponse());
+    vi.stubGlobal('fetch', fetchImage);
+    const root = await selectAlpha();
+    expect(find(root, 'img')).toHaveLength(0);
+    await click(find(root, '.gal-export')[0]);
+    await flush();
+
+    expect(pick).toHaveBeenCalledWith({ mode: 'readwrite' });
+    expect(fetchImage).toHaveBeenCalledTimes(53);
+    const alphaPath = `/user/images/${encodeURIComponent(alpha)}/image-52.png`;
+    expect(fetchImage).toHaveBeenLastCalledWith(alphaPath, expect.objectContaining({ mode: 'same-origin' }));
+    expect(files.size).toBe(54);
+    expect(files.get('bbi_Alpha_0.png')).toEqual(Uint8Array.of(42));
+    expect(files.get('bbi_Alpha_0 (2).png')).toEqual(original);
+    expect([...files.values()].slice(1).every(bytes => bytes.join() === original.join())).toBe(true);
+    expect(vi.mocked(deleteImageFileOnly)).not.toHaveBeenCalled();
+    expect(text(find(root, '.gal-export-status')[0])).toContain('已导出 53 张到「导出目录」');
+    expect(text(find(root, '.gal-actionbar-count')[0])).toContain('53');
+  });
+
+  it('keeps the selection and does not fetch any images if the folder picker is cancelled', async () => {
+    const { pick } = mockDirectory();
+    pick.mockRejectedValue(new DOMException('Cancelled', 'AbortError'));
+    const fetchImage = vi.fn();
+    vi.stubGlobal('fetch', fetchImage);
+    const root = await selectAlpha();
+    await click(find(root, '.gal-export')[0]);
+    await flush();
+
+    expect(fetchImage).not.toHaveBeenCalled();
+    expect(find(root, '.gal-export-status')).toHaveLength(0);
+    expect(text(find(root, '.gal-actionbar-count')[0])).toContain('53');
+  });
+
+  it('reports individual read and write failures, and keeps successful exports', async () => {
+    vi.mocked(listUserImages).mockResolvedValue(['working.png', 'missing.png', 'write-failure.png']);
+    const { files } = mockDirectory('bbi_Alpha_failure.png');
+    vi.stubGlobal('fetch', vi.fn(async (src: string) => src.endsWith('/missing.png')
+      ? new Response('Not found', { status: 404 })
+      : imageResponse()));
+    const root = await selectAlpha();
+    await click(find(root, '.gal-export')[0]);
+    await flush();
+
+    expect([...files]).toEqual([['working.png', original]]);
+    expect(text(find(root, '.gal-export-status')[0])).toContain('已导出 1 张到「导出目录」，2 张失败');
+  });
+
+  it('stops pending work and leaves already exported originals in the directory', async () => {
+    vi.mocked(listUserImages).mockResolvedValue(['done.png', 'in-flight.png', 'queued.png']);
+    const { files } = mockDirectory();
+    const fetchImage = vi.fn(async (src: string, { signal }: { signal: AbortSignal }) => {
+      if (src.endsWith('/done.png')) return imageResponse();
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    vi.stubGlobal('fetch', fetchImage);
+    const root = await selectAlpha();
+    await click(find(root, '.gal-export')[0]);
+    await flush();
+    expect(text(find(root, '.gal-export-status')[0])).toContain('正在导出 1/3 张');
+    await click(find(root, '.gal-stop-export')[0]);
+    await flush();
+
+    expect(fetchImage).toHaveBeenCalledTimes(2);
+    expect([...files]).toEqual([['done.png', original]]);
+    expect(text(find(root, '.gal-export-status')[0])).toContain('已停止导出，已导出 1 张到「导出目录」，2 张未完成');
+  });
+
+  it('explains when the client cannot choose a writable directory', async () => {
+    const root = await selectAlpha();
+    expect(find(root, '.gal-export')[0].props.disabled).toBe(true);
+    expect(text(find(root, '.gal-export-status')[0])).toContain('当前客户端无法选择导出目录');
+  });
+});

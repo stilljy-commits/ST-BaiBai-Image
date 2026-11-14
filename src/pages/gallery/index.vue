@@ -11,7 +11,8 @@ import { mapLimit } from '@/pool';
 import { getContext } from '@/st/context';
 import { formatPromptText, parseImageTagContent } from '@/st/imageTagRegex';
 import { ARTIST_PREVIEW_FOLDER, listUserImageFolders, listUserImages, probeUserImage } from '@/st/images';
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { canExportGalleryToDirectory, exportGalleryImages, pickGalleryExportDirectory } from './export';
 
 /**
  * 图库页 —— 按角色名分组浏览已生成的图片（GALLERY-STORAGE-DESIGN.md）。
@@ -360,7 +361,7 @@ function showMore(group: GalleryGroup): void {
   visibleCounts.value.set(group.folder, Math.min(count + PREVIEW_COUNT, group.images.length));
 }
 
-/* —— 多选删除 —— */
+/* —— 多选操作 —— */
 
 /**
  * 选择模式。独立开关而非「长按进入」:图库的主用途是浏览,点图=放大必须是默认行为;
@@ -370,16 +371,29 @@ const selecting = ref(false);
 /** 已勾选的图(归一化路径 key,跨分组唯一)。 */
 const selected = ref(new Set<string>());
 const deleting = ref(false);
+const directoryExportAvailable = canExportGalleryToDirectory();
+const exportPhase = ref<'picking' | 'writing' | ''>('');
+const exportStatus = ref('');
+let exportController: AbortController | undefined;
+const exporting = computed(() => Boolean(exportPhase.value));
+onBeforeUnmount(() => exportController?.abort());
 
 const selectedCount = computed(() => selected.value.size);
 
+function selectedImages(): GalleryImage[] {
+  return groups.value.flatMap(group => group.images).filter(image => selected.value.has(image.key));
+}
+
 function toggleSelecting(): void {
+  if (exporting.value) return;
   selecting.value = !selecting.value;
+  exportStatus.value = '';
   // 退出选择态一律清空:留着选中项,下次进来会对着一批不记得为何选中的图按删除
   if (!selecting.value) selected.value = new Set();
 }
 
 function toggleSelected(image: GalleryImage): void {
+  if (exporting.value) return;
   const next = new Set(selected.value);
   if (next.has(image.key)) next.delete(image.key);
   else next.add(image.key);
@@ -400,6 +414,7 @@ function someSelected(group: GalleryGroup): boolean {
  * 用户说「全选这个角色」指的是这个角色的全部图片,不该因为没往下翻而少选。
  */
 function toggleGroup(group: GalleryGroup): void {
+  if (exporting.value) return;
   const next = new Set(selected.value);
   if (groupAllSelected(group)) group.images.forEach(image => next.delete(image.key));
   else group.images.forEach(image => next.add(image.key));
@@ -412,6 +427,47 @@ function onThumbClick(image: GalleryImage): void {
   else void open(image);
 }
 
+async function exportSelected(): Promise<void> {
+  if (!directoryExportAvailable || loading.value || deleting.value || exporting.value) return;
+  const targets = selectedImages();
+  if (!targets.length) return;
+
+  const controller = new AbortController();
+  exportController = controller;
+  exportPhase.value = 'picking';
+  exportStatus.value = '';
+  try {
+    // The directory picker must open in the button's click handler, before any other await.
+    const directory = await pickGalleryExportDirectory();
+    if (controller.signal.aborted) return;
+    exportPhase.value = 'writing';
+    exportStatus.value = `正在导出 0/${targets.length} 张`;
+    const { written, failed } = await exportGalleryImages(directory, targets, controller.signal, progress => {
+      if (!controller.signal.aborted) {
+        exportStatus.value = `正在导出 ${progress.written + progress.failed}/${targets.length} 张`;
+      }
+    });
+    const remaining = targets.length - written - failed;
+    exportStatus.value = [
+      controller.signal.aborted && '已停止导出',
+      `已导出 ${written} 张到「${directory.name}」`,
+      failed > 0 && `${failed} 张失败`,
+      remaining > 0 && `${remaining} 张未完成`,
+    ].filter(Boolean).join('，');
+  } catch (error) {
+    if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+    console.warn('[柏宝绘] 无法打开图库导出目录', error);
+    exportStatus.value = '无法打开导出目录，请尝试选择其他文件夹。若持续失败，仍可在大图中单张保存。';
+  } finally {
+    exportController = undefined;
+    exportPhase.value = '';
+  }
+}
+
+function stopExport(): void {
+  exportController?.abort();
+}
+
 /**
  * 删除选中的图。**只删文件,不碰聊天记录**(理由见文件顶部注释)。
  *
@@ -419,10 +475,8 @@ function onThumbClick(image: GalleryImage): void {
  * 就地从列表摘掉(不重新 load,免得把用户的展开态和已加载批次全重置)、清理体积缓存。
  */
 async function deleteSelected(): Promise<void> {
-  if (!selectedCount.value || deleting.value) return;
-  const targets = groups.value
-    .flatMap(group => group.images)
-    .filter(image => selected.value.has(image.key));
+  if (!selectedCount.value || deleting.value || exporting.value) return;
+  const targets = selectedImages();
   if (!targets.length) return;
 
   const ok = await confirmDialog({
@@ -433,7 +487,7 @@ async function deleteSelected(): Promise<void> {
     confirmText: '删除',
     tone: 'danger',
   });
-  if (!ok) return;
+  if (!ok || deleting.value || exporting.value) return;
 
   deleting.value = true;
   try {
@@ -505,7 +559,7 @@ async function open(image: GalleryImage): Promise<void> {
   <section class="bbi-page">
     <div class="bbi-page-head">
       <h2 class="bbi-title bbi-title-sub">图库</h2>
-      <button class="gal-icon-btn" type="button" title="重新读取" :disabled="loading" @click="load">
+      <button class="gal-icon-btn" type="button" title="重新读取" :disabled="loading || exporting" @click="load">
         <Icon name="refresh" />
       </button>
     </div>
@@ -518,8 +572,8 @@ async function open(image: GalleryImage): Promise<void> {
         class="bbi-btn bbi-btn-sm gal-select-toggle"
         :class="{ 'is-on': selecting }"
         type="button"
-        :disabled="!groups.length"
-        :title="selecting ? '退出选择' : '选择图片以批量删除'"
+        :disabled="!groups.length || exporting"
+        :title="selecting ? '退出选择' : '选择图片以批量导出或删除'"
         @click="toggleSelecting"
       >
         <Icon :name="selecting ? 'close' : 'checklist'" />
@@ -540,20 +594,35 @@ async function open(image: GalleryImage): Promise<void> {
       <button
         class="bbi-btn bbi-btn-sm"
         type="button"
-        :disabled="!selectedCount || deleting"
+        :disabled="!selectedCount || deleting || exporting"
         @click="selected = new Set()"
       >
         清空
       </button>
       <button
+        class="bbi-btn bbi-btn-sm gal-export"
+        type="button"
+        :disabled="!selectedCount || loading || deleting || exporting || !directoryExportAvailable"
+        @click="exportSelected"
+      >
+        <Icon name="download" />
+        导出到目录
+      </button>
+      <button v-if="exportPhase === 'writing'" class="bbi-btn bbi-btn-sm gal-stop-export" type="button" @click="stopExport">
+        停止导出
+      </button>
+      <button
         class="bbi-btn bbi-btn-sm bbi-btn-danger"
         type="button"
-        :disabled="!selectedCount || deleting"
+        :disabled="!selectedCount || deleting || exporting"
         @click="deleteSelected"
       >
         <Icon name="trash" />
         {{ deleting ? '删除中…' : '删除' }}
       </button>
+      <p v-if="exportStatus || !directoryExportAvailable" class="gal-export-status" role="status">
+        {{ exportStatus || '当前客户端无法选择导出目录，可在大图中单张保存。' }}
+      </p>
     </div>
 
     <p v-if="partialFailed" class="gal-warn">
@@ -599,6 +668,7 @@ async function open(image: GalleryImage): Promise<void> {
               :checked="groupAllSelected(group)"
               :indeterminate="someSelected(group)"
               :aria-label="`全选${group.name}`"
+              :disabled="exporting"
               @change="toggleGroup(group)"
             />
           </label>
@@ -635,6 +705,7 @@ async function open(image: GalleryImage): Promise<void> {
                     type="button"
                     :title="selecting ? image.file : `放大 ${image.file}`"
                     :aria-pressed="selecting ? selected.has(image.key) : undefined"
+                    :disabled="exporting"
                     @click="onThumbClick(image)"
                   >
                     <img class="gal-img" :src="image.src" :alt="`${group.name} 的生成图`" loading="lazy" />
@@ -1027,6 +1098,7 @@ async function open(image: GalleryImage): Promise<void> {
   top: calc(-1 * var(--bbi-page-pad));
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -1042,6 +1114,13 @@ async function open(image: GalleryImage): Promise<void> {
   font-size: 12.5px;
   color: var(--bbi-ink-soft);
   font-variant-numeric: tabular-nums;
+}
+.gal-export-status {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--bbi-ink-soft);
+  overflow-wrap: anywhere;
 }
 /* .bbi-btn-danger 只声明在 ConfirmDialog 的 scoped 块里(base.css 没有),
    本组件要用就得把 base 与 hover 两条整份复制过来——只补 hover 的话平时是默认墨色、
