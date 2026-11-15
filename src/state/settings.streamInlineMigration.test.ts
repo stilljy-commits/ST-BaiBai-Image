@@ -7,6 +7,6 @@ describe('live inline display migration',()=>{
  it.each([[undefined,false],[null,false],['true',false],[0,false],[false,false],[true,true]])('preserves an explicit boolean %s and otherwise defaults off',async(value,expected)=>{
   h.ctx={extensionSettings:{baibai_image:{autoTag:{streamInlinePreview:value,streamGen:true,streamPreview:true,streamAnalysisBatchSize:5,streamAnalysisConcurrency:2}}},saveSettingsDebounced:vi.fn()};
   const {settings,hydrateSettings}=await import('./settings');await hydrateSettings();
-  expect(settings.autoTag).toMatchObject({streamInlinePreview:expected,streamGen:true,streamPreview:true,streamAnalysisBatchSize:5,streamAnalysisConcurrency:2});
+  expect(settings.autoTag).toMatchObject({streamInlinePreview:expected,streamGen:true,streamPreview:!expected,streamAnalysisBatchSize:5,streamAnalysisConcurrency:2});
  });
 });

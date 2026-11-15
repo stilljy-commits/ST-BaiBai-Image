@@ -16,15 +16,15 @@ const jobs = [
   { id:'third', input:{text:'两人走过广场。',intent:'走过广场',sourceLine:11,raw:'',prefix:''} },
 ];
 const ctx = {chat:[{name:'Char',is_user:false,is_system:false,mes:jobs.map(j=>j.input.text).join('\n')}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
-function fixture(v2 = true, text = true, mode: 'simple' | 'standard' = 'simple', nl = false) {
+function fixture(v2 = true, mode: 'simple' | 'standard' = 'simple', nl = false) {
   const profile = {naiCharPrompts:true,nl,lockedSize:'landscape' as const};
   const environment = captureAutoTagEnvironment(profile);
   environment.backend = 'nai';
-  Object.assign(environment.nai,{model:'nai-diffusion-5-full',comicMode:true,comicV2:v2,comicText:text,comicAnalysisMode:mode,comicPanelStyle:'slice',comicNsfwRules:false,comicExtraRules:''});
+  Object.assign(environment.nai,{model:'nai-diffusion-5-full',comicMode:true,comicV2:v2,comicAnalysisMode:mode,comicPanelStyle:'slice',comicExtraRules:''});
   return {profile,environment};
 }
-async function build(v2 = true, text = true, fixed = true) {
-  const {profile,environment} = fixture(v2,text);
+async function build(v2 = true, fixed = true) {
+  const {profile,environment} = fixture(v2);
   const batch = prepareStreamBatch(jobs,[],true);
   const messages = await buildAutoTagMessages(ctx,0,{...settings.autoTag,minImages:3,maxImages:3},null,batch.target,null,batch.instructions,profile,environment,fixed?'fixed-markers':'select-scenes');
   const prompt = messages.find(m=>m.content.startsWith('【漫画分析·简单模式】'))!.content;
@@ -67,16 +67,15 @@ describe('switchable simple comic analysis',()=>{
     for (const job of jobs) expect(messages.at(-1)!.content).toContain(job.input.text);
   });
 
-  it.each([true,false])('honors text on/off in V2=%s examples without weakening the output protocol',async(v2)=>{
-    const on=await build(v2,true),off=await build(v2,false);
-    expect(JSON.stringify(on.sample.images)).toContain('Text: 出发吧。');
-    expect(JSON.stringify(off.sample.images)).not.toMatch(/Text:|speech bubble|chinese text/i);
-    expect(off.sample.images[0].size).toBe('landscape');
-    expect(off.prompt).toContain('本次关闭对白上画');
+  it.each([true,false])('uses a visual-only example with V2=%s',async(v2)=>{
+    const {sample,prompt}=await build(v2);
+    expect(JSON.stringify(sample.images)).not.toMatch(/Text:|speech bubble|chinese text/i);
+    expect(sample.images[0].size).toBe('landscape');
+    expect(prompt).toContain('只用画面讲故事');
   });
 
   it.each([true,false])('uses P positions for whole-floor analysis in V2=%s',async(v2)=>{
-    const {prompt,sample,batch}=await build(v2,true,false);
+    const {prompt,sample,batch}=await build(v2,false);
     expect(prompt).toContain('必须满足下限3页');
     expect(sample.images[0].position).toBe('P2');
     const plan=parseImagePlan(JSON.stringify(sample),batch.target.segments,1,3);
@@ -84,7 +83,7 @@ describe('switchable simple comic analysis',()=>{
   });
 
   it('keeps four panels, user rules, profile requirements and the settings snapshot',async()=>{
-    const {profile,environment}=fixture(true,true,'simple',true);
+    const {profile,environment}=fixture(true,'simple',true);
     environment.nai.comicPanelStyle='yonkoma';environment.nai.comicExtraRules='保留地图上的红色圆形标志。';
     settings.nai.comicAnalysisMode='standard';settings.nai.comicPanelStyle='slice';
     const messages=await buildAutoTagMessages(ctx,0,{...settings.autoTag},null,undefined,'小雪已有固定外貌',undefined,profile,environment);

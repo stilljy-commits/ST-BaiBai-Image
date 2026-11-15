@@ -5,6 +5,8 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { generateCharTags } from '@/autoTag/charAnchors';
 import { readBookMemory } from '@/autoTag/bookMemory';
+import { readVisualArchive, saveVisualArchive, VISUAL_LOOK_FIELDS, visualArchiveRevision, type VisualFields } from '@/autoTag/visualArchive';
+import { settings } from '@/state/settings';
 import {
   CHAR_TAG_FIELDS,
   CHAR_TAG_FIELD_LABELS,
@@ -27,7 +29,7 @@ import {
   removeGlobalCharTag,
   upsertGlobalCharTag,
 } from '@/state/globalCharTags';
-import { getContext } from '@/st/context';
+import { getContext, isAiStoryMessage } from '@/st/context';
 import { computed, ref } from 'vue';
 
 /**
@@ -62,6 +64,58 @@ const historyOpen = ref(false);
 // 回滚确认
 const confirmRollbackOpen = ref(false);
 const pendingRollback = ref<{ name: string; record: CharTagChangeRecord } | null>(null);
+
+const activeView = ref<'fixed' | 'current'>('fixed');
+const visualFields = ['outfit', ...VISUAL_LOOK_FIELDS] as const;
+const visualLabels: Record<(typeof visualFields)[number], string> = {
+  outfit: '衣着', hair: '头发', eyes: '眼睛', skin: '肤色', body: '体型', extra: '其他外观', makeup: '妆容',
+};
+const currentVisual = computed(() => {
+  void visualArchiveRevision.value;
+  // Fixed entries also refresh on chat switches and message edits.
+  const fixed = charTagLib.entries;
+  const chat = getContext()?.chat ?? [];
+  const archive = readVisualArchive(chat, chat.length, settings.excludes.customStripTags);
+  return { archive, names: [...new Set([...fixed.map(entry => entry.name), ...Object.keys(archive.changes)])] };
+});
+const visualDraft = ref<{ name: string; chatId: string; fields: VisualFields; initial: VisualFields } | null>(null);
+const visualSaving = ref(false);
+
+function visualLabel(name: string, field: (typeof visualFields)[number]): string {
+  const value = currentVisual.value.archive.changes[name]?.[field];
+  if (field === 'outfit' && value === '') return '明确无衣着';
+  return value ?? (field === 'makeup' ? '' : findCharTag(name)?.fields[field] ?? '');
+}
+
+function editVisual(name: string) {
+  const chatId = getContext()?.getCurrentChatId();
+  if (!chatId) return;
+  const initial = { ...currentVisual.value.archive.changes[name] };
+  visualDraft.value = { name, chatId, initial, fields: { ...initial } };
+}
+
+async function confirmVisual() {
+  const edit = visualDraft.value, context = getContext();
+  if (!edit || !context || context.getCurrentChatId() !== edit.chatId || visualSaving.value) return;
+  const floor = context.chat.findLastIndex(isAiStoryMessage);
+  const message = context.chat[floor];
+  if (!message) { toastr.info('先生成一条正文，再保存当前造型。', '柏宝绘'); return; }
+  const tags = settings.excludes.customStripTags;
+  const changed: VisualFields = {};
+  for (const key of visualFields) {
+    if (edit.fields[key] !== edit.initial[key]) changed[key] = edit.fields[key]?.trim() ?? null;
+  }
+  if (!Object.keys(changed).length) { visualDraft.value = null; return; }
+  visualSaving.value = true;
+  try {
+    const basis = readVisualArchive(context.chat, floor, tags).basis;
+    const swipe = Array.isArray(message.swipes) ? message.swipe_id ?? 0 : null;
+    if (await saveVisualArchive(floor, edit.chatId, message, swipe, tags, basis, [], { [edit.name]: changed })) visualDraft.value = null;
+    else toastr.warning('正文已变化，请重新打开当前造型再保存。', '柏宝绘');
+  } catch {
+    toastr.warning('当前造型保存失败。', '柏宝绘');
+  } finally { visualSaving.value = false; }
+}
 
 const FIELD_PLACEHOLDERS: Record<CharTagField, string> = {
   fandom: '同人角色填: character name (copyright name), 不带转义括号; 原创留空',
@@ -329,6 +383,44 @@ function sourceLabel(entry: CharTagEntry): string {
     </div>
     <hr class="bbi-rule" />
 
+    <div class="bbi-char-section-head">
+      <button type="button" class="bbi-btn" :class="{'bbi-btn-primary': activeView === 'fixed'}" @click="activeView = 'fixed'">固定外貌</button>
+      <button type="button" class="bbi-btn" :class="{'bbi-btn-primary': activeView === 'current'}" @click="activeView = 'current'">当前造型</button>
+    </div>
+    <template v-if="activeView === 'current'">
+      <p class="bbi-field-hint">极速模式按正文更新这里的衣着、发型、妆容等变化。手动修改从当前最新一楼的结尾生效。</p>
+      <ul v-if="currentVisual.names.length" class="bbi-char-grid">
+        <li v-for="name in currentVisual.names" :key="name" class="bbi-char-card">
+          <button type="button" class="bbi-char-card-btn" @click="editVisual(name)">
+            <span class="bbi-char-card-head"><span class="bbi-char-name">{{ name }}</span></span>
+            <span class="bbi-char-chips">
+              <template v-for="field in visualFields" :key="field">
+                <span v-if="visualLabel(name, field)" class="bbi-chip">{{ visualLabels[field] }} {{ visualLabel(name, field) }}</span>
+              </template>
+            </span>
+            <span v-if="currentVisual.archive.sources[name] !== undefined" class="bbi-field-hint">最近更新于第 {{ currentVisual.archive.sources[name] }} 楼</span>
+          </button>
+        </li>
+      </ul>
+      <p v-else class="bbi-char-empty">当前聊天还没有角色档案。</p>
+      <ModalMask :open="!!visualDraft" @close="visualDraft = null">
+        <div v-if="visualDraft" class="bbi-modal bbi-char-modal" role="dialog" aria-modal="true" aria-label="编辑当前造型">
+          <h3>{{ visualDraft.name }}的当前造型</h3>
+          <p class="bbi-field-hint">填写临时造型的英文提示词。点「恢复固定」只清除对应的一项临时记录。</p>
+          <div v-for="field in visualFields" :key="field" class="bbi-num-row">
+            <label :for="'bbi-visual-' + field">{{ visualLabels[field] }}</label>
+            <input :id="'bbi-visual-' + field" type="text" class="bbi-input"
+              :value="visualDraft.fields[field] ?? ''" @input="visualDraft.fields[field] = ($event.target as HTMLInputElement).value || null" />
+            <button type="button" class="bbi-btn bbi-btn-sm" @click="visualDraft.fields[field] = null">恢复固定</button>
+          </div>
+          <label class="bbi-switch-row"><input type="checkbox" :checked="visualDraft.fields.outfit === ''"
+            @change="visualDraft.fields.outfit = ($event.target as HTMLInputElement).checked ? '' : null" />明确无衣着</label>
+          <button type="button" class="bbi-btn bbi-btn-primary" :disabled="visualSaving" @click="confirmVisual">保存</button>
+        </div>
+      </ModalMask>
+    </template>
+    <template v-else>
+
     <p class="bbi-field-hint">
       角色固定外貌库:生成 tag 时 AI 照抄库中字段,@角色名 占位符也会被替换为库中最新外貌,稳定不漂移。
     </p>
@@ -453,6 +545,7 @@ function sourceLabel(entry: CharTagEntry): string {
     </div>
 
     <!-- ===== 角色编辑弹窗 ===== -->
+    </template>
     <ModalMask :open="!!draft" @close="closeEntry">
       <div v-if="draft" class="bbi-modal bbi-char-modal" role="dialog" aria-modal="true" aria-label="编辑角色">
         <header class="bbi-modal-head">

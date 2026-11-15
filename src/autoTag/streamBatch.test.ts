@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { prepareStreamBatch, splitStreamBatch } from './streamBatch';
 import { parseImagePlan } from './protocol';
 import { buildAutoTagMessages, captureAutoTagEnvironment, expandNlSections } from './prompt';
+import { NAI_INTERACTION_RULE } from '@/comic/rules';
 import { settings, DEFAULT_NAI_V5_SPEC, DEFAULT_NAI_V5_THINKING, DEFAULT_NAI_COMIC_SPEC, DEFAULT_NAI_COMIC_THINKING, DEFAULT_NAI_COMIC_V2_SPEC, DEFAULT_NAI_COMIC_V2_THINKING, DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR } from '@/state/settings';
 import type { STContext } from '@/st/context';
 const jobs=[{id:'a',input:{raw:'',intent:'门口',text:'她开门。\n<bbi_image><tag>old</tag></bbi_image>\n他递来钥匙。',prefix:'她穿白裙。',sourceLine:10}},
@@ -51,11 +52,11 @@ describe('batched marker planning',()=>{
     const batch=prepareStreamBatch(jobs,['bbi_image']);
     const profile={nl:false,naiCharPrompts:true,lockedSize:'landscape' as const};
     const environment=captureAutoTagEnvironment(profile);environment.backend='nai';
-    Object.assign(environment.nai,{model:'nai-diffusion-5-full',comicMode:true,comicV2,comicText:false,comicPanelStyle:'yonkoma',comicGutter:'boxed',comicLighting:true,comicExtraRules:'TEST_CUSTOM_RULE: preserve the red umbrella.'});
+    Object.assign(environment.nai,{model:'nai-diffusion-5-full',comicMode:true,comicV2,comicPanelStyle:'yonkoma',comicGutter:'boxed',comicExtraRules:'TEST_CUSTOM_RULE: preserve the red umbrella.'});
     const ctx={chat:[{name:'Char',is_user:false,is_system:false,mes:'正文'}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
     const messages=await buildAutoTagMessages(ctx,0,{...settings.autoTag,minImages:2,maxImages:2},null,batch.target,'角色库',batch.instructions,profile,environment,'fixed-markers');
     const text=messages.map(message=>message.content).join('\n');
-    for(const rule of ['TEST_CUSTOM_RULE: preserve the red umbrella.','经典四格','全封闭内枠','连续场景光影','本会话已关闭对白上画','永久变化的 position 是新状态开始生效的位置','含不入画者'])expect(text).toContain(rule);
+    for(const rule of ['TEST_CUSTOM_RULE: preserve the red umbrella.','经典四格','全封闭内枠','连续场景沿用光源','只用画面讲故事','永久变化的 position 是新状态开始生效的位置','含不入画者'])expect(text).toContain(rule);
     const contract=messages.find(message=>message.content.startsWith('你是严谨的剧情画面规划'))!.content;
     const sample=JSON.parse(contract.match(/格式固定为：\n([^\n]+)\n/)![1]).images[0];
     expect(sample.size).toBe('landscape');expect(sample.tag).not.toMatch(/Text:|Chinese text|speech bubble/i);
@@ -95,7 +96,7 @@ describe('batched marker planning',()=>{
     const options={...settings.autoTag,minImages:2,maxImages:2,prompts:{...settings.autoTag.prompts,naiV5Spec:'',naiV5Thinking:''}};
     const ctx={chat:[{name:'Char',is_user:false,is_system:false,mes:jobs.map(job=>job.input.text).join('\n')}],name1:'User',name2:'Char',chatMetadata:{}} as unknown as STContext;
     const messages=await buildAutoTagMessages(ctx,0,options,null,batch.target,'固定角色外貌资料',batch.instructions,profile,environment);
-    expect(messages.some(message=>message.content===expandNlSections(DEFAULT_NAI_V5_SPEC,false))).toBe(true);
+    expect(messages.some(message=>message.content===`${expandNlSections(DEFAULT_NAI_V5_SPEC,false)}\n${NAI_INTERACTION_RULE}`)).toBe(true);
     expect(messages.some(message=>message.content===expandNlSections(DEFAULT_NAI_V5_THINKING,false))).toBe(true);
     const last=messages.at(-1)!.content;expect(last).toContain('固定角色外貌资料');
     for(const fact of ['她开门。','他递来钥匙。','他们离开车站。','门口','出发'])expect(last).toContain(fact);

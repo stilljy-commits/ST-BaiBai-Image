@@ -66,7 +66,7 @@ function onTabKey(event: KeyboardEvent): void {
       />
     </div>
     <p class="bbi-field-hint" aria-live="polite">
-      当前仅「{{ label(active) }}」生效，五组内容分别保存。可用中文或英文描述画面需求，画面偏好优先于默认取舍；图片数量、对白开关仍按对应设置执行。清空本组表示不追加规则，修改与切换从下一轮分析生效。
+      当前仅「{{ label(active) }}」生效，五组内容分别保存。可用中文或英文描述画面需求，画面偏好优先于默认取舍；图片数量按自动生成 tag 页设置，漫画始终使用纯画面叙事。清空本组表示不追加规则，修改与切换从下一轮分析生效。
     </p>
   </div>
 </template>

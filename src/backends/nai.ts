@@ -193,9 +193,13 @@ function isNai3(model: string): boolean {
   return model === 'nai-diffusion-3';
 }
 
-/** skip_cfg_above_sigma:开 variety boost 时按尺寸与模型算;关 → null。 */
+export function naiSupportsVarietyBoost(model: string): boolean {
+  return !isNai5(model);
+}
+
+/** skip_cfg_above_sigma: only supported models use the size-adjusted value. */
 export function skipCfgAboveSigma(width: number, height: number, model: string, varietyBoost: boolean): number | null {
-  if (!varietyBoost || isNai5(model)) return null;
+  if (!varietyBoost || !naiSupportsVarietyBoost(model)) return null;
   const magic = isNai45(model) ? SIGMA_MAGIC_NUMBER_V4_5 : SIGMA_MAGIC_NUMBER;
   return Math.pow((width * height) / REFERENCE_PIXEL_COUNT, 0.5) * magic;
 }
@@ -358,7 +362,7 @@ export function naiUndesiredContent(nai: NaiSettings): string {
   if(custom)return custom; // User recipes are never silently rewritten.
   const builtin=naiDefaultUndesired(nai.model);
   if(!nai.comicMode||!isNai5(nai.model)||isNaiMedium(nai.model))return builtin;
-  const conflicts=new Set(['multiple views','multiple scenes','comic','screentone','halftone','dithering',...(nai.comicText!==false?['text']:[])]);
+  const conflicts=new Set(['multiple views','multiple scenes','comic','screentone','halftone','dithering']);
   return builtin.split(',').map(v=>v.trim()).filter(v=>!conflicts.has(v.toLowerCase())).join(', ');
 }
 
@@ -373,10 +377,7 @@ export function naiUndesiredContent(nai: NaiSettings): string {
  * 字段处各调一次,两处必须同源。拼装改动一律留在本函数内部——在某个调用点单独加料会让
  * NAI3(读 input)与 NAI4/4.5(读 v4_prompt)拿到不同的提示词,且只在 NAI3 上暴露。
  */
-/**
- * 漫画页模式关闭「对白上画」时,剥掉页文本里的 Text 行与气泡/文字指令行
- * (模型偶发仍会写出,发送端兜底剥除,保证 NAI 收到的页文本无文字元素)。
- */
+/** Retain legacy section boundaries while removing obsolete dialogue tags. */
 export function stripComicText(page: string): string {
   return page
     .replace(/^[ \t]*(?:Text:[^\n]*|speech bubble[^\n]*|thought bubble[^\n]*|narration[^\n]*|sound effects[^\n]*|縦書き[^\n]*|横書き[^\n]*)[ \t]*\r?\n?/gim, '')
@@ -385,11 +386,7 @@ export function stripComicText(page: string): string {
     .trim();
 }
 
-/**
- * 漫画页 V2 关闭「对白上画」时的 token 级剥除:单行文本(1.3.1 同形态)里的
- * 文字语言词(text, chinese text 等)与气泡词(speech/thought bubble)是行内 token,
- * stripComicText 只删「整行起始」的形态,这里按逗号 token 过滤,Base 行与人物条目共用。
- */
+/** Old prompts may put comic lettering tags inline with visual tags. */
 export function stripComicV2Tokens(line: string): string {
   return line
     .split(',')
@@ -404,36 +401,26 @@ export function stripComicV2Tokens(line: string): string {
     .join(', ');
 }
 
+function comicCaption(text: string): string {
+  return stripComicText(text.replace(/(?:^|[\s,]+)Text:[\s\S]*$/i, ''));
+}
+
 export function fullPositivePrompt(nai: NaiSettings, prompt: string, nl = ''): string {
   // Both comic formats use native Base/Character captions. V1 private markers
   // are parsed locally; unrecognized legacy syntax retains its former raw path.
   // Artist/quality words belong before any Text tail, never inside dialogue.
   if (nai.comicMode && isNai5(nai.model)) {
     const sections=!nai.comicV2?parseComicSections(prompt):null;
-    let stripped = (nai.comicText ? prompt.trim() : stripComicText(prompt))
+    let stripped = prompt.trim()
       .replace(/^\s*<image>\s*/i, '')
       .replace(/\s*<\/image>\s*$/i, '')
       .trim();
-    if(sections)stripped=nai.comicText?comicSectionBase(sections):stripComicText(comicSectionBase(sections));
+    if(sections)stripped=comicSectionBase(sections);
     if (nai.comicV2||sections) {
-      if(!sections)stripped = stripped.replace(/\s*\n+\s*/g, ', ');
-      // 关闭对白上画:Base 行里的文字语言词与气泡词按 token 剥除
-      if (!nai.comicText) stripped = stripComicV2Tokens(stripped);
-      // Match normal artist/quality assembly after separating person/negative
-      // sections. Text-enabled pages omit the conflicting default "no text".
-      const artist = naiArtistPrompt(nai);
-      const quality = nai.comicText
-        ? naiQualityTags(nai)
-            .split(',')
-            .map(part => part.trim())
-            .filter(part => part && !/^no\s+text$/i.test(part))
-            .join(', ')
-        : naiQualityTags(nai);
-      const textAt=stripped.indexOf('\nText:');
-      const visual=textAt<0?stripped:stripped.slice(0,textAt),tail=textAt<0?'':stripped.slice(textAt);
-      return [artist, visual, quality].filter(Boolean).join(', ')+tail;
+      const visual = comicCaption(stripped).replace(/\s*\n+\s*/g, ', ');
+      return [naiArtistPrompt(nai), visual, naiQualityTags(nai)].filter(Boolean).join(', ');
     }
-    return stripped;
+    return stripComicText(stripped);
   }
   const artist = naiArtistPrompt(nai);
   const quality = naiQualityTags(nai);
@@ -510,7 +497,7 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
     add_original_image: true,
     cfg_rescale: medium ? 0 : nai.cfgRescale,
     noise_schedule: nai.noiseSchedule,
-    skip_cfg_above_sigma: skipCfg,
+    ...(naiSupportsVarietyBoost(nai.model) ? { skip_cfg_above_sigma: skipCfg } : {}),
     legacy_v3_extend: false,
     stream: 'msgpack',
     seed,
@@ -529,15 +516,13 @@ export function buildNaiParameters(nai: NaiSettings, values: NaiGenerateValues):
   } else {
     // NAI4/4.5/V5: v4 caption structure; Vibe uses a model-specific cached encoding.
     params.reference_image_multiple_cached = [];
-    // 漫画页 V2 关闭对白上画时,characters 条目里的 Text 行/气泡指令同样剥除
-    // (Base 行已在 fullPositivePrompt 里剥过;这里兜底人物条目,行内 token 一并过滤)。
-    const stripComicCharText = nai.comicMode && nai.comicV2 && !nai.comicText;
+    const stripComicCharText = nai.comicMode && isNai5(nai.model);
     const inputCharacters=sections?finalizeComicCharacters(comicSectionCharacters(sections)):(values.characters??[]);
     const charCaptions = naiSupportsCharacterPrompts(nai.model)
       ? inputCharacters.map(character => ({
           char_caption: characterCaption(
-            (stripComicCharText||(!!sections&&!nai.comicText))
-              ? { ...character, tag: stripComicV2Tokens(stripComicText(character.tag)) }
+            stripComicCharText
+              ? { ...character, tag: comicCaption(character.tag), nl: comicCaption(character.nl) }
               : character,
           ),
           centers: [{ x: 0.5, y: 0.5 }],
@@ -859,7 +844,7 @@ function naiParamsSnapshot(params: JsonObject, nai: NaiSettings): GenerationPara
     cfgRescale: params.cfg_rescale as number,
     noiseSchedule: params.noise_schedule as string,
     quality: naiQualityTags(nai),
-    varietyBoost: nai.varietyBoost,
+    varietyBoost: typeof params.skip_cfg_above_sigma === 'number',
     normalizeRefStrength: nai.normalizeRefStrength,
   };
 }

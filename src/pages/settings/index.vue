@@ -98,6 +98,13 @@ const TAG_GEN_OPTIONS = computed(() => [
   ...settings.channels.map(c => ({ value: c.id, label: c.name || '未命名渠道' })),
 ]);
 const streamBatchExample = computed(() => streamBatchSizes(13, settings.autoTag.streamAnalysisBatchSize).join('、'));
+const streamInlinePreview = computed({
+  get: () => settings.autoTag.streamInlinePreview === true,
+  set: (enabled: boolean) => {
+    settings.autoTag.streamInlinePreview = enabled;
+    if (enabled) settings.autoTag.streamPreview = false;
+  },
+});
 function normalizeBatchSizeInput(){settings.autoTag.streamAnalysisBatchSize=normalizeStreamBatchSize(settings.autoTag.streamAnalysisBatchSize);}
 
 /* —— 渠道:列表只读展示,编辑/新建都在弹窗里进行,避免一长列表平铺误触。
@@ -712,62 +719,58 @@ async function confirmUpdate() {
           <span class="bbi-field-label">自动生成 tag</span>
           <input v-model="settings.autoTag.enabled" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">AI 正文生成后自动判断该楼是否需要插图,需要就写入生图 tag。</p>
+        <p class="bbi-field-hint">让 AI 自动挑选适合插图的场景，并写出生图提示词（tag）。</p>
 
         <label class="bbi-switch-row">
           <span class="bbi-field-label">自动生成图片</span>
           <input v-model="settings.autoTag.autoGenerate" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">写入 tag 后立即按当前出图渠道自动出图;关闭则只写 tag,在卡片上手动生成。</p>
+        <p class="bbi-field-hint">提示词就绪后自动出图。关掉时只生成提示词，需要在图片卡片上点「生成」。</p>
 
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">流式出图(正文没写完,图已经在出)</span>
+          <span class="bbi-field-label">流式出图</span>
           <input v-model="settings.autoTag.streamGen" type="checkbox" class="bbi-checkbox" />
         </label>
-        <p class="bbi-field-hint">
-          开启后自动给正文模型添加配图标记规则，发送前检查是否已包含规则；已挂同类世界书时复用已有规则。主模型在正文里放 [img: 意图] 标记,
-          按下方“每批分析图片数”合并正式标记，不按图片上限分段；最后不足一批的标记在正文结束时立即提交，
-          并显示已完成图片和在途位置，后到图片继续完成；文末默认只补足最少张数。主模型在最少/最多范围内选择实际数量，数量范围优先于世界书的字数密度。
-          关闭则完整回退「正文结束→全量分析」路径;主模型没放标记时也会自动回退。
-        </p>
+        <p class="bbi-field-hint">正文边写，插件边按配图标记分析提示词。打开「自动生成图片」后也会提前出图。关闭流式，或正文没有配图标记时，插件等正文结束再选图。</p>
 
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">正文生成时显示已完成图片</span>
-          <input v-model="settings.autoTag.streamInlinePreview" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">默认关闭。开启流式出图后，已生成图片会提前显示在对应段落，不给未完成图片添加大块占位；正文结束后照常保存。只改变显示，不增加分析或生图请求。无法可靠定位时等正文结束再插入；已在正文预览的图片不重复放入浮层。</p>
+        <fieldset class="bbi-stream-options" :disabled="!settings.autoTag.streamGen" aria-label="流式出图设置">
+          <label class="bbi-switch-row">
+            <span class="bbi-field-label">正文生成时流式插入已完成图片</span>
+            <input v-model="streamInlinePreview" type="checkbox" class="bbi-checkbox" />
+          </label>
+          <p class="bbi-field-hint">正文还在写时，把已完成的图显示在对应段落。位置暂时对不上时，等正文结束再插入。</p>
 
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">流式浮层预览(流式期间在角落显示已出缩略图)</span>
-          <input v-model="settings.autoTag.streamPreview" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">只影响流式期间的显示,不动正文;关闭没有任何副作用。</p>
+          <label class="bbi-switch-row">
+            <span class="bbi-field-label">流式浮层预览</span>
+            <input v-model="settings.autoTag.streamPreview" type="checkbox" class="bbi-checkbox" :disabled="streamInlinePreview" />
+          </label>
+          <p class="bbi-field-hint">在屏幕底部预览已完成的缩略图。与正文流式插图二选一，要用浮层请先关闭上面的插图显示。</p>
 
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">补画未配图的长段落(可选)</span>
-          <input v-model="settings.autoTag.streamGapSupplement" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p class="bbi-field-hint">默认关闭，正文结束后只补足最少张数。开启后还会检查未覆盖的长正文并分析补图，可能增加等待；摘要、选项和变量更新不参与。</p>
+          <label class="bbi-switch-row">
+            <span class="bbi-field-label">合批分析逐页启动出图</span>
+            <input v-model="settings.autoTag.streamProgressivePages" type="checkbox" class="bbi-checkbox" />
+          </label>
+          <p class="bbi-field-hint">标准、简单漫画模式使用副 API 时，一页提示词通过校验就可开始出图。极速模式自动逐页启动。没法按页读取结果时，等这一批分析结束再出图。</p>
 
-        <label class="bbi-num-row">
-          <span class="bbi-field-label">每批分析图片数</span>
-          <input v-model.number="settings.autoTag.streamAnalysisBatchSize" class="bbi-input bbi-num" type="number" min="1" :max="MAX_STREAM_BATCH_SIZE" step="1" @change="normalizeBatchSizeInput" @blur="normalizeBatchSizeInput" />
-        </label>
-        <p class="bbi-field-hint">每次 tags 分析合并多少个 img 标记（1～{{ MAX_STREAM_BATCH_SIZE }}，默认3）。例如13张图按 {{ streamBatchExample }} 分批；正文结束时不足一批也立即分析。数值越大，重复分析通常越少，但首批等待越久。修改从下一轮正文生效，与分析并发、NAI出图并发分别设置。</p>
+          <label class="bbi-num-row">
+            <span class="bbi-field-label">每批分析图片数</span>
+            <input v-model.number="settings.autoTag.streamAnalysisBatchSize" class="bbi-input bbi-num" type="number" min="1" :max="MAX_STREAM_BATCH_SIZE" step="1" @change="normalizeBatchSizeInput" @blur="normalizeBatchSizeInput" />
+          </label>
+          <p class="bbi-field-hint">将多少张图的提示词放进同一次分析。13 张按 {{ streamBatchExample }} 分批。批次越大，重复发送的资料通常越少，首批也可能等得更久。正文结束时，剩余标记会立即送去分析。</p>
 
-        <label class="bbi-num-row">
-          <span class="bbi-field-label">流式分段分析并发</span>
-          <input
-            v-model.number="settings.autoTag.streamAnalysisConcurrency"
-            class="bbi-input bbi-num"
-            type="number"
-            min="1"
-            max="4"
-            step="1"
-          />
-        </label>
-        <p class="bbi-field-hint">同时进行的副API分析批数(1~4)；设为1时依次分析各批，已拿到tags的图片可同时进入出图队列。每批可返回多张tags，NAI仍逐张生图，出图并发在渠道页控制。</p>
-
+          <label class="bbi-num-row">
+            <span class="bbi-field-label">同时分析的批次数</span>
+            <input
+              v-model.number="settings.autoTag.streamAnalysisConcurrency"
+              class="bbi-input bbi-num"
+              type="number"
+              min="1"
+              max="4"
+              step="1"
+            />
+          </label>
+          <p class="bbi-field-hint">设为 1 时各批依次分析。设得更高可以同时分析几批；实际同时出几张图由出图渠道决定。</p>
+        </fieldset>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">携带最近 AI 楼数</span>
@@ -780,7 +783,7 @@ async function confirmUpdate() {
             @change="normalizeAutoTagNumbers"
           />
         </label>
-        <p class="bbi-field-hint">按 AI 故事楼计数,中间的 user 楼一并携带。</p>
+        <p class="bbi-field-hint">生图分析可参考几条 AI 回复，当前这一条也算在内。中间的用户消息会一起带上。这个数字适用于普通插图和漫画的标准、简单模式。极速模式根据造型档案的记录进度补读前文。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">单楼最少图片数</span>
@@ -806,10 +809,10 @@ async function confirmUpdate() {
             @change="normalizeAutoTagNumbers('maxImages')"
           />
         </label>
-        <p class="bbi-field-hint">最少设为 0 时允许不出图;最多数量始终受插件硬限制。</p>
+        <p class="bbi-field-hint">控制每条 AI 回复的插图张数。最少设为 0 时允许不出图。流式出图正文结束后只补足下限。</p>
 
         <label class="bbi-num-row">
-          <span class="bbi-field-label">失败自动重试次数</span>
+          <span class="bbi-field-label">提示词分析重试次数</span>
           <input
             v-model.number="settings.autoTag.retryCount"
             class="bbi-input bbi-num"
@@ -820,7 +823,7 @@ async function confirmUpdate() {
             @change="normalizeAutoTagNumbers"
           />
         </label>
-        <p class="bbi-field-hint">副 API 请求失败或返回无法解析时自动重试；0 = 不重试，最多 5 次。</p>
+        <p class="bbi-field-hint">提示词请求失败或返回格式有误时，最多再试几次。填 0 就只试一次。</p>
       </Collapsible>
 
       <!-- 排除角色:名单与柏宝书共享(见 state/settings.ts 的共享存储),任一端改动自动同步 -->
@@ -1250,6 +1253,14 @@ async function confirmUpdate() {
 </template>
 
 <style scoped>
+.bbi-stream-options {
+  min-width: 0;
+  margin: 8px 0;
+  border: 0;
+  border-inline-start: 2px solid var(--bbi-border, currentColor);
+  padding: 0 0 0 10px;
+}
+
 .bbi-ver-row {
   display: inline-flex;
   align-items: center;

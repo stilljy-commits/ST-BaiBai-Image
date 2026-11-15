@@ -435,7 +435,7 @@ async function exportSelected(): Promise<void> {
   const controller = new AbortController();
   exportController = controller;
   exportPhase.value = 'picking';
-  exportStatus.value = '';
+  exportStatus.value = '等待系统打开目录选择窗口。如果没有弹出，可点「结束等待」。';
   try {
     // The directory picker must open in the button's click handler, before any other await.
     const directory = await pickGalleryExportDirectory();
@@ -455,17 +455,29 @@ async function exportSelected(): Promise<void> {
       remaining > 0 && `${remaining} 张未完成`,
     ].filter(Boolean).join('，');
   } catch (error) {
-    if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return;
+    if (controller.signal.aborted) return;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      // AbortError can also mean the host declined to open the picker.
+      exportStatus.value = '没有选到导出目录。如果手机 TT 没有弹出窗口，可在大图中单张保存。';
+      return;
+    }
     console.warn('[柏宝绘] 无法打开图库导出目录', error);
-    exportStatus.value = '无法打开导出目录，请尝试选择其他文件夹。若持续失败，仍可在大图中单张保存。';
+    exportStatus.value = '当前客户端未能打开目录选择窗口，可在大图中单张保存。';
   } finally {
-    exportController = undefined;
-    exportPhase.value = '';
+    if (exportController === controller) {
+      exportController = undefined;
+      exportPhase.value = '';
+    }
   }
 }
 
 function stopExport(): void {
   exportController?.abort();
+  if (exportPhase.value === 'picking') {
+    exportController = undefined;
+    exportPhase.value = '';
+    exportStatus.value = '已结束等待。如果手机 TT 没有弹出窗口，可在大图中单张保存。';
+  }
 }
 
 /**
@@ -608,8 +620,8 @@ async function open(image: GalleryImage): Promise<void> {
         <Icon name="download" />
         导出到目录
       </button>
-      <button v-if="exportPhase === 'writing'" class="bbi-btn bbi-btn-sm gal-stop-export" type="button" @click="stopExport">
-        停止导出
+      <button v-if="exporting" class="bbi-btn bbi-btn-sm gal-stop-export" type="button" @click="stopExport">
+        {{ exportPhase === 'picking' ? '结束等待' : '停止导出' }}
       </button>
       <button
         class="bbi-btn bbi-btn-sm bbi-btn-danger"

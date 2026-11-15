@@ -1,5 +1,6 @@
 import { compactComicSpec, compactLibrary, completeComicPages, compileComicPage, parseCompactComic, type CompactComicContext } from '@/autoTag/compactComic';
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
+import { mergeVisualChanges, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualStory } from '@/autoTag/visualArchive';
 import { ComicWardrobeLedger, needsComicClothingHistory } from '@/comic/characters';
 import { parseComicSections, comicSectionCharacters } from '@/comic/sections';
 import { comicCosplayContext } from '@/comic/costume';
@@ -42,7 +43,9 @@ const imagePayload=(s:Session,image:ImageInsertion,changes:CharChange[]):Payload
 type Job = StreamJob<Payload, GenerateOutput>;
 interface Session {
   id: string; chatId: string; type: string; context: STContext; referenceFloor: number;
+  continuationBase?: string;
   continuity: ComicContinuityLedger; seedEntries: CharTagEntry[];
+  visualBasis?: string;
   wardrobe: ComicWardrobeLedger;
   scanner: MarkerScanner; core: StreamRun<Payload, GenerateOutput>;
   options: AutoTagSettings; generation: GenerationSnapshot; profile: RenderProfile;
@@ -107,6 +110,7 @@ export function beginStreamSession(chatId: string, type = 'normal'): void {
   if (!ctx || !settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen || isCurrentChatExcluded()) return;
   const state: Omit<Session, 'core'> = {
     id: `sr_${randomUuid().replace(/-/g, '')}`, chatId, type, context: ctx, referenceFloor: ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0, ctx.chat.length - 1),
+    ...(type === 'continue' ? { continuationBase: visualStory(ctx.chat.at(-1)?.mes ?? '', settings.excludes.customStripTags) } : {}),
     continuity: new ComicContinuityLedger(), seedEntries: jsonCopy(charTagsBeforeFloor((ctx.chat.at(-1)?.is_user ? ctx.chat.length : Math.max(0,ctx.chat.length-1)) + (type === 'continue' ? 1 : 0))),
     scanner: new MarkerScanner(), options: jsonCopy(settings.autoTag),
     stripTags: [...settings.excludes.customStripTags,'bbi_image',...STREAM_NON_STORY_TAGS],
@@ -189,7 +193,7 @@ export function feedStreamText(text: string): void {
     const ordinal = all.findIndex(item => item.marker.index === marker.index && item.marker.raw === marker.raw);
     const segment=all[ordinal];if(!segment)continue;
     const job = s.core.add({ raw: marker.raw, intent: marker.intent, text: segment.segment,
-      prefix: prefixBefore(text, ordinal, 6000,s.stripTags), sourceLine: segment.sourceLine });
+      prefix: prefixBefore(text, ordinal, fastComicAnalysis(s) ? Infinity : 6000,s.stripTags), sourceLine: segment.sourceLine });
     if (job) log('stream:dispatch', { run: s.id, job: job.id, withoutFloor: true });
   }
   updateInlinePreview(s);
@@ -228,7 +232,7 @@ export function streamRecoveryTarget(): { chatId: string; floor: number; type: s
 }
 
 async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, validate: (raw: string) => void, source='流式配图', onContent?: (raw:string)=>void): Promise<void> {
-  const mode=s.profile.mode!=='illustration'?s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel,s.promptEnvironment.nai.comicAnalysisMode??'standard')]??'follow':'follow';
+  const mode=s.profile.mode!=='illustration'&&!fastComicAnalysis(s)?s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel,s.promptEnvironment.nai.comicAnalysisMode??'standard')]??'follow':'follow';
   const reasoningOverride=comicReasoningOverride(s.channel,mode);
   if (s.channel) await requestCompletion(s.channel, messages, { signal, source, validate,
     ...(fastComicAnalysis(s)?{stream:true}:{}),
@@ -296,28 +300,52 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
   }
   return plan;
 }
+async function saveFastStreamArchive(s: Session): Promise<void> {
+  if (!fastComicAnalysis(s) || !s.binding || !ownerValid(s)) return;
+  const { floor, message, expectedSwipe } = s.binding;
+  await serial(s, async () => {
+    if (!ownerValid(s)) return;
+    const ctx = getContext()!;
+    const actual = visualStory(ctx.chat[floor].mes, s.stripTags);
+    const archive = readVisualArchive(ctx.chat, floor, s.stripTags, s.continuationBase?.length);
+    const basis = s.visualBasis ?? archive.basis;
+    if (basis !== archive.basis || (s.continuationBase && !actual.startsWith(s.continuationBase))) return;
+    let prefix = s.continuationBase ?? '';
+    const points = archive.points;
+    for (const record of s.continuity.confirmed()) {
+      const part = visualStory(record.text, s.stripTags);
+      prefix += (prefix ? '\n\n' : '') + part;
+      if (!part || !(actual === prefix || actual.startsWith(prefix + '\n\n'))) break;
+      points.push(visualPoint(prefix, record.state.visual ?? {}, record.state.facts));
+    }
+    await saveVisualArchive(floor, s.chatId, message, expectedSwipe, s.stripTags, basis, points);
+  });
+}
+
 async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,payload:Payload)=>void): Promise<Payload[]> {
   if (!ownerValid(s)) throw new Error('聊天已切换');
   const started=performance.now(), batch=prepareStreamBatch(jobs,s.stripTags,true), anchors=analysisAnchors(s);
   log('stream:analysis-prepare',{jobs:jobs.map(job=>job.id),at:Date.now()});
   const originalPrefix=contextWithoutRepeatedTarget(jobs[0].input.prefix,jobs[0].input.text);
   const continuity=s.continuity.context(jobs[0].ordinal,originalPrefix);
+  const ctx = getContext()!, floor = s.binding?.floor ?? s.referenceFloor;
+  const archive = readVisualArchive(ctx.chat, floor, s.stripTags, s.continuationBase?.length);
+  s.visualBasis ??= archive.basis;
   const entries=anchors.entries.map(entry=>({...entry,fields:{...entry.fields}}));
   for(const change of [...continuity.changes].sort((a,b)=>a.sourceLine-b.sourceLine)) {
     const entry=entries.find(entry=>entry.name===change.name);
     if(entry&&!lockedCharTagNames().has(change.name)&&Object.hasOwn(entry.fields,change.field)) entry.fields[change.field as keyof typeof entry.fields]=change.value;
   }
   const compact:CompactComicContext={target:batch.target,markers:batch.markerTargets,entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,
-    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits,...s.wardrobe.before(jobs[0].input.sourceLine)},costumes:s.wardrobe.costumesBefore(jobs[0].input.sourceLine)};
-  const scanText=jobs.at(-1)!.input.prefix+'\n'+jobs.map(job=>job.input.text).join('\n');
-  const ctx=getContext()!,floor=s.binding?.floor??s.referenceFloor,analysisContext={...ctx,chat:[...ctx.chat]};
-  analysisContext.chat[floor]={name:s.context.name2||'Assistant',is_user:false,is_system:false,mes:scanText};
+    size:s.promptEnvironment.profile.lockedSize,min:jobs.length,max:jobs.length,priorChanges:continuity.changes,outfits:{...continuity.outfits,...s.wardrobe.before(jobs[0].input.sourceLine)},costumes:s.wardrobe.costumesBefore(jobs[0].input.sourceLine),
+    visual:mergeVisualChanges(archive.changes, continuity.visual)};
   const note='极速模式仅输出简短分镜。只为下列标记生成pages，id照抄M编号，按M编号顺序输出。\n'+STREAM_SCENE_SUBJECT_RULE+'\n'+batch.groups.map(g=>
     '标记 '+g.markerId+'：'+g.intent+'；对应正文 '+g.positions.join('、')+'；图片 position 固定填 "'+g.markerId+'"。').join('\n')+
+    '\n'+visualArchiveNote(continuity.note ? { pending: '', facts: archive.facts } : archive)+
     '\n'+comicCosplayContext(compact.costumes??{})+'\n'+continuity.note+'\n此前尚未概括的正文，仅作连续性依据：\n'+continuity.prefix+
     (jobs.length===1&&jobs[0].analysisError?'\n【当前页修复】上次校验未通过：'+jobs[0].analysisError+'。只修复当前页；以前批次编号不沿用，本次以当前给定M编号和P位置为准。':'');
-  const messages=await buildAutoTagMessages(analysisContext,floor,{...s.options,minImages:jobs.length,maxImages:jobs.length},
-    readBookMemory(floor,scanText,s.context.name1),batch.target,compactLibrary(compact),note,s.promptEnvironment.profile,s.promptEnvironment,'fixed-markers',compactComicSpec(compact));
+  const messages=await buildAutoTagMessages(ctx,floor,{...s.options,minImages:jobs.length,maxImages:jobs.length},
+    null,batch.target,compactLibrary(compact),note,s.promptEnvironment.profile,s.promptEnvironment,'fixed-markers',compactComicSpec(compact));
   log('stream:analysis-request-start',{jobs:jobs.map(job=>job.id),at:Date.now(),prepareMs:Math.round(performance.now()-started)});
   const controller=new AbortController(),cancel=()=>{if(s.controller.signal.aborted||jobs.every(job=>job.controller.signal.aborted))controller.abort();};
   s.controller.signal.addEventListener('abort',cancel);for(const job of jobs)job.controller.signal.addEventListener('abort',cancel);cancel();
@@ -350,15 +378,19 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
         if(controller.signal.aborted||job.controller.signal.aborted||!ownerValid(s))return;
         const plan=preparePlan(s,result.plan,anchors),line=plan.images[0].sourceLine;
         const snapshot=jsonCopy({...compact,priorChanges:[...continuity.changes,...acceptedChanges]}),profiles=jsonCopy(introduced),draft=jsonCopy(candidate);
-        refreshPlans.set(plan.images[0],{needsClothingHistory:result.needsClothingHistory,refresh:()=>{
+        const needsVisualHistory = result.needsClothingHistory || (candidate.shots as unknown[]).some(shot =>
+          !!(shot as { actors?: unknown[] }).actors?.length);
+        refreshPlans.set(plan.images[0],{needsClothingHistory:needsVisualHistory,refresh:()=>{
           const fresh=compileComicPage(draft,{...snapshot,locked:compact.locked,markers:compact.markers,target:compact.target,
-            outfits:{...snapshot.outfits,...s.wardrobe.before(line)},costumes:{...snapshot.costumes,...s.wardrobe.costumesBefore(line)}},profiles);
+            outfits:{...snapshot.outfits,...s.wardrobe.before(line)},costumes:{...snapshot.costumes,...s.wardrobe.costumesBefore(line)},
+            visual:mergeVisualChanges(snapshot.visual,...s.continuity.confirmed(job.ordinal).map(record=>record.state.visual))},profiles);
           s.wardrobe.accept(line,fresh.wardrobe,fresh.costumes);return fresh.plan.images[0];
         }});
         const payload=imagePayload(s,plan.images[0],plan.changes);
         payloads.set(id,payload);errors.delete(id);job.analysisError=undefined;acceptedChanges.push(...plan.changes);
         compact.outfits={...compact.outfits,...result.wardrobe};
         compact.costumes={...compact.costumes,...result.costumes};
+        if (result.state.complete) compact.visual = mergeVisualChanges(compact.visual, result.state.visual);
         s.wardrobe.accept(plan.images[0].sourceLine,result.wardrobe,result.costumes);
         const introOps=planChangeOps({images:[],changes:plan.changes.filter(change=>change.field==='new')}).map(item=>item.op);
         introduced.splice(0,introduced.length,...applyCharTagOps(introduced,introOps,floor,compact.locked));
@@ -377,12 +409,12 @@ async function analyzeCompact(s: Session, jobs: Job[], ready?: (index:number,pay
   try{
     const source='流式配图 · '+(jobs.length===1?'单张':'合并'+jobs.length+'张');
     if(s.channel){
-      const mode=s.promptEnvironment.nai.comicReasoningByModel?.[comicReasoningKey(s.channel)]??'follow';
-      await requestCompletion(s.channel,messages,{signal:controller.signal,source,stream:true,onContent:consume,validate,reasoningOverride:comicReasoningOverride(s.channel,mode)});
+      await requestCompletion(s.channel,messages,{signal:controller.signal,source,stream:true,onContent:consume,validate});
     }else await requestViaMainApi(messages,{signal:controller.signal,source,validate});
     return batch.groups.map(group=>payloads.get(group.markerId)!);
   }finally{
     s.controller.signal.removeEventListener('abort',cancel);for(const job of jobs)job.controller.signal.removeEventListener('abort',cancel);
+    if (s.binding && ownerValid(s)) void saveFastStreamArchive(s).catch(error => log('stream:visual-archive-error', String(error)));
     log('stream:analysis-timing',{jobs:jobs.map(job=>job.id),batchSize:jobs.length,apiMs:Math.round(performance.now()-started),responseChars,
       promptChars:messages.reduce((sum,m)=>sum+m.content.length,0),reusedContextChars:Math.max(0,originalPrefix.length-continuity.prefix.length),acceptedPages:payloads.size,ok:payloads.size===jobs.length});
   }
@@ -444,7 +476,7 @@ async function analyzeBatch(s: Session, jobs: Job[], ready?: (index:number,paylo
   const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
   const memory = readBookMemory(s.binding?.floor ?? s.referenceFloor, scanText, s.context.name1);
   const prefix = contextWithoutRepeatedTarget(jobs[0].input.prefix, jobs[0].input.text);
-  const progressive=!!s.channel&&s.profile.mode!=='illustration'&&s.promptEnvironment.nai.comicProgressivePages===true;
+  const progressive=!!s.channel&&s.profile.mode!=='illustration'&&s.options.streamProgressivePages===true;
   const batchInstructions=progressive?batch.instructions.replace('输出顺序不限。',''):batch.instructions;
   const note = `${analysisScope(s)}\n${batchInstructions}${progressive?'\n仅调整返回顺序：先完整输出changes，再输出images；images按本批M编号先后写，每页写完不回改。输出字段、画面要求不变。':''}\n${s.profile.mode==='illustration'?'':comicCosplayContext(s.wardrobe.costumesBefore(jobs[0].input.sourceLine))}\n画面与已给定事实一致。此前正文仅作服装、道具、场景连续性依据，不在此前正文另选图片：\n${prefix}`;
   const ctx = getContext()!;
@@ -582,7 +614,14 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   const final = recover(message.mes);
   if(final!==message.mes)log('stream:handoff-recovered-markers',{run:pending!.id,floor});
   const segments = markerSegments(final,stripTags);
-  if (!segments.length) { if (current && current.chatId === chatId) stopCurrentStream(); return false; }
+  if (!segments.length) {
+    if (pending && fastComicAnalysis(pending)) {
+      const basis = readVisualArchive(ctx.chat, floor, stripTags).basis;
+      await saveVisualArchive(floor, chatId, message, swipe(message), stripTags, basis, []).catch(error => log('stream:visual-archive-error', String(error)));
+    }
+    if (current && current.chatId === chatId) stopCurrentStream();
+    return false;
+  }
   if (!current || current.chatId !== chatId) beginStreamSession(chatId);
   const s = current; if (!s || s.completed) return false;
   s.binding = { floor, message, swipeId: swipe(message) ?? 0, expectedSwipe: swipe(message) };
@@ -600,7 +639,7 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   const replacements = segments.map((seg, i) => {
     let job = matched[i];
     if (!job) job = s.core.add({ raw: seg.marker.raw, intent: seg.marker.intent, text: seg.segment,
-      prefix: prefixBefore(final, i, 6000,s.stripTags), sourceLine: seg.sourceLine }) ?? undefined;
+      prefix: prefixBefore(final, i, fastComicAnalysis(s) ? Infinity : 6000,s.stripTags), sourceLine: seg.sourceLine }) ?? undefined;
     if (!job) return null;
     attached.push(job); const tag = tagFor(s, job); s.written.set(job.id, tag); return tag;
   });
@@ -628,6 +667,7 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
   }).catch(error=>{disposeInlinePreview(s);finishInline?.();throw error;});
   if (ok !== 'saved') { disposeInlinePreview(s);finishInline?.();s.core.cancel(); toastr.warning(`流式位置写入失败：${ok}`, '柏宝绘'); return true; }
   s.completed = true; current = undefined; updatePreview(s); s.core.attach(attached); s.core.finishInput();
+  if (fastComicAnalysis(s)) void saveFastStreamArchive(s).catch(error => log('stream:visual-archive-error', String(error)));
   hydrateMessage(floor, ctx);finishInline?.(); void ensureFloorRendered(ctx, message, floor, chatId);
   log('stream:attached', { run: s.id, floor, slots: attached.length });
   void supplement(s, attached.length + parseImageTags(final).length).catch(error => {
@@ -638,32 +678,15 @@ export async function reconcileStreamFloor(floor: number, chatId: string): Promi
 }
 
 async function supplement(s: Session, count: number): Promise<void> {
-  const capacity = Math.max(0, s.options.maxImages - count);
   const needed = Math.max(0, s.options.minImages - count);
-  if (!capacity || !s.prepared || !s.body || !s.binding || !ownerValid(s)) return;
-  if (!needed && !s.options.streamGapSupplement) return;
-  const visibleLength = (text: string) => text.replace(/\s/g, '').length;
-  const segments = markerSegments(s.body,s.stripTags), tail = maskStreamStorySource(s.body,s.stripTags).slice(segments.at(-1)?.marker.end ?? 0);
-  const longTail = visibleLength(tail) > 1200;
-  const longGap = s.options.streamGapSupplement && (longTail || segments.some(segment => visibleLength(segment.segment) > 1200));
-  if (!needed && !longGap) return;
-  const maximum = s.options.streamGapSupplement ? capacity : needed;
+  if (!needed || !s.prepared?.segments.length || !s.body || !s.binding || !ownerValid(s)) return;
   // A separate completion here used to bypass the configured analysis concurrency and
   // rebuild profiles while streamed requests were still running. NAI stays independent.
   await s.core.analysisSettled();
   if (s.controller.signal.aborted || !ownerValid(s)) return;
-  const full = s.prepared;
-  // Prefer uncovered tail/long spans. If count is below min, all narrative may supply a distinct missing moment.
-  const tailStart = s.body.slice(0, segments.at(-1)?.marker.end ?? 0).split('\n').length - 1;
-  const starts = [0]; for (let i = 0; i < s.body.length; i++) if (s.body[i] === '\n') starts.push(i + 1);
-  const gaps = segments.flatMap((segment, i) => visibleLength(segment.segment) > 1200
-    ? [{ start: i ? segments[i-1].marker.end : 0, end: Math.max(0, segment.marker.index - 600) }] : []);
-  const candidates = needed ? full.segments : full.segments.filter(segment =>
-    (longTail && segment.sourceLine >= tailStart) || gaps.some(gap => starts[segment.sourceLine] >= gap.start && starts[segment.sourceLine] < gap.end));
-  if (!candidates.length) return;
-  const target = { segments: candidates, promptText: candidates.map(segment => `${segment.text} ⟦${segment.id}⟧`).join('\n\n') };
+  const target = s.prepared;
   const priorImages = parseImageTags(s.body).map(raw => parseImageTagContent(raw).tag.slice(0, 300)).join('；');
-  const note = `文末补充配图：已接受 ${count} 张，最多补 ${maximum} 张，至少补 ${needed} 张。${STREAM_SCENE_SUBJECT_RULE}已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
+  const note = `文末补充配图：已接受 ${count} 张，只补足还缺的 ${needed} 张。${STREAM_SCENE_SUBJECT_RULE}已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
   const controller = s.controller;
   let plan: ReturnType<typeof parseImagePlan> | undefined;
   let lastError: unknown;
@@ -672,13 +695,16 @@ async function supplement(s: Session, count: number): Promise<void> {
     const entries = charTagsBeforeFloor(s.binding!.floor + 1), known = new Set(entries.map(entry => entry.name));
     const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
     const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames(),s.profile.mode!=='illustration');
-    const compact:CompactComicContext|undefined = fastComicAnalysis(s) ? {target,entries:anchors.entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,size:s.promptEnvironment.profile.lockedSize,min:needed,max:maximum}:undefined;
-    const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: maximum },
-      readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, compact ? compactLibrary(compact) : anchors.text, note, s.promptEnvironment.profile, s.promptEnvironment,'select-scenes',compact ? compactComicSpec(compact) : undefined);
+    const archive = fastComicAnalysis(s) ? readVisualArchive(getContext()!.chat, s.binding!.floor, s.stripTags) : undefined;
+    const compact:CompactComicContext|undefined = archive ? {target,entries:anchors.entries,locked:lockedCharTagNames(),nai:s.promptEnvironment.nai,size:s.promptEnvironment.profile.lockedSize,min:needed,max:needed,visual:archive.changes}:undefined;
+    const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: needed },
+      compact ? null : readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, compact ? compactLibrary(compact) : anchors.text,
+      archive ? [note, visualArchiveNote(archive)].join('\n') : note,
+      s.promptEnvironment.profile, s.promptEnvironment,'select-scenes',compact ? compactComicSpec(compact) : undefined);
     for (let attempt = 0; attempt <= Math.max(0, s.options.retryCount); attempt++) {
       if (controller.signal.aborted) return;
       try {
-        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, compact ? parseCompactComic(raw,compact) : parseImagePlan(raw, target.segments, needed, maximum), anchors); },'流式配图 · 文末补充');
+        await completion(s, messages, controller.signal, raw => { plan = preparePlan(s, compact ? parseCompactComic(raw,compact) : parseImagePlan(raw, target.segments, needed, needed), anchors); },'流式配图 · 文末补充');
         if (plan) break;
       } catch (error) { lastError = error; }
     }
@@ -689,7 +715,7 @@ async function supplement(s: Session, count: number): Promise<void> {
     { image: { ...image, renderProfile: s.profile }, changes: plan!.changes })).filter((job): job is Job => !!job);
   for (const job of added) job.payload!.image.slotId = job.id;
   const ok = await serial(s, () => applyMessageText(s.binding!.floor, text => {
-    const rebased = rebaseImagePositions(text, full.segments, added.map(job=>job.payload!.image), s.stripTags);
+    const rebased = rebaseImagePositions(text, target.segments, added.map(job=>job.payload!.image), s.stripTags);
     return rebased ? injectImageTags(text, rebased.images.map(image => ({ ...image, renderProfile: s.profile }))) : null;
   }, s.chatId, s.binding!.expectedSwipe, s.binding!.message));
   if (ok !== 'saved') { for (const job of added) s.core.cancelJob(job); throw new Error(`补图位置写入失败：${ok}`); }
@@ -748,8 +774,8 @@ function updateFloatingPreview(s: Session): void {
   const id = `bbi-preview-${s.id}`;
   let host = document.getElementById(id);
   if (!settings.enabled || !settings.autoTag.enabled || !settings.autoTag.streamGen ||
-    !settings.autoTag.streamPreview || s.completed || !ownerValid(s)) { host?.remove(); return; }
-  const jobs = s.core.jobs.filter(job => job.result && !job.attached && !job.saved && job.phase !== 'cancelled' && !s.inline?.has(job.id));
+    settings.autoTag.streamInlinePreview || !settings.autoTag.streamPreview || s.completed || !ownerValid(s)) { host?.remove(); return; }
+  const jobs = s.core.jobs.filter(job => job.result && !job.attached && !job.saved && job.phase !== 'cancelled');
   if (!jobs.length) { host?.remove(); return; }
   if (!host) {
     host = document.createElement('div'); host.id = id;

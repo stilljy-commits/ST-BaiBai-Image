@@ -3,14 +3,14 @@ import type { NaiSettings, BackendId } from '@/state/settings';
 /** Persist only prompt interpretation, never connections or API keys. */
 export interface RenderProfile {
   mode: 'illustration' | 'comic-v1' | 'comic-v2';
+  /** Legacy saved marker field. Comic rendering now always omits lettering. */
   text: boolean;
 }
 
 export function captureRenderProfile(nai: NaiSettings, backend: BackendId = 'nai'): RenderProfile {
   return {
-    mode: backend === 'nai' && nai.comicMode && nai.model.includes('nai-diffusion-5')
-      ? (nai.comicV2 ? 'comic-v2' : 'comic-v1') : 'illustration',
-    text: nai.comicText !== false,
+    mode: backend === 'nai' && nai.comicMode && nai.model.includes('nai-diffusion-5') ? 'comic-v2' : 'illustration',
+    text: false,
   };
 }
 
@@ -30,5 +30,5 @@ export function inferRenderProfile(tag: string): RenderProfile {
 }
 
 export function applyRenderProfile(nai: NaiSettings, profile: RenderProfile): NaiSettings {
-  return { ...nai, comicMode: profile.mode !== 'illustration', comicV2: profile.mode === 'comic-v2', comicText: profile.text };
+  return { ...nai, comicMode: profile.mode !== 'illustration', comicV2: profile.mode === 'comic-v2' };
 }

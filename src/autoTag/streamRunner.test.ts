@@ -8,7 +8,7 @@ vi.mock('@/autoTag/streamInlinePreview',async importOriginal=>({...await importO
  beginHandoff(){this.handoff=true;return()=>{this.finished=true;};}
  dispose(){this.disposed=true;}
 }}));
-vi.mock('@/st/context',()=>({getContext:()=>h.ctx}));
+vi.mock('@/st/context',async importOriginal=>({...await importOriginal<typeof import('@/st/context')>(),getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
 vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any,compactSpec:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode,compactSpec}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
@@ -25,6 +25,7 @@ import { beginStreamSession, feedStreamText, finishStreamInput, markStreamHostFi
 import { saveImageResult } from '@/floor/storage';
 import { parseImageTags, parseImageTagContent } from '@/st/imageTagRegex';
 import { cancelStreamSlot, retryStreamSlot, streamSlotState } from '@/autoTag/streamState';
+import { readVisualArchive } from '@/autoTag/visualArchive';
 const flush=async()=>{for(let i=0;i<35;i++)await Promise.resolve();};
 const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥匙交接]';
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
@@ -48,8 +49,8 @@ beforeEach(()=>{
   h.profile={nl:false,naiCharPrompts:true,lockedSize:null};
   h.ctx={chat:[{name:'User',is_user:true,is_system:false,mes:'开始',send_date:'user'}],name1:'User',name2:'Char',getCurrentChatId:()=> 'A',chatMetadata:{},saveChat:vi.fn(async()=>{}),updateMessageBlock:vi.fn(),eventSource:{on:()=>{},emit:vi.fn()},eventTypes:{MESSAGE_EDITED:'edited',MESSAGE_UPDATED:'updated'}};
   settings.channels=[];settings.assignments.tagGen='';
-  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';settings.nai.comicProgressivePages=false;settings.nai.comicReasoningByModel={};
-  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamInlinePreview:false,streamGapSupplement:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
+  settings.enabled=true;settings.defaultBackend='nai';settings.nai.comicMode=false;settings.nai.comicAnalysisMode='standard';settings.nai.comicReasoningByModel={};
+  Object.assign(settings.autoTag,{enabled:true,streamGen:true,streamPreview:false,streamInlinePreview:false,streamProgressivePages:false,autoGenerate:true,minImages:0,maxImages:2,retryCount:0,streamAnalysisConcurrency:2,streamAnalysisBatchSize:3});
   vi.stubGlobal('toastr',{warning:vi.fn(),info:vi.fn(),success:vi.fn()});
   vi.stubGlobal('document',{getElementById:()=>null,querySelector:()=>({querySelector:()=>null})});
 });
@@ -159,10 +160,12 @@ describe('real stream runner with fixed groups of three',()=>{
     await reconcileStreamFloor(1,'A');await flush();
     expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);expect(saveImageResult).toHaveBeenCalledTimes(3);expect(h.analyses).toHaveLength(1);
   });
-  it('keeps floating preview for fallback results and restores it when inline display is disabled',async()=>{
-    const hosts=await inlineStory();settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(hosts.size).toBe(1);
-    const first=h.inlines[0];settings.autoTag.streamInlinePreview=false;refreshStreamPreviews();expect(first.disposed).toBe(true);expect(hosts.size).toBe(2);
-    settings.autoTag.streamInlinePreview=true;refreshStreamPreviews();expect(h.inlines).toHaveLength(2);expect(hosts.size).toBe(1);expect(h.images).toHaveLength(3);
+  it('prefers inline display if both options are set and can still switch to floating preview',async()=>{
+    const hosts=await inlineStory();
+    const floating = () => [...hosts.keys()].some(id => id.startsWith('bbi-preview-'));
+    settings.autoTag.streamPreview=true;refreshStreamPreviews();expect(floating()).toBe(false);
+    const first=h.inlines[0];settings.autoTag.streamInlinePreview=false;refreshStreamPreviews();expect(first.disposed).toBe(true);expect(floating()).toBe(true);
+    settings.autoTag.streamInlinePreview=true;refreshStreamPreviews();expect(h.inlines).toHaveLength(2);expect(floating()).toBe(false);expect(h.images).toHaveLength(3);
   });
   it.each(['stop','chat','swipe','processor','delete'])('clears live ownership on %s and does not attach a late result elsewhere',async(action)=>{
     await inlineStory();const inline=h.inlines[0];
@@ -188,7 +191,7 @@ describe('real stream runner with fixed groups of three',()=>{
     expect(h.analyses[3].m[0].options.maxImages).toBe(2);finishAnalysis(3);await flush();
   });
   it('does not dispatch a fourth image from a word-count footer or use its text for gap filling',async()=>{
-    Object.assign(settings.autoTag,{maxImages:21,minImages:3,streamGapSupplement:true});
+    Object.assign(settings.autoTag,{maxImages:21,minImages:3});
     const footer='\n【正文回答字数统计】\n'+('本轮正文约6000字。'.repeat(180))+'\n[img: 旅人挥手]';
     const text=story(3)+footer;beginStreamSession('A');feedStreamText(text);await flush();
     expect(h.analyses).toHaveLength(1);expect(h.analyses[0].m[0].content).not.toContain('6000');
@@ -385,18 +388,12 @@ describe('real stream runner with fixed groups of three',()=>{
     h.analyses[0].o.validate(JSON.stringify({images:[{position:'P1',tag:'doorway',nl:'Unexpected natural language',size:'portrait',characters:[{name:'她',tag:'girl, opening door',nl:'Extra description'}]}],changes:[]}));
     h.analyses[0].resolve();await flush();expect(h.images[0].input).toMatchObject({nl:'',size:'landscape',characters:[{name:'她',tag:'girl, opening door',nl:''}]});
   });
-  it('analyzes an uncovered long tail without duplicating the already illustrated opening',async()=>{
-    settings.autoTag.maxImages=5;settings.autoTag.streamGapSupplement=true;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(140);
-    await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(2);
-    expect(h.analyses[1].m[0].options).toMatchObject({minImages:0,maxImages:4});expect(h.analyses[1].m[0].content).toContain('进入车站');
-    expect(h.analyses[1].m[0].content).not.toContain('她开门');finishAnalysis(1,1);await flush();expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(2);
-  });
-  it('does not add an optional long-gap request after the minimum is already met by default',async()=>{
+  it('does not request more images for a long gap after the minimum is met',async()=>{
     settings.autoTag.maxImages=5;const text='她开门。\n[img: 门口]\n'+'两人走过街道并进入车站。'.repeat(140);
     await pendingStory(text);finishAnalysis(0);await flush();expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(1);
   });
-  it('ignores long metadata and its markers even with optional gap filling enabled',async()=>{
-    Object.assign(settings.autoTag,{maxImages:6,streamGapSupplement:true});
+  it('ignores long metadata and its markers',async()=>{
+    Object.assign(settings.autoTag,{maxImages:6});
     const metadata='<summary>\n'+('已经叙述过的摘要。'.repeat(220))+'\n[img: 摘要伪标记]\n</summary>\n<action>\n[img: 选项伪标记]\n</action>\n<UpdateVariable>\n'+('变量更新。'.repeat(220))+'\n</UpdateVariable>';
     const text=story(3)+'\n两人结束散步。\n'+metadata;
     beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(1);
@@ -460,6 +457,56 @@ describe('source ordered costume completion before NAI',()=>{
  }
 });
 describe('compact pages integrated with real task lifecycle',()=>{
+ it('carries the previous visual archive before any NAI result and sends only the unprocessed tail and skipped floor',async()=>{
+  useCompactChannel();
+  settings.autoTag.contextMessages=30;
+  settings.autoTag.streamAnalysisBatchSize=1;
+  settings.nai.comicReasoningByModel={'["compact","openai","https://api.deepseek.com/v1","deepseek-flash"]':'off'};
+  const first='小雪换黄雨衣、扎马尾、化淡妆。\n[img: 女主出门]\n她在门口收起银发夹。';
+  beginStreamSession('A');feedStreamText(first);await flush();await attachStory(first);
+  const task=h.analyses[0];
+  expect(task.o.reasoningOverride).toBeUndefined();
+  task.o.validate(JSON.stringify({pages:[compactPage('M1',{
+    profiles:[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}],
+    state:{complete:true,facts:'小雪来到门口',outfits:{小雪:'yellow raincoat'},looks:{小雪:{hair:'ponytail',makeup:'light makeup'}}},
+  })]}));task.resolve();await flush();
+  expect(saveImageResult).not.toHaveBeenCalled();
+  const archive=readVisualArchive(h.ctx.chat,2,[]);
+  expect(archive.changes).toEqual({小雪:{hair:'ponytail',makeup:'light makeup',outfit:'yellow raincoat'}});
+  expect(archive.pending).toBe('她在门口收起银发夹。');
+  beginStreamSession('A');
+  h.ctx.chat.push(ai('这一楼只写别人在月台等车。'));
+  expect(await reconcileStreamFloor(2,'A')).toBe(false);
+  h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续',send_date:'user2'});
+  beginStreamSession('A');feedStreamText('小雪走到月台。\n[img: 女主在月台]');await flush();
+  const request=h.analyses[1].m[0];
+  expect(request.library).toContain('yellow raincoat');
+  expect(request.library).toContain('ponytail');
+  expect(request.note).toContain('她在门口收起银发夹。');
+  expect(request.note).toContain('这一楼只写别人在月台等车。');
+  expect(request.note).not.toContain('小雪换黄雨衣、扎马尾、化淡妆。');
+ });
+ it('reuses the confirmed look when continuing the same AI floor and records the new look after it',async()=>{
+  useCompactChannel();
+  settings.autoTag.streamAnalysisBatchSize=1;
+  const original='小雪披上黄雨衣。\n[img: 小雪出门]';
+  beginStreamSession('A');feedStreamText(original);await flush();await attachStory(original);
+  const answer=(outfit:string)=>JSON.stringify({pages:[compactPage('M1',{
+   profiles:[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}],
+   state:{complete:true,facts:'人物来到车站',outfits:{小雪:outfit}},
+  })]});
+  h.analyses[0].o.validate(answer('yellow raincoat'));h.analyses[0].resolve();await flush();
+  expect(readVisualArchive(h.ctx.chat,2,[]).changes.小雪.outfit).toBe('yellow raincoat');
+  const continued='小雪换上灰色外套。\n[img: 小雪换衣]';
+  beginStreamSession('A','continue');feedStreamText(continued);await flush();
+  expect(h.analyses[1].m[0].library).toContain('yellow raincoat');
+  h.ctx.chat[1].mes+='\n'+continued;
+  await reconcileStreamFloor(1,'A');await flush();
+  h.analyses[1].o.validate(answer('gray jacket'));h.analyses[1].resolve();await flush();
+  const archive=readVisualArchive(h.ctx.chat,2,[]);
+  expect(archive.changes.小雪.outfit).toBe('gray jacket');
+  expect(archive.pending).toBe('');
+ });
  it('keeps an explicit uncommon garment through dispatch and carries it across incomplete-summary batches',async()=>{
   useCompactChannel();const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');
   beginStreamSession('A');feedStreamText(text);await flush();
@@ -516,7 +563,7 @@ describe('compact pages integrated with real task lifecycle',()=>{
 describe('native comic reasoning and progressive dispatch',()=>{
  const nativePage=(position:string,extra:any={})=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[],...extra});
  function nativeMode(mode:'standard'|'simple'='standard',progressive=true){
-  useCompactChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicProgressivePages:progressive});settings.autoTag.maxImages=3;
+  useCompactChannel();settings.nai.comicAnalysisMode=mode;Object.assign(settings.autoTag,{streamProgressivePages:progressive,maxImages:3});
  }
  it.each(['standard','simple'] as const)('applies a %s request override without changing its native protocol or stored channel',async(mode)=>{
   nativeMode(mode,false);const {comicReasoningKey}=await import('@/api/comicReasoning');

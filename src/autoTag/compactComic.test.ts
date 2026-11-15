@@ -8,9 +8,32 @@ const actor=(extra:Record<string,unknown>={})=>({name:'小雪',action:'holding a
 const page=(extra:Record<string,unknown>={})=>({id:'M1',rating:'SFW',scene:'station, afternoon',profiles:[],changes:[],shots:[{camera:'medium shot',actors:[actor()]}],...extra});
 function context():CompactComicContext{
  const batch=prepareStreamBatch([{id:'a',input:{raw:'',intent:'旅人',prefix:'',text:'小雪走进车站。\n她把头发剪短。\n诺拉走来，说：“出发吧。”',sourceLine:10}}],[],true);
- return {target:batch.target,markers:batch.markerTargets,entries:[entry()],locked:new Set(),nai:{...settings.nai,comicV2:true,comicText:false,comicPanelStyle:'universal',comicGutter:'boxed',comicExtraRules:''},size:'portrait',min:1,max:1};
+ return {target:batch.target,markers:batch.markerTargets,entries:[entry()],locked:new Set(),nai:{...settings.nai,comicV2:true,comicPanelStyle:'universal',comicGutter:'boxed',comicExtraRules:''},size:'portrait',min:1,max:1};
 }
 describe('compact comic compilation',()=>{
+ it('keeps per-shot actions and relative positions on the corresponding characters',()=>{
+  const c=context();
+  c.entries.push({...entry('诺拉','silver hair'),fields:{...entry().fields,sex:'1boy',outfit:'gray jacket'}});
+  const rear=actor({action:'target#hug, facing the window, her back against his chest'});
+  const hug=actor({name:'诺拉',action:'source#hug, standing behind her, arms around her shoulders'});
+  const sit=actor({action:'sitting across the table from him, facing him'});
+  const seated=actor({name:'诺拉',action:'sitting on the opposite side of the table, facing her'});
+  const shots=[{camera:'medium shot',event:'rear hug by the window',actors:[rear,hug]},
+    {camera:'wide shot',event:'conversation across the table',actors:[sit,seated]}];
+  const image=compileComicPage(page({shots}),c).plan.images[0];
+  expect(image.tag).toContain('rear hug by the window');expect(image.tag).toContain('conversation across the table');
+  expect(image.tag).not.toMatch(/(?:source|target)#hug|back against|arms around|opposite side/);
+  expect(image.characters.map(person=>[person.name,person.tag])).toEqual([
+   ['小雪',expect.stringContaining(rear.action)],['诺拉',expect.stringContaining(hug.action)],
+   ['小雪',expect.stringContaining(sit.action)],['诺拉',expect.stringContaining(seated.action)],
+  ]);
+  const older=compileComicPage(page({shots:[{camera:'medium shot',actors:[rear,hug]}]}),c).plan.images[0];
+  expect(older.tag).toContain('standing behind her');expect(older.tag).not.toMatch(/(?:source|target)#hug/);
+  c.nai.comicV2=false;
+  const legacy=compileComicPage(page({shots}),c).plan.images[0];
+  expect(legacy.tag.split('@character')[0]).toContain('rear hug by the window');
+  expect(legacy.tag.split('@character')[0]).not.toContain('target#hug');
+ });
  it('clears a previous cosplay source when this page explicitly establishes a permanent new outfit',()=>{
   const c=context();c.costumes={小雪:"cosplay, wearing Hero's outfit from Example Work."};c.outfits={小雪:'white jacket'};
   const result=compileComicPage(page({changes:[{name:'小雪',field:'outfit',value:'blue shirt',position:'P2'}],shots:[{camera:'medium shot',actors:[actor({at:'P3'})]}]}),c);
@@ -67,6 +90,24 @@ describe('compact comic compilation',()=>{
   expect(result.plan.images[0].characters[0].tag).toContain('short black hair');expect(result.plan.changes).toEqual([]);expect(c.entries[0].fields.hair).toBe('long black hair');
   c.locked=new Set(['小雪']);expect(compileComicPage(page({shots:[{camera:'medium',actors:[actor({look:{hair:'short black hair'}})]}]}),c).plan.images[0].characters[0].tag).toContain('long black hair');
  });
+ it('inherits each tracked appearance field, applies current prose first, and can return to the fixed look',()=>{
+  const c=context();
+  c.visual={小雪:{hair:'ponytail',makeup:'peach blush',outfit:'yellow raincoat'}};
+  const inherited=compileComicPage(page(),c).plan.images[0].characters[0].tag;
+  expect(inherited).toContain('ponytail');
+  expect(inherited).toContain('peach blush');
+  expect(inherited).toContain('yellow raincoat');
+  expect(inherited).not.toMatch(/long black hair|blue coat/);
+  const switched=compileComicPage(page({
+   shots:[{camera:'medium shot',actors:[actor({look:{hair:null,makeup:null},outfit:'green cardigan'})]}],
+   state:{complete:true,facts:'人物仍在车站',outfits:{小雪:'green cardigan'},looks:{小雪:{hair:null,makeup:null}}},
+  }),c);
+  expect(switched.plan.images[0].characters[0].tag).toContain('long black hair');
+  expect(switched.plan.images[0].characters[0].tag).toContain('green cardigan');
+  expect(switched.plan.images[0].characters[0].tag).not.toMatch(/ponytail|peach blush|yellow raincoat/);
+  expect(switched.state.visual).toEqual({小雪:{hair:null,makeup:null,outfit:'green cardigan'}});
+  expect(c.entries[0].fields.outfit).toBe('blue coat');
+ });
  it('supports anonymous people without adding a named profile',()=>{
   const result=compileComicPage(page({shots:[{camera:'wide',actors:[actor({anonymous:true,name:'',fields:{sex:'boy'},action:'walking past the station'})]}]}),context());
   expect(result.plan.changes).toEqual([]);expect(result.plan.images[0].characters[0].tag).toContain('boy');
@@ -108,11 +149,12 @@ describe('compact comic compilation',()=>{
   expect(result.images.map(i=>i.position)).toEqual(['P1','P2']);
   expect(result.images[0].characters[0].tag).toContain('blue coat');expect(result.images[1].characters[0].tag).toContain('white sweater');expect(c.entries[0].fields.outfit).toBe('blue coat');
  });
- it('includes only selected original dialogue when enabled',()=>{
-  const c=context();c.nai.comicText=true;
-  expect(compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'出发吧。'})]}]}),c).plan.images[0].characters[0].tag).toContain('\nText: 出发吧。');
-  expect(()=>compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'新增台词'})]}]}),c)).toThrow('原句');
-  c.nai.comicText=false;expect(compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'新增台词'})]}]}),c).plan.images[0].characters[0].tag).not.toContain('Text:');
+ it('ignores old dialogue fields and compiles just the visual action',()=>{
+  const c=context();
+  const image=compileComicPage(page({shots:[{camera:'medium',actors:[actor({dialogue:'出发吧。',speech:'thought'})]}]}),c).plan.images[0];
+  expect(image.characters[0].tag).toContain('holding a map');
+  expect(image.characters[0].tag).not.toMatch(/Text:|bubble|出发吧/);
+  expect(image.tag).not.toMatch(/chinese text|speech bubble/);
  });
  it('carries explicit clothes to a later page without requiring a complete continuity summary',()=>{
   const c=context();c.markers=undefined;c.min=2;c.max=2;

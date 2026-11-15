@@ -1,7 +1,13 @@
+export const NAI_INTERACTION_RULE = '仅在多人姿态或接触容易混淆时，按正文在各自人物栏写本人朝向、相对站位和关键接触点。区分并排同向、隔桌对坐、从身后接触；只写可见且有依据的细节。适用时用配对的source# / target# / mutual#动作标签，只放对应人物栏。公共描述只写共享姿态或核心事件。';
+
 /** Shared concise contract for all three analysis modes. No additional model
  * pass, visible checklist, exhaustive pairwise comparison or reasoning report. */
 export const COMIC_VISUAL_RULES=`【共同画面约束｜直接落实，不输出检查报告】
+只用画面讲故事。对白情绪用动作与表情表达，省略文字、气泡、旁白和拟音。
+连续场景沿用光源、明暗与色调，只在正文写明转场、时间或光源变化时更新；人物固有颜色与环境光分开。
 每格只定格一个时刻；先后动作择关键瞬间或拆格。写清谁对谁做什么及必要的接触、持物、支撑；只在会造成冲突的操作中交代左右手，不推算关节角度。新动作不清除仍有效的持物、接触或衣着。
+站、坐、躺等姿态应有合理的支撑面；遮挡与裁切按实际可见范围处理。接触或换装时写清衣物仍归谁、遮到哪里，避免把肢体或服饰画到另一人身上。
+${NAI_INTERACTION_RULE}
 fandom只表示人物本人身份，同人默认保留原作辨识，原创按固定库保留外貌；不为建档重做原作外貌与穿搭。正文明确改设或换装优先。cosplay是临时穿着，不把被cos的角色写入本人的fandom或永久changes；保留本人脸和体型，假发、美瞳等只按正文临时改变。
 【cosplay来源完整性｜优先于精简】每张图中每位cosplay穿着者的首次入镜都必须单列cosplay:{character:被cos角色的可靠英文名,work:所属作品英文名,costume:已明确的服装/皮肤版本}。正文或资料已明确的作品和角色必须保留，不能因为此前提过、未换装、关闭nl或追求简短而省略；同图后续画格沿用本图来源。仅确实无法可靠确定的作品或版本才省略，不编造。程序已确认表用于照抄完整字段，不是少写许可。结束cosplay明确写cosplay:null，换对象或版本从生效位置更新。不输出考据或检查报告。
 outfit写当前关键衣饰，不压成普通制服或泛化套装。兼容旧写法时必须给完整英文来源短句，例如“cosplay, wearing 被cos角色's 明确版本 outfit from 作品.”，不能只写“角色名 costume”“角色名 cosplay”这类无作品的缩写。最终每个可见衣着人物的NAI提示词都要有完整已知来源和镜头内关键衣饰；特写裁切不表示结束cosplay。

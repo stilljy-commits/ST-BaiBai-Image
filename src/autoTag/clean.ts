@@ -1,4 +1,7 @@
 import { MARKER_REGEX_SOURCE } from '@/autoTag/markerSyntax';
+import { IMAGE_TAG_FIND_REGEX, parseImageTagContent } from '@/st/imageTagRegex';
+import { comicSectionBase, comicSectionCharacters, parseComicSections } from '@/comic/sections';
+import { withComicCosplay } from '@/comic/costume';
 /**
  * 正文清洗工具(与柏宝书 timeTag.ts 的 stripCustomTags 完全同口径,改动需双端同步)。
  * 名单来自共享存储(settings.excludes.customStripTags),输入时已由 sanitizeTagName 消毒,
@@ -99,6 +102,39 @@ export function cleanHistoryText(mes: string, tags: string[]): string {
   return clampToStoryBody(mes, tags, true)
     .replace(RE_START, (_, value) => `(起始时间:${String(value).trim()})`)
     .replace(RE_END, (_, value) => `(结束时间:${String(value).trim()})`).replace(new RegExp(MARKER_REGEX_SOURCE, 'g'), '');
+}
+
+const OLD_IMAGE_BOILERPLATE = /^(?:sfw|nsfw|comic(?: page)?|\d+ panels?|full color|high complexity|white borders?|best quality|amazing quality|masterpiece|absurdres|highres|very aesthetic|newest|year \d{4})$/i;
+
+function historicalVisual(text: string): string {
+  return text.replace(/^[ \t]*Text:[\s\S]*$/im, '').split(',').map(part => part.trim())
+    .filter(part => part && !OLD_IMAGE_BOILERPLATE.test(part)).join(', ');
+}
+
+/** Compact the copy sent to the analysis API. Preserve old visual facts and their position in the prose. */
+export function compactHistoryImageReferences(history: string): string {
+  return history.replace(IMAGE_TAG_FIND_REGEX, raw => {
+    // A broken older tag can span prose and another image. Keep it whole in that case.
+    if (/<bbi_image\b/i.test(raw.slice('<bbi_image>'.length))) return raw;
+    const image = parseImageTagContent(raw);
+    const comic = parseComicSections(image.tag);
+    if ((!comic && /^(?:<image\b|@(?:page|position)\b)/i.test(image.tag)) ||
+      (!image.characters.length && /<characters>\s*(?!\[\s*\]\s*<\/characters>)[\s\S]+?<\/characters>/i.test(raw))) return raw;
+
+    const people = comic ? comicSectionCharacters(comic) : image.characters;
+    const reference = new Set([historicalVisual(comic ? comicSectionBase(comic) : image.tag), historicalVisual(image.nl)]);
+    for (const person of people) {
+      const visual = historicalVisual(person.tag);
+      const clothing = [person.outfit, person.wardrobe, withComicCosplay('', person.cosplay)]
+        .filter((part): part is string => Boolean(part && !visual.includes(part)));
+      const details = [...new Set([visual, ...clothing, historicalVisual(person.nl)].filter(Boolean))];
+      if (details.length) reference.add(`${person.name}：${details.join(', ')}`);
+    }
+    const result = [...reference].filter(Boolean).join('\n');
+    if (!result) return '';
+    const compact = `\n【旧图视觉参考】\n${result}\n【旧图视觉参考结束】\n`;
+    return compact.length < raw.length ? compact : raw;
+  });
 }
 
 interface RemovalRange {

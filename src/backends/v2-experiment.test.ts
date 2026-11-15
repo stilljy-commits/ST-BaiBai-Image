@@ -25,12 +25,10 @@ const nai: NaiSettings = {
   negativePrompt: '',
   comicMode: true,
   comicV2: true,
-  comicText: true,
+
   comicPanelStyle: 'eromanga',
   comicGutter: 'bleed',
-  comicLighting: true,
   comicAntiPossession: false,
-  comicNsfwRules: false,
   comicExtraRules: '',
   resolution: '832×1216',
   portraitSize: '1024×1536',
@@ -77,7 +75,7 @@ const REAL_CHARS = [
 ];
 
 describe('漫画页 V2 全链路实验(1.3.1 真实数据 dry-run)', () => {
-  it('LLM JSON → 最终 v4_prompt,与 1.3.1 结构逐字段等价', () => {
+  it('旧漫画存档完整读回，新请求只画场景和各人物', () => {
     // ① 副 API 返回的 JSON(模拟 LLM 按 V2 规范输出)
     const llmJson = JSON.stringify({
       images: [
@@ -124,18 +122,18 @@ describe('漫画页 V2 全链路实验(1.3.1 真实数据 dry-run)', () => {
     };
 
 
-    // 逐字段断言:Base 行 + 官方质量词(no text 已滤),三条 char_captions、fandom tag 保留、Text 行逐字保留
-    expect(input).toBe(`${REAL_BASE}, very aesthetic, masterpiece`);
-    expect(v4.caption.base_caption).toBe(`${REAL_BASE}, very aesthetic, masterpiece`);
+    // 逐字段断言:Base 行与三条 char_captions 的视觉词保留，移除旧对白
+    expect(input).toBe(`${REAL_BASE.replace(/, (?:chinese )?text\b/gi, '')}, very aesthetic, masterpiece, no text`);
+    expect(v4.caption.base_caption).toBe(`${REAL_BASE.replace(/, (?:chinese )?text\b/gi, '')}, very aesthetic, masterpiece, no text`);
     expect(v4.caption.char_captions).toHaveLength(3);
     expect(v4.caption.char_captions[0].char_caption).toBe(
-      'girl, sakurajima mai (rascal does not dream of bunny girl senpai), long black hair, blue eyes, upper body, embarrassed, blush, sweat, speech bubble\nText: 呼……哈……心率……一百六十五……',
+      'girl, sakurajima mai (rascal does not dream of bunny girl senpai), long black hair, blue eyes, upper body, embarrassed, blush, sweat',
     );
     expect(v4.caption.char_captions[1].char_caption).toBe(
       'girl, sakurajima mai (rascal does not dream of bunny girl senpai), neck and chest view, gigantic breasts',
     );
     expect(v4.caption.char_captions[2].char_caption).toBe(
-      'girl, sakurajima mai (rascal does not dream of bunny girl senpai), full body, stationary bike, sportswear, dynamic pose, speed lines\nText: 还能再提速……！',
+      'girl, sakurajima mai (rascal does not dream of bunny girl senpai), full body, stationary bike, sportswear, dynamic pose, speed lines',
     );
     // 官方 payload 口径
     expect(v4.use_coords).toBe(false);
@@ -143,13 +141,12 @@ describe('漫画页 V2 全链路实验(1.3.1 真实数据 dry-run)', () => {
     expect(v4.caption.char_captions[0].centers).toEqual([{ x: 0.5, y: 0.5 }]);
   });
 
-  it('关闭对白上画:Base 行文字词与条目 Text/气泡全剥,画面词完整保留', () => {
-    const off: NaiSettings = { ...nai, comicText: false };
-    const input = fullPositivePrompt(off, REAL_BASE);
+  it('Base 行文字词与条目 Text 和气泡标签均移除', () => {
+    const input = fullPositivePrompt(nai, REAL_BASE);
     expect(input).toBe(
       'R-15, 1girl, comic, 3 panels, tight layout, white border, dynamic blue and warm orange rim lighting, glossy reflections, sweat drops, This is the medium panel in the upper right of the page, the small cut-in panel is at the top left corner, the large main panel fills the bottom half of the page, very aesthetic, masterpiece, no text',
     );
-    const params = buildNaiParameters(off, {
+    const params = buildNaiParameters(nai, {
       prompt: REAL_BASE,
       characters: REAL_CHARS,
       size: 'portrait',

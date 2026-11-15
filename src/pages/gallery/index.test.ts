@@ -513,8 +513,34 @@ describe('gallery directory export', () => {
     await flush();
 
     expect(fetchImage).not.toHaveBeenCalled();
-    expect(find(root, '.gal-export-status')).toHaveLength(0);
+    expect(text(find(root, '.gal-export-status')[0])).toContain('没有选到导出目录');
     expect(text(find(root, '.gal-actionbar-count')[0])).toContain('53');
+  });
+
+  it('lets the user recover from a directory picker that never opens, ignoring its late result', async () => {
+    vi.mocked(listUserImages).mockResolvedValue(['one.png']);
+    const { files, pick } = mockDirectory();
+    const directory = await pick();
+    let resolveFirst: (value: unknown) => void = () => {};
+    pick.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }));
+    const fetchImage = vi.fn(async () => imageResponse());
+    vi.stubGlobal('fetch', fetchImage);
+    const root = await selectAlpha();
+    await click(find(root, '.gal-export')[0]);
+
+    expect(text(find(root, '.gal-export-status')[0])).toContain('等待系统打开目录选择窗口');
+    expect(text(find(root, '.gal-stop-export')[0])).toBe('结束等待');
+    await click(find(root, '.gal-stop-export')[0]);
+    expect(find(root, '.gal-export')[0].props.disabled).toBe(false);
+    expect(text(find(root, '.gal-actionbar-count')[0])).toContain('1');
+    expect(text(find(root, '.gal-export-status')[0])).toContain('已结束等待');
+
+    await click(find(root, '.gal-export')[0]);
+    resolveFirst(directory);
+    await flush();
+    expect(fetchImage).toHaveBeenCalledTimes(1);
+    expect([...files]).toEqual([['one.png', original]]);
+    expect(text(find(root, '.gal-export-status')[0])).toContain('已导出 1 张');
   });
 
   it('reports individual read and write failures, and keeps successful exports', async () => {

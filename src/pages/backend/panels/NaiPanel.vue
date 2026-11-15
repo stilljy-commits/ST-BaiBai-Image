@@ -22,6 +22,7 @@ import {
   naiDefaultQualityTags,
   naiDefaultUndesired,
   naiSamplers,
+  naiSupportsVarietyBoost,
   naiSupportsVibes,
   NAI_NOISE_SCHEDULES,
   parseNaiv4vibe,
@@ -185,6 +186,8 @@ const artist = computed<NaiArtistPreset | null>(() => activeNaiArtist());
 
 /** 当前是否 V5 模型:控制画师串编辑区的 V5 差异提醒。 */
 const isV5Model = computed(() => isNai5(settings.nai.model));
+const showComicSettings = computed(() => isV5Model.value && settings.nai.comicMode);
+const varietyBoostSupported = computed(() => naiSupportsVarietyBoost(settings.nai.model));
 
 /** 「不使用」的下拉值。preset id 恒为 art_* / bi_* 形状,空串不会与任何一条相撞,无需装箱。 */
 const NO_ARTIST = '';
@@ -1145,20 +1148,17 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
 
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">生成自然语言</span>
+          <span class="bbi-field-label">插图提示词附加英文描述</span>
           <input v-model="settings.nai.naturalLanguage" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">
-          开:自动 tag 为画面与每个角色额外写一段英文描述;关:只写 tag。4.5 的提示词上限约 512 token
-          (画面与所有角色共用),自然语言最占篇幅,超了会被截断、画面走样,可以关掉试试。
-          只影响之后新写的提示词:正文里已有的自然语言照常发送,想对比可在「编辑提示词」里点「AI 重写提示词」。
-          多角色提示照常按角色拆分,只是每个角色同样只写 tag。
+          普通插图会在关键词之外给画面和人物补一小段英文描述，方便表达姿势、环境和互动。遇到提示词上限时建议关掉，漫画页使用自己的分镜格式。
         </p>
 
         <div class="be-row">
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">竖屏尺寸(宽×高)</span>
+              <span class="bbi-field-label">竖图尺寸（宽 × 高）</span>
             </div>
             <input
               class="bbi-input"
@@ -1176,7 +1176,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">横屏尺寸(宽×高)</span>
+              <span class="bbi-field-label">横图尺寸（宽 × 高）</span>
             </div>
             <input
               class="bbi-input"
@@ -1211,8 +1211,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
         </div>
         <p class="bbi-field-hint">
-          竖屏用于单人、特写、立绘;横屏用于群像、远景、全景。「自动」由自动 tag 按画面判定;
-          锁定后每张图都按该方向出,自动 tag 也按这个画幅构图。正文里已记下的方向不会被改写,改回「自动」即恢复。
+          「自动」由插件按场景选横图或竖图，漫画默认竖图。锁定后每张都用对应尺寸，也会按该方向构图。
         </p>
 
         <div class="be-row">
@@ -1240,7 +1239,8 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
         </div>
 
-        <p v-if="isNaiMedium(settings.nai.model)" class="bbi-field-hint">Medium 使用固定 14 步、Euler Ancestral、Rescale 0 和固定负面预设；下方步数等设置保留供 High 模型使用。</p>
+        <p class="bbi-field-hint">采样器和噪声表会改变画面的生成方式。同样的提示词和种子，换一项也可能得到不同的图。选自己已经调好的组合即可。</p>
+        <p v-if="isNaiMedium(settings.nai.model)" class="bbi-field-hint">V5 Medium 固定用 14 步、Euler Ancestral、Rescale 0 和内置负面词。下方的自定义值会在切回支持它们的模型时生效。</p>
         <div class="be-row be-row--nums">
           <div class="bbi-field">
             <div class="bbi-field-head">
@@ -1250,7 +1250,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">Scale</span>
+              <span class="bbi-field-label">提示词引导（Scale）</span>
             </div>
             <input
               class="bbi-input"
@@ -1263,7 +1263,7 @@ async function removeVibe(vibe: NaiVibe) {
           </div>
           <div class="bbi-field">
             <div class="bbi-field-head">
-              <span class="bbi-field-label">Rescale</span>
+              <span class="bbi-field-label">引导修正（Rescale）</span>
             </div>
             <input
               class="bbi-input"
@@ -1281,15 +1281,20 @@ async function removeVibe(vibe: NaiVibe) {
             <input class="bbi-input" type="number" v-model.number="settings.nai.seed" min="0" />
           </div>
         </div>
-        <p class="bbi-field-hint">Scale = 提示词相关性;Rescale = 相关性调整;种子 0 = 随机。</p>
+        <p class="bbi-field-hint">步数是生成图像的迭代次数。Scale 控制模型跟随提示词的强度，Rescale 可缓和较高引导值带来的失真。种子设为 0 时每次随机，填固定值便于对比改动。</p>
+
+        <template v-if="varietyBoostSupported">
+          <label class="bbi-switch-row">
+            <span class="bbi-field-label">画面多样性（Variety Boost）</span>
+            <input v-model="settings.nai.varietyBoost" type="checkbox" class="bbi-checkbox" aria-describedby="nai-variety-boost-hint" />
+          </label>
+          <p id="nai-variety-boost-hint" class="bbi-field-hint">
+            开启后，模型在生成后半程才加强提示词引导。用同一提示词多次出图时，构图可以更多样。
+          </p>
+        </template>
 
         <label class="bbi-switch-row">
-          <span class="bbi-field-label">Variety Boost(画面多样性,按尺寸自动计算)</span>
-          <input v-model="settings.nai.varietyBoost" type="checkbox" class="bbi-checkbox" />
-        </label>
-
-        <label class="bbi-switch-row">
-          <span class="bbi-field-label">漫画页模式(单张图 = 一整页分格漫画,仅 V5 模型生效)</span>
+          <span class="bbi-field-label">漫画页模式（仅 V5）</span>
           <input
             v-model="settings.nai.comicMode"
             type="checkbox"
@@ -1297,68 +1302,33 @@ async function removeVibe(vibe: NaiVibe) {
             :disabled="!isNai5(settings.nai.model)"
           />
         </label>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          已开启:自动生图将输出整页漫画。V2 架构照常拼接画师串与质量词(对白上画时自动滤掉质量词里的 no text);
-          V1(@page 标记整页文本)不拼,防质量词落进页尾 @negative 段。
-          建议把竖屏分辨率调到 1024×1536 或更高,漫画页文字多、低分辨率会糊。关闭即恢复普通插图。
-        </p>
+        <p class="bbi-field-hint">开启后，每张图是一页分格漫画。插件分开传入页面布局和各格人物，用动作与表情表现剧情，画面不加对白。关闭时按普通插图生成。</p>
 
-        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+        <div v-if="showComicSettings" class="bbi-num-row">
           <span class="bbi-field-label">漫画分析模式</span>
           <BbiSelect v-model="comicAnalysisMode" :options="comicAnalysisOptions" aria-label="漫画分析模式" />
         </div>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+        <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
           {{ comicAnalysisMode === 'fast'
-            ? '极速模式：AI输出简短分镜，插件补齐固定外貌和生图格式；每页就绪后提前生图，并复用已确认的连续状态。画格数量自然选择，经典四格仍为四格。实际速度因模型而异。'
+            ? '极速适合想少用 token 的时候。用本段正文和角色档案规划画面，只补读尚未记下的前情；已确认的衣着、发型、妆容随聊天保存。'
             : comicAnalysisMode === 'simple'
-              ? '简单模式：沿用此前的精简分析规则，由AI直接编写完整生图提示词。'
-              : '标准模式：沿用完整的分镜、细节与连续性要求。' }}
-          升级保留原来的选择。切换从下一次分析生效；进行中的流式轮次沿用开始时的模式。人物身份、分镜风格、对白和NAI参数继续使用原设置。
+              ? '简单适合日常配图。保留对场景和人物的参考，缩短分析指令，由 AI 直接写提示词。'
+              : '标准适合复杂剧情，使用完整分镜规则和近期上下文，通常需要更多分析时间和 token。' }}
+          模式切换从下一轮生效。
         </p>
-        <p v-if="settings.nai.comicMode && comicAnalysisMode === 'fast'" class="bbi-field-hint">
-          自定义附加规则及已开启的工程规则仍生效；其中要求的细节越多，提速空间越有限。
+        <p v-if="showComicSettings && comicAnalysisMode === 'fast'" class="bbi-field-hint">
+          极速的推理强度由生成提示词的 API 渠道决定。
         </p>
 
-        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+        <div v-if="showComicSettings && comicAnalysisMode !== 'fast'" class="bbi-num-row">
           <span class="bbi-field-label">当前模式推理方式</span>
           <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="当前漫画模式推理方式" />
         </div>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
-          {{ comicReasoningCaps.label }}。按副API渠道、模型和分析模式分别保存，默认跟随渠道；原极速模式设置不改变标准或简单模式。关闭推理保留本模式全部画面规则，但可能降低复杂情节的理解准确性；不影响主API正文和其他副API任务。
-        </p>
-        <label v-if="settings.nai.comicMode && comicAnalysisMode !== 'fast'" class="bbi-switch-row">
-          <span class="bbi-field-label">合批分析逐页启动出图</span>
-          <input v-model="settings.nai.comicProgressivePages" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p v-if="settings.nai.comicMode && comicAnalysisMode !== 'fast'" class="bbi-field-hint">
-          流式生图指派副API时，每页提示词完整并通过检查后就启动NAI，无需等待整批返回。不增加分析请求、不改变分镜规则；模型未按顺序返回时自动等整批完成。默认关闭。
+        <p v-if="showComicSettings && comicAnalysisMode !== 'fast'" class="bbi-field-hint" aria-live="polite">
+          {{ comicReasoningCaps.label }}。这项只控制当前模式用于分析画面的思考强度，按渠道和模型保存。跟随渠道最省事；关闭推理可能加快分析，也可能漏掉复杂情节。
         </p>
 
-        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">架构 V2(Base + 逐人物 Character Prompts,对齐 1.3.1 预设)</span>
-          <input
-            v-model="settings.nai.comicV2"
-            type="checkbox"
-            class="bbi-checkbox"
-          />
-        </label>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          V2(默认):页面布局进 Base 行,每个画格内每个可见人物单独一条 Character Prompt，页面与人物描述分开传递，避免混成一串。关闭则回退旧 V1(@page/@panel 标记整页文本)。
-          新生成的提示词采用切换后的架构；进行中的流式轮次沿用开始时的选择，正文里的存量旧 tag 保留原样。
-        </p>
-
-        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">漫画页对白上画(关闭 = 纯视觉叙事,无文字气泡)</span>
-          <input v-model="settings.nai.comicText" type="checkbox" class="bbi-checkbox" />
-        </label>
-        <p v-if="settings.nai.comicMode && !settings.nai.comicText" class="bbi-field-hint">
-          已关闭:生成时不带 Text 对白与气泡指令,画面更干净,可减少文字渲染错误。画面构图仍按漫画分格。
-        </p>
-
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          两种分析模式都保留阅读顺序、景别与核心事件连续性；简单模式精简细部要求。下方选择叠加的分镜风格；“仅通用规则”表示不叠加特定风格。
-        </p>
-        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+        <div v-if="showComicSettings" class="bbi-num-row">
           <span class="bbi-field-label">附加分镜风格</span>
           <BbiSelect
             v-model="comicStyle"
@@ -1366,14 +1336,14 @@ async function removeVibe(vibe: NaiVibe) {
             aria-label="附加分镜风格"
           />
         </div>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
+        <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
           {{ selectedComicStyle.description }}
         </p>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          新生成的提示词采用当前分镜与留白方案；正在进行的流式轮次沿用开始时的选择，切换后从下一轮生效。已有图片需重新分析提示词再重绘，才能采用新的分镜。
+        <p v-if="showComicSettings" class="bbi-field-hint">
+          分镜风格决定画格怎么排、重点放在哪。「仅通用规则」让模型按事件安排。已有图片需先重写提示词再重画，才会用新风格。
         </p>
 
-        <div v-if="settings.nai.comicMode" class="bbi-num-row">
+        <div v-if="showComicSettings" class="bbi-num-row">
           <span class="bbi-field-label">留白方案</span>
           <BbiSelect
             v-model="comicGutter"
@@ -1381,17 +1351,12 @@ async function removeVibe(vibe: NaiVibe) {
             aria-label="留白方案"
           />
         </div>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint" aria-live="polite">
-          {{ selectedComicGutter.description }}
+        <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
+          留白决定画格之间和页面边缘如何分隔。{{ selectedComicGutter.description }}
         </p>
 
-        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">连续场景光影一致性(同场景同光源,转场才换)</span>
-          <input v-model="settings.nai.comicLighting" type="checkbox" class="bbi-checkbox" />
-        </label>
-
-        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">同人角色防夺舍(同人 RP 时开,原作标签进负面词)</span>
+        <label v-if="showComicSettings && comicAnalysisMode === 'standard'" class="bbi-switch-row">
+          <span class="bbi-field-label">减弱同人角色带入的原作画风</span>
           <input
             v-model="settings.nai.comicAntiPossession"
             type="checkbox"
@@ -1399,22 +1364,9 @@ async function removeVibe(vibe: NaiVibe) {
           />
         </label>
 
-        <label v-if="settings.nai.comicMode" class="bbi-switch-row">
-          <span class="bbi-field-label">画面工程规则（通用 + NSFW）</span>
-          <input
-            v-model="settings.nai.comicNsfwRules"
-            type="checkbox"
-            class="bbi-checkbox"
-          />
-        </label>
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          一个开关控制整套画面约束：通用部分用于所有画面，约束人物归属、可见细节、动作支撑和衣着道具连续；NSFW 专项仅在对应场景适用。关闭后不追加这套工程规则。
-        </p>
+        <p v-if="showComicSettings && comicAnalysisMode === 'standard'" class="bbi-field-hint">同人角色有时会把原作画风带到整页。开启后，标准模式会尝试排除对应人物的原作画风，保留身份和外貌。</p>
 
-        <ComicExtraRules v-if="settings.nai.comicMode" />
-        <p v-if="settings.nai.comicMode" class="bbi-field-hint">
-          默认含:女性胸部加强 + 男性面部弱化 + 分镜女性在场规则(每格必有女角色) + 特写切入格定位顺序(胸/臀/下体/腿/腰/脸)。可自由改写，后续新生成的提示词采用修改后的规则；进行中的流式轮次沿用开始时的选择。
-        </p>
+        <ComicExtraRules v-if="showComicSettings" />
 
         <div class="bbi-num-row">
           <span class="bbi-field-label">同时出图数</span>
@@ -1427,8 +1379,7 @@ async function removeVibe(vibe: NaiVibe) {
           />
         </div>
         <p class="bbi-field-hint">
-          NAI 服务端不排队,并发高容易被限流(429),建议保持 1;超出的请求自动排队等待。
-          被限流时会自动退避重试(最多 3 次),并让所有排队任务一起冷却,不会连着撞上去。
+          控制同时发给 NAI 几张图，超出的会在插件里排队。一般用 1 更稳；并发较高时更容易遇到限流，插件会暂停后重试。
         </p>
       </Collapsible>
 

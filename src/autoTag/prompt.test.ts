@@ -1107,7 +1107,6 @@ describe('auto tag prompt', () => {
       comicMode: settings.nai.comicMode,
       comicV2: settings.nai.comicV2,
       comicExtraRules: settings.nai.comicExtraRules,
-      comicNsfwRules: settings.nai.comicNsfwRules,
     };
     try {
       settings.defaultBackend = 'nai';
@@ -1115,7 +1114,6 @@ describe('auto tag prompt', () => {
       settings.nai.comicMode = true;
       settings.nai.comicV2 = true;
       settings.nai.comicExtraRules = '';
-      settings.nai.comicNsfwRules = false;
       const messages = await buildAutoTagMessages(context(), 1, options, null);
       const text = messages.map(m => m.content).join('\n');
 
@@ -1130,7 +1128,7 @@ describe('auto tag prompt', () => {
       // 动作必写:人物条目与思维链都带硬性要求。
       expect(text.includes('动作必写')).toBe(true);
       expect(text.includes('没有纯外貌堆砌的静态条目')).toBe(true);
-      // 关闭 NSFW 规则时不注入该块(用块内独有短语判断)。
+      // One set of visual rules replaces the old repeated checklist.
       expect(text.includes('杜绝穿裤做、凭空全裸')).toBe(false);
       expect(text.includes('mating press')).toBe(false);
     } finally {
@@ -1139,66 +1137,9 @@ describe('auto tag prompt', () => {
       settings.nai.comicMode = old.comicMode;
       settings.nai.comicV2 = old.comicV2;
       settings.nai.comicExtraRules = old.comicExtraRules;
-      settings.nai.comicNsfwRules = old.comicNsfwRules;
     }
   });
 
-  it('通用与 NSFW 工程规则随同一 comicNsfwRules 开关一同注入与移除', async () => {
-    const options: AutoTagSettings = {
-      enabled: true,
-      contextMessages: 2,
-      minImages: 0,
-      maxImages: 2,
-      retryCount: 1,
-      autoGenerate: true,
-      streamGen: false,
-      streamPreview: false,
-      streamAnalysisConcurrency: 2,
-      prompts: prompts(),
-    };
-    const old = {
-      backend: settings.defaultBackend,
-      model: settings.nai.model,
-      comicMode: settings.nai.comicMode,
-      comicV2: settings.nai.comicV2,
-      comicExtraRules: settings.nai.comicExtraRules,
-      comicNsfwRules: settings.nai.comicNsfwRules,
-    };
-    try {
-      settings.defaultBackend = 'nai';
-      settings.nai.model = 'nai-diffusion-5-full';
-      settings.nai.comicMode = true;
-      settings.nai.comicV2 = true;
-      settings.nai.comicExtraRules = '';
-      settings.nai.comicNsfwRules = true;
-      const messages = await buildAutoTagMessages(context(), 1, options, null);
-      const text = messages.map(m => m.content).join('\n');
-
-      expect(text).toContain('画面工程规则(统一开关)');
-      expect(text).toContain('通用部分适用于 SFW 与 NSFW 的所有页面');
-      // 原六项专项保留,只在对应分级适用。
-      expect(text.includes('NSFW 工程规则(仅分级为 NSFW 的页面适用;SFW 页跳过)')).toBe(true);
-      for (const item of ['表情神态', '标准体位术语', '体液交互', '衣物脱卸边界', '可见器官零件', '骨盆挂载与人体工学']) {
-        expect([item, text.includes(item)]).toEqual([item, true]);
-      }
-      expect(text.includes('mating press')).toBe(true);
-
-      settings.nai.comicNsfwRules = false;
-      const offMessages = await buildAutoTagMessages(context(), 1, options, null);
-      const offText = offMessages.map(m => m.content).join('\n');
-      expect(offText).not.toContain('画面工程规则(统一开关)');
-      expect(offText).not.toContain('通用画面约束:');
-      expect(offText.includes('杜绝穿裤做、凭空全裸')).toBe(false);
-      expect(offText.includes('骨盆挂载与人体工学')).toBe(false);
-    } finally {
-      settings.defaultBackend = old.backend;
-      settings.nai.model = old.model;
-      settings.nai.comicMode = old.comicMode;
-      settings.nai.comicV2 = old.comicV2;
-      settings.nai.comicExtraRules = old.comicExtraRules;
-      settings.nai.comicNsfwRules = old.comicNsfwRules;
-    }
-  });
 });
 
 describe('自然语言条件段 expandNlSections', () => {

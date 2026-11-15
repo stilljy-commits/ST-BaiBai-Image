@@ -13,16 +13,26 @@ describe('comic analysis mode settings migration',()=>{
   it.each([undefined,false,true,'true',1])('enables progressive pages only for an explicit saved boolean: %j',async(value)=>{
     h.context={extensionSettings:{baibai_image:{nai:{comicProgressivePages:value,comicAnalysisMode:'standard',comicReasoningByModel:{old:'adaptive',manual:'low'}}}},saveSettingsDebounced:vi.fn()};
     const {settings,hydrateSettings}=await import('./settings');await hydrateSettings();
-    expect(settings.nai.comicProgressivePages).toBe(value===true);
+    expect(settings.autoTag.streamProgressivePages).toBe(value===true);
+    expect(settings.nai).not.toHaveProperty('comicProgressivePages');
     expect(settings.nai.comicAnalysisMode).toBe('standard');
     expect(settings.nai.comicReasoningByModel).toEqual({manual:'low'});
     expect(settings.nai).not.toHaveProperty('comicReasoningTimeoutSec');
   });
-  it.each([true,false])('migrates legacy extra rules and keeps the engineering switch at %s',async(enabled)=>{
+  it('uses the moved option instead of a stale value under NAI defaults', async () => {
+    h.context = { extensionSettings: { baibai_image: {
+      nai: { comicProgressivePages: true },
+      autoTag: { streamProgressivePages: false },
+    } }, saveSettingsDebounced: vi.fn() };
+    const { settings, hydrateSettings } = await import('./settings');
+    await hydrateSettings();
+    expect(settings.autoTag.streamProgressivePages).toBe(false);
+  });
+  it.each([true,false])('migrates legacy extra rules and discards the old engineering switch at %s',async(enabled)=>{
     const original='旧作品要求\n保留蓝色围巾。';
     h.context={extensionSettings:{baibai_image:{nai:{comicExtraRules:original,comicNsfwRules:enabled}}},saveSettingsDebounced:vi.fn()};
     const {settings,hydrateSettings}=await import('./settings');await hydrateSettings();
-    expect(settings.nai.comicNsfwRules).toBe(enabled);
+    expect(settings.nai).not.toHaveProperty('comicNsfwRules');
     expect(settings.nai.comicExtraRules).toBe(original);
     expect(settings.nai.comicExtraRuleTabs?.map(tab=>tab.rules)).toEqual([original,'','','','']);
     expect(settings.nai.activeComicExtraRuleTab).toBe(0);
@@ -48,7 +58,8 @@ describe('comic analysis mode settings migration',()=>{
     const {settings,hydrateSettings}=await import('./settings');
     await hydrateSettings();
     const expected=mode==='fast'?'fast':mode==='simple'?'simple':'standard';
-    expect(settings.nai).toMatchObject({...nai,comicAnalysisMode:expected});
+    expect(settings.nai).toMatchObject({model:nai.model,comicMode:true,comicV2:true,comicPanelStyle:'yonkoma',steps:31,comicAnalysisMode:expected});
+    expect(settings.nai).not.toHaveProperty('comicText');
     expect(h.context!.extensionSettings.baibai_image.nai.comicAnalysisMode).toBe(expected);
   });
 });

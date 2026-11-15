@@ -88,6 +88,36 @@ function joinWorldInfoChunks(chunks: string[]): string {
   return out.join('\n\n').trim();
 }
 
+// Only recognize standalone bookkeeping counters. A mixed entry remains intact.
+const COUNTER_LINE = /^([\p{Script=Han}]{1,10})(?:[ \t]*[:：=][ \t]*|[ \t]+)[+-]?\d+(?:\.\d+)?(?:[ \t]*(?:点|分|%|％))?[。.]?$/u;
+const BOOKKEEPING_COUNTERS = new Set(['积分', '任务积分', '排行榜积分', '累计积分', '积分上限', '经验值', '升级所需经验', '声望', '周任务完成率']);
+const DYNAMIC_WORLD_TEXT = /<%|\{\{/;
+
+function standaloneCounters(text: string): string[] {
+  const fields = text.trim().split(/\r?\n/).filter(line => line.trim())
+    .map(line => COUNTER_LINE.exec(line.trim())?.[1] ?? '');
+  return fields.every(field => BOOKKEEPING_COUNTERS.has(field)) ? fields : [];
+}
+
+export function compactWorldInfo(
+  entries: readonly { raw: string; text: string }[],
+  suppliedReferences: readonly string[],
+  scanText: readonly string[],
+): string {
+  const references = new Set(suppliedReferences.flatMap(reference =>
+    [reference.trim(), ...reference.split(/\r?\n[ \t]*\r?\n+/).map(block => block.trim())]).filter(Boolean));
+  const classified = entries.map(entry => {
+    const dynamic = DYNAMIC_WORLD_TEXT.test(entry.raw);
+    return { ...entry, dynamic, counters: dynamic ? [] : standaloneCounters(entry.text) };
+  });
+  // Keep counters when prose or another kind of entry actually refers to them.
+  const uses = [...scanText, ...suppliedReferences, ...classified.filter(entry => !entry.counters.length)
+    .flatMap(entry => [entry.raw, entry.text])].join('\n');
+  return joinWorldInfoChunks(classified.filter(({ text, dynamic, counters }) =>
+    dynamic || (!references.has(text.trim()) && (!counters.length || counters.some(field => uses.includes(field))))
+  ).map(entry => entry.text));
+}
+
 /**
  * 本轮待扫描文本:各楼正文清洗后,带人名前缀帮助关键词命中角色名。
  * 与柏宝书 buildScanText 同构。
@@ -174,6 +204,7 @@ export async function fetchWorldInfo(
   targets: number[],
   name1: string,
   name2: string,
+  suppliedReferences?: readonly string[],
 ): Promise<string> {
   const scanText = buildScanText(chat, targets, name1, name2);
   if (!scanText.length) return '';
@@ -195,9 +226,13 @@ export async function fetchWorldInfo(
     const chunks = await Promise.all(
       entries
         .filter(e => e && !isWorldInfoEntryExcluded(e, settings.excludes))
-        .map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e, refFloor)),
+        .map(async entry => {
+          const raw = typeof entry.content === 'string' ? entry.content : '';
+          return { raw, text: await renderWorldInfoContent(raw, entry, refFloor) };
+        }),
     );
-    return joinWorldInfoChunks(chunks);
+    return suppliedReferences ? compactWorldInfo(chunks, suppliedReferences, scanText)
+      : joinWorldInfoChunks(chunks.map(chunk => chunk.text));
   } catch (e) {
     console.log('[柏宝绘] 世界书激活失败(降级为不带设定):', e);
     return '';

@@ -13,7 +13,8 @@ function directoryPicker() {
   const host = window as Window & {
     showDirectoryPicker?: (options: { mode: 'readwrite' }) => Promise<FileSystemDirectoryHandle>;
   };
-  return host.showDirectoryPicker?.bind(host);
+  const picker = host.showDirectoryPicker;
+  return typeof picker === 'function' ? picker.bind(host) : undefined;
 }
 
 export function canExportGalleryToDirectory(): boolean {

@@ -290,32 +290,15 @@ export interface NaiSettings extends BackendConn {
   /** Vibe 库索引；正文存在 ST user/files，设置中不存大 Base64。 */
   vibes: NaiVibe[];
   /**
-   * 漫画页模式(V5 Full 专属)。开启后 autoTag 的输出协议切换为「单张图 = 一整页漫画」:
-   * LLM 把 @page/@panel/@character/Text 分段指令写进 tag,nai.ts 本地解析成 NAI 原生人物结构,
-   * 由模型单次生成整页分格漫画。仅 NAI 后端 + V5 Full 生效;ComfyUI/其他模型忽略此开关。
-   * 本地拆分后正常拼接画师串与质量词；无法识别的旧分段文本保留旧回落路径。
+   * NAI V5 漫画页模式。每张图是一页，页面布局与逐格人物走原生的独立提示词。
    */
   comicMode?: boolean;
-  /**
-   * 漫画页架构版本(comicMode 开启时生效,默认开 = V2)。
-   * V2 = Base 行 + 逐人物 Character Prompts(对齐 1.3.1 预设与 V5 训练的结构化通道:
-   * 每个画格内每个可见人物单独一条 char_caption,享有独立注意力);
-   * 关闭 = V1(@page/@panel/@character 整页文本,LLM 写、nai.ts 本地编译)。
-   * 两套协议互斥;切换后下一张图生效,正文里的存量旧 tag 不受影响。
-   */
+  /** New analyses always use V2. False is only used when rendering a saved V1 image. */
   comicV2?: boolean;
   /** 保留 standard / simple；fast 为独立的简短分镜引擎，不自动迁移旧选择。 */
   comicAnalysisMode?: 'standard' | 'simple' | 'fast';
   /** Connection/model/engine scoped task overrides; older fast keys remain valid. */
   comicReasoningByModel?: Record<string, ComicReasoning>;
-  /** Opt-in native-plan page dispatch, without changing page content or adding calls. */
-  comicProgressivePages?: boolean;
-  /**
-   * 漫画页对白上画(comicMode 开启时生效)。开启 = Text/气泡指令正常输出;
-   * 关闭 = 页面纯视觉叙事,不写 Text、不画文字——发送端会剥掉模型仍写出的
-   * Text 行与气泡指令行,保证 NAI 收到的页文本无文字元素。
-   */
-  comicText?: boolean;
   /**
    * 漫画页分镜风格(comicMode 开启时生效)。取值见 COMIC_PANEL_STYLES 的 id;
    * 默认 eromanga(本子肉感)。风格块由 buildComicAddenda 注入规范,
@@ -328,22 +311,11 @@ export interface NaiSettings extends BackendConn {
    */
   comicGutter?: string;
   /**
-   * 连续场景光影一致性(comicMode 开启时生效,默认开)。同一场景同一时间段内
-   * 各页沿用同一主光源方向与环境色,转场/时间经过才更新。
-   */
-  comicLighting?: boolean;
-  /**
    * 同人角色防夺舍(comicMode 开启时生效,默认关)。开启后规范指引把经核实的
    * 原作关联标签(artist: 开头画师标签优先)写进同人角色的 @negative,
    * 防止整页画风被原作夺舍;仅同人 RP 时需要。
    */
   comicAntiPossession?: boolean;
-  /**
-   * 漫画页画面工程规则(comicMode 开启时生效,默认开)。统一控制通用画面约束
-   * 与原有 NSFW 专项;通用部分适用于所有页面,专项按页面分级适用。
-   * 保留旧字段名,继承用户已有的开关选择。
-   */
-  comicNsfwRules?: boolean;
   /**
    * 漫画模式附加规则(comicMode 开启时生效,可编辑文本)。非空时作为「附加规则」块
    * 追加在漫画规范末尾,优先级最高(与规范其他条款冲突时以本块为准)。
@@ -542,12 +514,12 @@ export interface AutoTagSettings {
    * 终局对账写入 tag 并认领图片。关闭 = 完整回退现有「正文结束→全量分析」路径。
    */
   streamGen?: boolean;
+  /** Start each validated comic page during a batch response. Fast always does this. */
+  streamProgressivePages?: boolean;
   /** 流式出图的浮层预览(默认关)。开启后流式期间在屏幕角落浮层显示已生成的缩略图。 */
   streamPreview?: boolean;
   /** Display completed images at their live prose markers without writing the message. Default off. */
   streamInlinePreview?: boolean;
-  /** 达到数量下限后仍补画未覆盖的长正文段落。默认关，避免额外分析等待。 */
-  streamGapSupplement?: boolean;
   /** 流式分段分析的并发上限(1~4,默认 2):同时几批副API分析在飞；每批是一段。 */
   streamAnalysisConcurrency?: number;
   /** Number of image markers per analysis request (1–50, default 3), independent of concurrency. */
@@ -1087,7 +1059,7 @@ Example (小雪 is the principal character and has a library profile; 三年级�
  * 分段标记只用于插件内部,不会作为普通画面词传给模型。
  */
 export const DEFAULT_NAI_COMIC_SPEC = `【NovelAI V5 漫画页规范】
-你输出的每张图会被直接发送给 NovelAI Diffusion V5 Full 生图接口,渲染为**一整页漫画**(多画格+对白气泡+文字上画)。整页指令文本写在 tag 键里,其余键按本规范第一节的口径填写。
+你输出的每张图会被直接发送给 NovelAI Diffusion V5 Full 生图接口,渲染为**一整页漫画**(多画格)。整页指令文本写在 tag 键里,其余键按本规范第一节的口径填写。
 
 ━━━ 一、JSON 各键口径 ━━━
 - position:不变,仍是正文 P 编号。
@@ -1102,18 +1074,15 @@ export const DEFAULT_NAI_COMIC_SPEC = `【NovelAI V5 漫画页规范】
 
 <image>
 @page
-分级、去重后的实际人数词、页面形态、画格数量、布局(各画格的位置与大小,用英文完整句描述)、全局光影(光源方向+时间+色调)、文字语言标签
+分级、去重后的实际人数词、页面形态、画格数量、布局(各画格的位置与大小,用英文完整句描述)、全局光影(光源方向+时间+色调)
 @non_character
 可选:整页环境与非人物视觉说明
-Text: 需要上画的页面级文字(无则整段省略)
 
 @panel P1
 本格在页面上的位置与大小、景别与构图、环境及非人物演出
-Text: 本格旁白或拟音(无则省略)
 
 @character C1 原名
 boy / girl / other + 可靠fandom身份、必要可见外貌、动作、表情、语气标签
-Text: 该人物本格对白原句(无对白则省略)
 @outfit
 该人物当前可见衣着；显式空段表示不恢复默认衣物
 
@@ -1126,26 +1095,25 @@ Text: 该人物本格对白原句(无对白则省略)
 
 ━━━ 三、分镜规则 ━━━
 1. 每页只写一个@page；@panel按从右到左、先上后下的阅读顺序编号。人物编号全页稳定、附正文原名，程序据此保留人物归属；每格位置短句也要放进该格人物段。
-2. @non_character、Text、@negative 没有内容时整段直接省略,不写空段。
+2. @non_character和 @negative 没有内容时整段直接省略,不写空段。
 3. 页面形态:普通分格写comic，整页单格写full page comic。格数按事件自然取舍，不拆重复镜头；经典四格仍是均衡四格。强调型风格保留主格，按事件决定其位置；轻松日常、喜剧日常不强制主格过半；仅通用规则按事件自然分配主次，不强制主格过半。阅读顺序与戏剧重心分别处理，不把主格固定在末尾或底部。每格有唯一英文位置短句，页面、画格和该格人物复用同一句，不让同一称呼指向两个不同画格。
 4. **@page 的全局视觉标签必须包含 high complexity**(V5 官方复杂度标签,细节密度显著提升);只有刻意追求极简/留白风格的页面才降为 medium complexity。追求极华丽演出时可写 ultra complexity。
-5. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情。
+5. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作。
 6. 环境延续:连续页共享同一场景时,后续页的环境描述可以简化,但光源方向与时间必须保持一致。
 7. 一页覆盖正文一段连续剧情(一个完整事件节拍)。返回多张图时,每张是独立的一页,按正文先后顺序排页,人物外貌、服装与场景跨页保持连续。
-8. 对白与文字:Text: 后写原句,保留标点与语气;中文对白就写中文。**文字方向:中文对白与旁白一律写 横書き,只有日文原文才用 縦書き**。**气泡与文字指令写在所属段的末尾、Text: 之前**(对白人物段写 speech bubble 或 thought bubble + whispering/shouting/trembling 等语气词;旁白写 narration;独立拟音单开一个 @non_character 段写 sound effects + 横書き)。文字位置与方向可用英文完整句描述(例如 a speech bubble at the top right of this panel)。
 9. 人物外貌:用户明确字段照抄，1girl/1boy转girl/boy。同人优先可靠fandom身份与当前镜头必要特征，自动建档不重新设计原作穿搭；用户改设和正文换装优先。原创沿用固定外貌，无名路人简洁补足、同页保持一致，不编姓名。当前衣着可用该人物的@outfit段，专属互斥项可用其后的@negative，角色标记附原名供程序对应。
 10. 剧情事实(在场人物、动作、道具、事件)严格以正文为准,不得编造;镜头、构图、光影、氛围、画格布局由你主动补全——正文没写不是省略的理由;每格的环境与演出描述写具体、写满,不要只给一句话。
 11. 权重微调:需要突出关键视觉焦点时用 1.2::词::,弱化次要元素用 0.6::词::;只作用于视觉词,不得包裹协议标记、画格编号、Text 原文;权重块必须闭合。
 
 ━━━ 四、输出示例(骨架,仅示意结构) ━━━
-{"position":"P2","tag":"<image>\\n@page\\nSFW, 1girl, comic page, 1 panel, full color, high complexity, afternoon light, chinese text\\n@panel P1\\nThis single panel fills the page. Medium shot, welcoming a guest.\\n@character C1 小雪\\ngirl, long black hair, blue eyes, smiling, speech bubble\\nText: 您回来了\\n@outfit\\nwhite blouse\\n</image>","nl":"","characters":[],"negative":"","size":"portrait"}`;
+{"position":"P2","tag":"<image>\\n@page\\nSFW, 1girl, comic page, 1 panel, full color, high complexity, afternoon light\\n@panel P1\\nThis single panel fills the page. Medium shot, welcoming a guest.\\n@character C1 小雪\\ngirl, long black hair, blue eyes, smiling\\n@outfit\\nwhite blouse\\n</image>","nl":"","characters":[],"negative":"","size":"portrait"}`;
 
 /**
  * 漫画页分镜风格(comicPanelStyle 的可选值)。rule 文本会作为「五、分镜风格与画面执行」
  * 的风格块注入规范;七种风格均叠加在共同的通用映画文法上。
  * universal 是兼容旧设置的「不附加风格」选项,不是第八种风格。
  */
-export const DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR = '通用映画文法(所有方案共用):按演出目的选择景别,远景交代空间、中景呈现互动、近景突出反应与细节,连续镜头可沿用相同景别,不为变化堆叠角度。按剧情空间选择普通分格页或整页单格;主格是面积与戏剧重心,不必等于阅读顺序第一格。右上向左、再向下阅读;每格位置与大小称呼在布局、画格、人物描述中保持唯一且一致,独立时刻的切入格计入总格数,最终布局用英文完整句。转场或时间变化时建立环境,连续场景保留必要地标与光源依据。每格只定格一个清晰时刻,连续动作拆格,写清施动者、对象、接触点与承托关系。关键道具的持有人、左右手、开合或损坏状态,以及衣着和接触状态跨格持续,裁出画面不等于消失或重置,仅按正文变化。场景、人物与文字归属遵守所用V1/V2协议;格形与节奏由所选附加风格决定,未附加风格时按事件自然分配,不强制主格过半;留白遵守单独选择,不由风格覆盖。';
+export const DEFAULT_NAI_COMIC_UNIVERSAL_GRAMMAR = '通用映画文法(所有方案共用):按演出目的选择景别,远景交代空间、中景呈现互动、近景突出反应与细节,连续镜头可沿用相同景别,不为变化堆叠角度。按剧情空间选择普通分格页或整页单格;主格是面积与戏剧重心,不必等于阅读顺序第一格。右上向左、再向下阅读;每格位置与大小称呼在布局、画格、人物描述中保持唯一且一致,独立时刻的切入格计入总格数,最终布局用英文完整句。转场或时间变化时建立环境,连续场景保留必要地标与光源依据。每格只定格一个清晰时刻,连续动作拆格,写清施动者、对象、接触点与承托关系。关键道具的持有人、左右手、开合或损坏状态,以及衣着和接触状态跨格持续,裁出画面不等于消失或重置,仅按正文变化。场景、人物归属遵守所用V1/V2协议;格形与节奏由所选附加风格决定,未附加风格时按事件自然分配,不强制主格过半;留白遵守单独选择,不由风格覆盖。';
 
 export const COMIC_PANEL_STYLES: ReadonlyArray<{ id: string; label: string; description: string; rule: string }> = [
   {
@@ -1244,32 +1212,6 @@ export const DEFAULT_COMIC_EXTRA_RULES = `女性胸部规则:每个女性角色(
 本块与规范其他条款冲突时,以本块为准(包括思维链对表情/视线的要求——男性角色按本块执行,女性角色不受影响)。`;
 
 /**
- * 漫画页工程规则的 NSFW 专项部分;通过统一开关与通用部分一同追加。
- * 内容迁移自 NAI 1.3.1 预设「🔞分级标定」条目的 NSFW 段,六项检查原样保留,
- * 示例词从日文转成我们链路的英文 Danbooru tag 口径。
- */
-export const DEFAULT_COMIC_NSFW_RULES = `━━━ NSFW 工程规则(仅分级为 NSFW 的页面适用;SFW 页跳过) ━━━
-分级为 NSFW 的页面,先按剧情判断本格实际可见什么,再写提示词;区域词、状态词不能代替器官零件。器官零件、衣物边界、接触路径、高低差与支撑点优先用可靠的英文 Danbooru 视觉标签。六项检查逐格执行(人物相关项落进该人物的条目/角色段,本块对 V1 分段文本与 V2 人物条目同样适用):
-1. 表情神态:潮红(blushing)、失神、咬唇(biting lip)等,只写本格脸上可见的。
-2. 体位姿态:必须落到标准体位术语(missionary, cowgirl, doggystyle, mating press 等),禁止含糊到让画画错位。
-3. 体液交互:sweat, cum, saliva 只写可见附着面与状态(如 cum on abdomen, sweat running down neck),不可见不写。
-4. 衣物脱卸边界(杜绝穿裤做、凭空全裸):每件离开原位的衣服都要写清还穿在谁身上、褪到身体哪一截、还挡住什么(如 clothes pulled down to thighs, shirt lifted up to collarbone, panties pulled aside);台本没写隔着衣服做,就禁止下衣仍在腰上却写插入或口含;必须写褪下位置。
-5. 可见器官零件(区域 ≠ 零件):台本写了裸露、脱掉、插入、含住、射出,且该格能看见对应部位时,必须写出零件名(nipples, areola, penis, erection, pussy, labia, clitoris, anus);只写 nude, topless, no bra, spread legs 视为漏写;头发、手、角度明确挡住某零件时写遮挡物,不发明该零件。本格第一焦点才是该零件时才可按权重规则微权(如 1.15::nipples::),禁止整页给所有器官加权重。
-6. 骨盆挂载与人体工学(防悬浮、穿模、吞人):外露器官必须写明长在裸出的胯部/骨盆上(如 penis rising directly from the exposed pelvis),禁止器官悬空或从家具里长出来;抚摸、握住、插入、含住必须写相对空间,不要只写动词(如 hand between spread thighs, glans against pussy);涉及桌子、床沿、沙发时写清谁坐/躺/站/跪、谁高谁低,禁止两人同一水平线却强行做上下插入;施动者的手必须有着力点(如 hands gripping the desk edge),禁止双手悬空;特写格仍要留下被动方的一条锚定肢体或承托面(如 back against the sofa),禁止特写只剩器官、人被家具吃掉。
-本块与规范其他条款冲突时,以本块为准。`;
-
-/** One switch in every analysis mode; no additional thinking/checklist output is requested. */
-export const DEFAULT_COMIC_ENGINEERING_RULES = `━━━ 画面工程规则(统一开关) ━━━
-以下是一套画面约束:通用部分适用于 SFW 与 NSFW 的所有页面,后附 NSFW 专项仅按实际页面分级适用。直接落实到画面描述,不新增逐项检查报告。
-通用画面约束:
-1. 人物与可见性:外貌、衣着、动作和表情分别归属对应人物;只描述当前取景可见的部分,被遮挡或裁出的细节不强行补画。
-2. 动作与支撑:保留核心动作的参与者、对象、必要接触点与承托关系;站坐躺姿态、手持物和支撑面简明自洽,避免悬浮、穿模和肢体归属混乱,不精算关节角度或空间坐标。
-3. 衣着与道具连续:沿用正文当前衣着、关键道具归属与显著状态,明确变化才更新;镜头外省略不代表恢复默认状态,不凭空增删。
-4. 神态与取景:脸部可见时保留主要情绪与视线;取景能容纳本格核心动作,特写保留必要的主体或环境锚点,不为非关键细节堆叠描述。
-
-${DEFAULT_COMIC_NSFW_RULES}`;
-
-/**
  * 漫画页模式规范附加块:共同映画文法 + 可选风格/留白/色彩/光影/道具场景一致性/防夺舍。
  * 追加在 DEFAULT_NAI_COMIC_SPEC 之后,构成完整规范。
  */
@@ -1282,7 +1224,6 @@ export function resolveComicGutterMode(id?: string) {
 export function buildComicAddenda(nai: {
   comicPanelStyle?: string;
   comicGutter?: string;
-  comicLighting?: boolean;
   comicAntiPossession?: boolean;
 }): string {
   const style = resolveComicPanelStyle(nai.comicPanelStyle);
@@ -1294,10 +1235,7 @@ export function buildComicAddenda(nai: {
   if (style.rule) lines.push(`附加分镜风格:${style.rule}`);
   lines.push(`13. ${gutter.rule}`);
   lines.push(
-    '14. 色彩与光影(全彩):页面用 full color;人物保持本镜头已确认的发色、瞳色与服装色，包含正文明确的临时变化。' +
-      (nai.comicLighting
-        ? '连续场景光影:为每个连续场景确定主光源方向、环境色与明暗关系,同一地点同一时间段内各页沿用同一光影依据;只有转场、时间经过或光源变化时才更新;人物固有颜色与环境照明分开描述。'
-        : ''),
+    '14. 色彩与光影(全彩):页面用 full color;人物保持本镜头已确认的发色、瞳色与服装色，包含正文明确的临时变化。',
   );
   lines.push(
     '15. 道具与场景一致性:正文或前页已出现的关键道具(武器、信物、载具等)与场景(建筑、房间布局、地标)保持固定外观,跨页复用同一描述;无剧情依据不新增标志性道具。',
@@ -1312,7 +1250,7 @@ export function buildComicAddenda(nai: {
 
 /**
  * 漫画页模式内置思维链(与 DEFAULT_NAI_COMIC_SPEC 配套,替换 V5 插图思维链使用)。
- * 结构仍是三层,但第二层槽位块换成「逐页分镜块」:布局、逐格镜头、文字归属、连续状态。
+ * 结构仍是三层,但第二层槽位块换成「逐页分镜块」:布局、逐格镜头、连续状态。
  */
 export const DEFAULT_NAI_COMIC_THINKING = `【漫画页输出前思考清单】
 先在 <thinking> 与 </thinking> 之间按下面顺序过一遍,思考结束后再输出最终 JSON。除这一个 <thinking> 块与最终 JSON 外,不得输出任何内容,也不得开启第二个 <thinking> 块。分条写关键结论,不复述正文、不写寒暄、不抄规范。每个判断一次定死,不自问、不列候选、不推翻重选。
@@ -1347,7 +1285,7 @@ E. 分页规划
   页面形态:<comic / full page comic>
   画格布局:<画格数 + 每格位置与大小,谁主谁辅>
   逐格镜头:
-   - P1 格:<景别>|<在场人物>|<核心动作/接触点>|<对白或文字,注明归属>
+   - P1 格:<景别>|<在场人物>|<核心动作/接触点>
    - P2 格:……
   环境光:<光源方向 + 时间 + 色调>
   连续状态:<各人物衣着当前状态、手持物、与上一页的衔接>
@@ -1357,7 +1295,6 @@ E. 分页规划
    - 有且只有一个 @page,@panel 按日漫阅读顺序编号,每个可见人物都有 @character 段,库中角色外貌逐字照抄;**同人角色的 @character 段首是 fandom 身份 tag**(库中 fields.fandom 逐字),不是的话立即改对。
    - nl 全部为空字符串,characters 全部为空数组,negative 全部为空字符串,size 遵循任务协议的画幅规则，未锁方向时用 portrait。
    - 每格景别只写一个且容纳该格核心动作;主次与所选风格一致:经典四格均衡四格,轻松日常和喜剧日常优先规整节拍;仅通用规则按事件自然分配主次;其他强调型风格的主格承载本页核心事件且面积过半。
-   - 对白原句保留原文与标点,归属人物正确;无文字的段没有写 Text:。
    - 剧情事实可追溯到正文,没有编造人物、动作或道具;页数与张数设定一致;建档与 changes 已完成。`;
 
 /**
@@ -1376,8 +1313,8 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 - nl:恒为空字符串 ""。negative:恒为空字符串 ""。size:默认 "portrait"，渠道锁定方向优先。
 
 ━━━ 二、Base 行内容顺序 ━━━
-分级(SFW 或 NSFW,按画面实际暴露程度二选一,永远写在 Base 行首位,禁止省略)、去重后的实际人数词、comic、画格数量词(N panels)、布局句(每格一组:一句英文完整句说明该格在页面上的位置与大小,紧跟该格取景词与核心动作短语,按阅读顺序排序)、留白词、全局光影(光源方向+时间+色调)、(对白上画时)text, chinese text。
-- Base 行只放:分级、人数、页面形态、布局与格级取景动作、光影、文字语言。**人物外貌、衣着、表情一律不进 Base**——Base 里的特征会摊给页面上所有人,是串脸的根源;格级动作只写发生的事(deep squat, kissing, holding hands),不写人物外貌细节,外貌细节留在人物条目里。
+分级(SFW 或 NSFW,按画面实际暴露程度二选一,永远写在 Base 行首位,禁止省略)、去重后的实际人数词、comic、画格数量词(N panels)、布局句(每格一组:一句英文完整句说明该格在页面上的位置与大小,紧跟该格取景词与核心动作短语,按阅读顺序排序)、留白词、全局光影(光源方向+时间+色调)。
+- Base 行只放:分级、人数、页面形态、布局与格级取景动作、光影。**人物外貌、衣着、表情一律不进 Base**——Base 里的特征会摊给页面上所有人,是串脸的根源;格级动作只写发生的事(deep squat, kissing, holding hands),不写人物外貌细节,外貌细节留在人物条目里。
 - 布局句示例:This is the large vertical panel on the left side of the page. Full body view from behind, deep squat at barbell squat rack. / This is the small panel in the upper right of the page. Medium shot, side angle. / A small cut-in panel sits in the top left corner. Close-up on joined hands.
 - 每格的取景词与核心动作短语是人物条目与画格的对号入座锚点:人物条目按格顺写,条目动作与所在格的格级动作一致;无人物的空镜/物件特写格只靠这组短语承载画面内容,不得省略。
 - 布局句随分镜风格写(风格块见「五、分镜风格与画面执行」);Base 行包含 high complexity(V5 官方复杂度标签),极简风格才降为 medium complexity。
@@ -1390,14 +1327,13 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
    - 同人角色紧随其后逐字写 fandom 身份 tag(Danbooru 格式 character name (copyright name),取库中 fields.fandom 逐字)——NAI 靠这个 tag 调出原作人设;正文明确的假发、美瞳与换装按当前状态写，省略被替代的原值。原创/一次性角色跳过此项;
    - 该人物本格必要可见外貌、动作、表情、语气；用户字段照抄，自动同人档不必复述全部细节。当前衣着单列outfit，不在tag重复；cosplay另列cosplay对象，每张图中穿着者首次入镜时写character、正文或资料已明确的work及已明确的costume，不写入本人的fandom；panel填与Base一致的位置短句，可选negative只写本人适用的互斥项;
    - **动作必写**:每个条目必须至少一个动作/姿态/接触/状态变化词(sitting, lying, hands gripping the sheets, flesh bulging between fingers 都算)——纯外貌堆砌的静态条目禁止;没有动作的条目会让该人物在格内僵立,或被相邻格的动作带偏,造成同图各格动作不一致。特写切入条目的动作写该部位正在发生的事(如 hands digging into butt cheeks, a thread of saliva running down);
-   - 气泡指令与文字方向:有对白时在本格条目写 speech bubble 或 thought bubble(+whispering/shouting/trembling 等语气词);中文对白与旁白一律横書き,只有日文原文才用縦書き;
+
    - 取景词:沿用所属画格景别，不无故另写冲突的full body或close-up；实际遮挡、身高造成的裁切可不同。局部特写条目用部位取景锁定焦点，只写可见的关键衣饰，不为鞋靴强拉全身。
-4. 条目对白:该人物本格有对白时,在 tag 末尾**另起一行**写 Text: 对白原句(与前面的 tag 用换行 \\n 分隔,保留原文与标点,中文对白写中文);无对白不写。旁白与拟音不写进人物条目。
 5. 条目 nl:恒为空字符串 ""。
 
 ━━━ 四、分镜与页面规则 ━━━
 1. 格数按核心事件自然取舍，不拆重复镜头；经典四格仍是均衡四格。强调型风格保留事件主格，位置由事件决定；轻松日常、喜剧日常不强制主格过半；仅通用规则按事件自然分配主次，不强制主格过半。主格不固定在阅读末尾或下方。
-2. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;对白格可用 close-up 突出表情;特写切入小格(close-up, cut-in)按风格块执行,切入格的人物同样写一条 Character Prompt。
+2. 每格景别从 close-up / upper body / medium shot / full body / wide shot 中选一个,且必须完整容纳该格核心动作;特写切入小格(close-up, cut-in)按风格块执行,切入格的人物同样写一条 Character Prompt。
 3. 剧情事实(在场人物、动作、道具、事件)严格以正文为准,不得编造;镜头、构图、光影、氛围、画格布局由你主动补全——正文没写不是省略的理由。一次性无名角色按世界观一次性补全(性别+发型发色+瞳色),同一页内保持一致,禁止编造人名。
 4. 环境延续:连续页共享同一场景时,后续页环境描述可简化,但 Base 行的光源方向与时间必须保持一致;正文或前页已出现的关键道具与场景保持固定外观,跨页复用同一描述。
 5. 一页覆盖正文一段连续剧情(一个完整事件节拍);返回多张图时,每张是独立的一页,按正文先后顺序排页,人物外貌、服装与场景跨页保持连续。
@@ -1411,7 +1347,7 @@ export const DEFAULT_NAI_COMIC_V2_SPEC = `【NovelAI V5 漫画页规范 V2(Chara
 - 「@negative 段」= 对应人物的可选negative；V2页面排除词仍由本地负面提示词配置承载。
 
 ━━━ 输出示例(骨架) ━━━
-{"position":"P2","tag":"SFW, 1girl, comic, 1 panel, This single panel fills the page. Medium shot, welcoming a guest., white border, afternoon light, high complexity, text, chinese text","nl":"","characters":[{"name":"小雪","panel":"This single panel fills the page.","outfit":"white dress","tag":"girl, long black hair, blue eyes, smiling, medium shot, speech bubble\\nText: 您回来了","nl":""}],"negative":"","size":"portrait"}`;
+{"position":"P2","tag":"SFW, 1girl, comic, 1 panel, This single panel fills the page. Medium shot, welcoming a guest., white border, afternoon light, high complexity","nl":"","characters":[{"name":"小雪","panel":"This single panel fills the page.","outfit":"white dress","tag":"girl, long black hair, blue eyes, smiling, medium shot","nl":""}],"negative":"","size":"portrait"}`;
 
 /**
  * 漫画页 V2 思维链(与 DEFAULT_NAI_COMIC_V2_SPEC 配套)。
@@ -1449,22 +1385,21 @@ E. 分页规划
   覆盖剧情:<一句话>
   页面形态:<comic / full page comic>
   画格布局:<画格数 + 每格位置与大小,谁主谁辅>
-  Base 行:<分级 SFW/NSFW + 人数词 + 页面形态 + 每格布局句要点(位置+取景+核心动作) + 光影 + 文字语言,一句话>
+  Base 行:<分级 SFW/NSFW + 人数词 + 页面形态 + 每格布局句要点(位置+取景+核心动作) + 光影,一句话>
   逐格镜头:
-   - P1 格:<景别>|<在场人物>|<核心动作/接触点>|<对白或文字,注明归属>
+   - P1 格:<景别>|<在场人物>|<核心动作/接触点>
    - P2 格:……
-  人物条目清单:<每格每人一条,共几条;每条必带一个动作/姿态词,同人标出 fandom;特写切入格标出部位;NSFW 页逐格过六项工程检查>
+  人物条目清单:<每格每人一条,共几条;每条必带一个动作/姿态词,同人标出 fandom;特写切入格标出部位>
   环境光:<光源方向 + 时间 + 色调>
   连续状态:<各人物衣着当前状态、手持物、与上一页的衔接>
 
 第三层|落笔前自查(只核对,不预写答案)
-   - tag 是单行 Base 行:无换行、无 <image> 包装、无 @page/@panel/@character 标记;首位是分级词 SFW 或 NSFW;包含人数词、comic、N panels、每格一组布局句(位置句+取景词+核心动作短语,空镜格也有)、留白词、光影;(对白上画时)含 text, chinese text。
+   - tag 是单行 Base 行:无换行、无 <image> 包装、无 @page/@panel/@character 标记;首位是分级词 SFW 或 NSFW;包含人数词、comic、N panels、每格一组布局句(位置句+取景词+核心动作短语,空镜格也有)、留白词、光影。
    - 每个画格内每个可见人物都有自己的 characters[] 条目,固定外貌逐字照抄库;**同人角色条目第二项是 fandom 身份 tag**(库中 fields.fandom 逐字),不是的话立即改对。
    - 每个 characters[] 条目都含至少一个动作/姿态/接触词,没有纯外貌堆砌的静态条目。
    - Base 行没有个人外貌、衣着或表情；格级核心动作可用于对齐布局，个人细节在 characters[] 条目里。
    - nl 全部为空字符串,negative 全部为空字符串,size 遵循任务协议的画幅规则，未锁方向时用 portrait。
    - 每格景别只写一个且容纳该格核心动作;主次与所选风格一致:经典四格均衡四格,轻松日常和喜剧日常优先规整节拍;仅通用规则按事件自然分配主次;其他强调型风格的主格承载本页核心事件且面积过半。
-   - 对白原句保留原文与标点,归属人物正确,写在对应条目末行 Text: 之后;无对白的条目没有 Text: 行。
    - 剧情事实可追溯到正文,没有编造人物、动作或道具;页数与张数设定一致;建档与 changes 已完成。`;
 
 
@@ -1634,13 +1569,9 @@ function naiDefaults(): NaiSettings {
     comicV2: true,
     comicAnalysisMode: 'standard',
     comicReasoningByModel: {},
-    comicProgressivePages: false,
-    comicText: true,
     comicPanelStyle: 'eromanga',
     comicGutter: 'bleed',
-    comicLighting: true,
     comicAntiPossession: false,
-    comicNsfwRules: true,
     ...normalizeComicRuleTabs({ comicExtraRules: DEFAULT_COMIC_EXTRA_RULES }),
     concurrency: 1,
     vibes: [],
@@ -1688,9 +1619,9 @@ function defaults(): ImageSettings {
       retryCount: 1,
       autoGenerate: true,
       streamGen: false,
+      streamProgressivePages: false,
       streamPreview: false,
       streamInlinePreview: false,
-      streamGapSupplement: false,
       streamAnalysisConcurrency: 2,
       streamAnalysisBatchSize: 3,
       prompts: {
@@ -2181,22 +2112,16 @@ function normalizeNai(raw: unknown, def: NaiSettings): NaiSettings {
     normalizeRefStrength:
       typeof o.normalizeRefStrength === 'boolean' ? o.normalizeRefStrength : def.normalizeRefStrength,
     comicMode: typeof o.comicMode === 'boolean' ? o.comicMode : def.comicMode,
-    comicV2: typeof o.comicV2 === 'boolean' ? o.comicV2 : def.comicV2,
+    comicV2: true,
     comicAnalysisMode: o.comicAnalysisMode === 'fast' ? 'fast' : o.comicAnalysisMode === 'simple' ? 'simple' : 'standard',
     comicReasoningByModel: normalizeComicReasoningMap(o.comicReasoningByModel),
-    comicProgressivePages: o.comicProgressivePages === true,
-    comicText: typeof o.comicText === 'boolean' ? o.comicText : def.comicText,
     comicPanelStyle:
       COMIC_PANEL_STYLES.find(s => s.id === o.comicPanelStyle)?.id ?? def.comicPanelStyle,
     comicGutter: COMIC_GUTTER_MODES.find(g => g.id === o.comicGutter)?.id ?? def.comicGutter,
-    comicLighting:
-      typeof o.comicLighting === 'boolean' ? o.comicLighting : def.comicLighting,
     comicAntiPossession:
       typeof o.comicAntiPossession === 'boolean'
         ? o.comicAntiPossession
         : def.comicAntiPossession,
-    comicNsfwRules:
-      typeof o.comicNsfwRules === 'boolean' ? o.comicNsfwRules : def.comicNsfwRules,
     ...normalizeComicRuleTabs(o, def.comicExtraRules),
     concurrency: Math.round(clampNumber(o.concurrency, def.concurrency, 1, 4)),
     vibes: Array.isArray(o.vibes)
@@ -2300,6 +2225,8 @@ function normalize(raw: unknown): ImageSettings {
   const ra = (r.assignments ?? {}) as Partial<{ tagGen: string }>;
   merged.assignments = { tagGen: typeof ra.tagGen === 'string' ? ra.tagGen : '' };
   const rt = (r.autoTag ?? {}) as Partial<AutoTagSettings>;
+  const oldNai = r.nai as { comicProgressivePages?: unknown } | undefined;
+  const streamInlinePreview = rt.streamInlinePreview === true;
   // 存量配置只有 maxImages:缺少 minImages 时回落 0,完整保留「没好画面可以不出图」的旧行为。
   // 先归一化上限,再把下限夹进 [0,上限],保证所有后续调用都能直接依赖范围不变式。
   const maxImages =
@@ -2325,12 +2252,10 @@ function normalize(raw: unknown): ImageSettings {
     autoGenerate:
       typeof rt.autoGenerate === 'boolean' ? rt.autoGenerate : d.autoTag.autoGenerate,
     streamGen: typeof rt.streamGen === 'boolean' ? rt.streamGen : d.autoTag.streamGen,
-    streamPreview:
-      typeof rt.streamPreview === 'boolean' ? rt.streamPreview : d.autoTag.streamPreview,
-    streamInlinePreview:
-      typeof rt.streamInlinePreview === 'boolean' ? rt.streamInlinePreview : d.autoTag.streamInlinePreview,
-    streamGapSupplement:
-      typeof rt.streamGapSupplement === 'boolean' ? rt.streamGapSupplement : d.autoTag.streamGapSupplement,
+    streamProgressivePages: typeof rt.streamProgressivePages === 'boolean'
+      ? rt.streamProgressivePages : oldNai?.comicProgressivePages === true,
+    streamPreview: !streamInlinePreview && rt.streamPreview === true,
+    streamInlinePreview,
     streamAnalysisConcurrency:
       typeof rt.streamAnalysisConcurrency === 'number' && Number.isFinite(rt.streamAnalysisConcurrency)
         ? Math.min(4, Math.max(1, Math.floor(rt.streamAnalysisConcurrency)))

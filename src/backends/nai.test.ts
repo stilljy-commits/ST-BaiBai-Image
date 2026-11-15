@@ -14,6 +14,7 @@ import {
   naiDefaultUndesired,
   naiEndpoint,
   naiRandomSeed,
+  naiSupportsVarietyBoost,
   parseNaiv4vibe,
   parseResolution,
   skipCfgAboveSigma,
@@ -31,12 +32,10 @@ function nai(overrides: Partial<NaiSettings> = {}): NaiSettings {
     negativePrompt: '',
     comicMode: false,
     comicV2: false,
-    comicText: true,
+
     comicPanelStyle: 'eromanga',
     comicGutter: 'bleed',
-    comicLighting: true,
     comicAntiPossession: false,
-    comicNsfwRules: false,
     comicExtraRules: '',
     resolution: '832×1216',
     portraitSize: '832×1216',
@@ -126,10 +125,10 @@ describe('parseResolution', () => {
 describe('提示词拼装', () => {
   it('compiles a V1 page to native inputs while removing disabled text', () => {
     const page='<image>\n@page\nSFW, comic page, 2 panels, Chinese text, white borders\n@panel P1\nClose-up, speech bubble\nText: 你好\n@character C1\ngirl, smiling\n</image>';
-    const result=fullPositivePrompt(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false,comicText:false}),page);
+    const result=fullPositivePrompt(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false}),page);
     expect(result).not.toMatch(/Chinese text|speech bubble|Text:/i);
     expect(result).toContain('Close-up');expect(result).not.toContain('@panel');
-    const params=buildNaiParameters(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false,comicText:false}),{prompt:page});
+    const params=buildNaiParameters(nai({model:'nai-diffusion-5-full',comicMode:true,comicV2:false}),{prompt:page});
     expect((params.v4_prompt as any).caption.char_captions[0].char_caption).toContain('girl, smiling');
   });
   it('compiles a V1 global negative separately from positive quality tags', () => {
@@ -139,21 +138,21 @@ describe('提示词拼装', () => {
     expect(String(buildNaiParameters(comic,{prompt:page}).negative_prompt)).toContain('extra characters');
   });
 
-  it('漫画页模式关闭对白上画:同时剥包装与 Text 行', () => {
-    const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, comicText: false, qualityTags: 'best quality' });
+  it('旧漫画段落去掉外层包装和对白', () => {
+    const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, qualityTags: 'best quality' });
     const page = '<image>\n@page\nSFW, 1girl, comic page\n\n@character C1\ngirl, smile\nText: 你好\n</image>';
     expect(fullPositivePrompt(comic, page)).toBe(
       '@page\nSFW, 1girl, comic page\n\n@character C1\ngirl, smile',
     );
   });
 
-  it('漫画页 V2:Base 行 + 质量词(对白上画滤掉 no text),画师串可拼在最前', () => {
+  it('漫画页 V2 保留 no text 质量词，画师串仍可拼在最前', () => {
     const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, comicV2: true, qualityTags: 'best quality, no text' });
     const base = 'R-15, 1girl, comic, 3 panels, tight layout, white border, text, chinese text';
-    // 质量词走渠道覆盖值,滤掉 no text(对白上画);偶发换行压回单行
-    expect(fullPositivePrompt(comic, base)).toBe(`${base}, best quality`);
+    const visual = base.replace(', text, chinese text', '');
+    expect(fullPositivePrompt(comic, base)).toBe(`${visual}, best quality, no text`);
     expect(fullPositivePrompt(comic, `<image>\n${base}\nextra line\n</image>`)).toBe(
-      `${base}, extra line, best quality`,
+      `${visual}, extra line, best quality, no text`,
     );
     // 画师串照常拼最前
     const withArtist = nai({
@@ -165,14 +164,14 @@ describe('提示词拼装', () => {
     expect(fullPositivePrompt(withArtist, base)).toContain('artist x, R-15');
   });
 
-  it('漫画页 V2:质量词留空回落官方默认词,对白上画时 no text 被滤掉', () => {
+  it('漫画页 V2 质量词留空回落含 no text 的默认词', () => {
     const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, comicV2: true });
     expect(fullPositivePrompt(comic, '1girl, comic, 3 panels')).toBe(
-      '1girl, comic, 3 panels, very aesthetic, masterpiece',
+      '1girl, comic, 3 panels, very aesthetic, masterpiece, no text',
     );
   });
 
-  it('漫画页 V2:buildNaiParameters 把逐人物条目装进 char_captions,Text 行逐字保留', () => {
+  it('漫画页 V2 把逐人物条目装进 char_captions，只发送画面信息', () => {
     const comic = nai({
       comicMode: true,
       comicV2: true,
@@ -196,22 +195,22 @@ describe('提示词拼装', () => {
     });
     const v4 = params.v4_prompt as { caption: { base_caption: string; char_captions: Array<{ char_caption: string }> } };
     expect(v4.caption.base_caption).toBe(
-      'R-15, 1girl, comic, 3 panels, tight layout, text, chinese text, very aesthetic, masterpiece',
+      'R-15, 1girl, comic, 3 panels, tight layout, very aesthetic, masterpiece, no text',
     );
     expect(v4.caption.char_captions).toHaveLength(2);
     expect(v4.caption.char_captions[0].char_caption).toBe(
-      'girl, kasumi (blue archive), long black hair, blue eyes, medium shot, 2::shaded face::, no eyes, speech bubble\nText: 呼……哈……心率……一百六十五……',
+      'girl, kasumi (blue archive), long black hair, blue eyes, medium shot, 2::shaded face::, no eyes',
     );
     expect(v4.caption.char_captions[1].char_caption).toBe(
       'girl, long black hair, blue eyes, neck and chest view',
     );
   });
 
-  it('漫画页 V2 关闭对白上画:条目内 Text 行与气泡词被剥除', () => {
+  it('漫画页 V2 过滤条目内的对白和气泡', () => {
     const comic = nai({
       comicMode: true,
       comicV2: true,
-      comicText: false,
+
       model: 'nai-diffusion-5-full',
     });
     const params = buildNaiParameters(comic, {
@@ -232,7 +231,7 @@ describe('提示词拼装', () => {
     expect(v4.caption.char_captions[0].char_caption).toBe('girl, long black hair, blue eyes, medium shot');
   });
 
-  it('漫画页 V2:characterCaption 把 ", Text:" 逗号形态归一成换行形态', () => {
+  it('漫画页 V2 也过滤写在逗号后面的旧对白', () => {
     const comic = nai({ model: 'nai-diffusion-5-full', comicMode: true, comicV2: true });
     const params = buildNaiParameters(comic, {
       prompt: '1girl, comic, 3 panels',
@@ -241,7 +240,10 @@ describe('提示词拼装', () => {
     });
     const v4 = params.v4_prompt as { caption: { char_captions: Array<{ char_caption: string }> } };
     expect(v4.caption.char_captions[0].char_caption).toBe(
-      'girl, smile, medium shot\nText: 你好',
+      'girl, smile, medium shot',
+    );
+    expect(fullPositivePrompt(comic, '1girl, comic, 3 panels Text: 你好')).toBe(
+      '1girl, comic, 3 panels, very aesthetic, masterpiece, no text',
     );
   });
 
@@ -451,7 +453,7 @@ describe('NAI V5 support', () => {
       const params = buildNaiParameters(nai({ model }), { prompt: '1girl', seed: 42 });
       expect(params.params_version).toBe(4);
       expect(params.v4_prompt).toBeTruthy();
-      expect(params.skip_cfg_above_sigma).toBeNull();
+      expect(params).not.toHaveProperty('skip_cfg_above_sigma');
       expect(params.sampler).toBe('k_euler');
     }
     const fallback = buildNaiParameters(nai({ model: 'nai-diffusion-5-full', sampler: 'ddim_v3' }), {
@@ -660,11 +662,23 @@ describe('buildNaiParameters', () => {
 });
 
 describe('skipCfgAboveSigma', () => {
+  it.each(['nai-diffusion-5-full', 'nai-diffusion-5-full-medium', 'nai-diffusion-5-curated'] as const)(
+    'has no effective Variety Boost setting for %s', model => {
+      expect(naiSupportsVarietyBoost(model)).toBe(false);
+      const build = (varietyBoost: boolean) => buildNaiParameters(nai({ model, varietyBoost }), { prompt: 'station', seed: 1 });
+      expect(build(true)).not.toHaveProperty('skip_cfg_above_sigma');
+      expect(build(true)).toEqual(build(false));
+    },
+  );
   it('关 variety 时为 null', () => {
     expect(skipCfgAboveSigma(832, 1216, 'nai-diffusion-4-5-full', false)).toBeNull();
+    const build = (varietyBoost: boolean) => buildNaiParameters(nai({ varietyBoost }), { prompt: 'station', seed: 1 });
+    expect(build(false).skip_cfg_above_sigma).toBeNull();
+    expect(build(true).skip_cfg_above_sigma).toBeGreaterThan(0);
   });
 
   it('4.5 用 58,其余用 19', () => {
+    expect(naiSupportsVarietyBoost('nai-diffusion-4-5-full')).toBe(true);
     const v45 = skipCfgAboveSigma(1024, 1024, 'nai-diffusion-4-5-full', true)!;
     const v4 = skipCfgAboveSigma(1024, 1024, 'nai-diffusion-4-full', true)!;
     expect(v45 / v4).toBeCloseTo(58 / 19, 5);
