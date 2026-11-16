@@ -5,7 +5,7 @@ import Icon from '@/components/Icon.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import { generateCharTags } from '@/autoTag/charAnchors';
 import { readBookMemory } from '@/autoTag/bookMemory';
-import { readVisualArchive, saveVisualArchive, VISUAL_LOOK_FIELDS, visualArchiveRevision, type VisualFields } from '@/autoTag/visualArchive';
+import { readVisualArchive, resolveVisualValue, saveVisualArchive, VISUAL_FIELDS, visualArchiveRevision, type VisualFields } from '@/autoTag/visualArchive';
 import { settings } from '@/state/settings';
 import {
   CHAR_TAG_FIELDS,
@@ -66,7 +66,8 @@ const confirmRollbackOpen = ref(false);
 const pendingRollback = ref<{ name: string; record: CharTagChangeRecord } | null>(null);
 
 const activeView = ref<'fixed' | 'current'>('fixed');
-const visualFields = ['outfit', ...VISUAL_LOOK_FIELDS] as const;
+const visualFields = VISUAL_FIELDS;
+type VisualField = (typeof visualFields)[number];
 const visualLabels: Record<(typeof visualFields)[number], string> = {
   outfit: '衣着', hair: '头发', eyes: '眼睛', skin: '肤色', body: '体型', extra: '其他外观', makeup: '妆容',
 };
@@ -78,20 +79,49 @@ const currentVisual = computed(() => {
   const archive = readVisualArchive(chat, chat.length, settings.excludes.customStripTags);
   return { archive, names: [...new Set([...fixed.map(entry => entry.name), ...Object.keys(archive.changes)])] };
 });
-const visualDraft = ref<{ name: string; chatId: string; fields: VisualFields; initial: VisualFields } | null>(null);
+const visualDraft = ref<{
+  name: string;
+  chatId: string;
+  fields: Record<VisualField, string>;
+  initial: VisualFields;
+  fixed: VisualFields;
+  fixedRaw: string;
+  restored: Set<VisualField>;
+  noOutfit: boolean;
+} | null>(null);
 const visualSaving = ref(false);
 
 function visualLabel(name: string, field: (typeof visualFields)[number]): string {
-  const value = currentVisual.value.archive.changes[name]?.[field];
-  if (field === 'outfit' && value === '') return '明确无衣着';
-  return value ?? (field === 'makeup' ? '' : findCharTag(name)?.fields[field] ?? '');
+  const current = currentVisual.value.archive.changes[name];
+  if (field === 'outfit' && current?.outfit === '') return '明确无衣着';
+  return resolveVisualValue(field, current, findCharTag(name)?.fields);
 }
 
 function editVisual(name: string) {
   const chatId = getContext()?.getCurrentChatId();
   if (!chatId) return;
   const initial = { ...currentVisual.value.archive.changes[name] };
-  visualDraft.value = { name, chatId, initial, fields: { ...initial } };
+  const entry = findCharTag(name);
+  const fixed = { ...entry?.fields };
+  const fields = Object.fromEntries(visualFields.map(field => [field, resolveVisualValue(field, initial, fixed)])) as Record<VisualField, string>;
+  visualDraft.value = { name, chatId, initial, fixed, fixedRaw: entry?.raw?.trim() ?? '', fields, restored: new Set(), noOutfit: initial.outfit === '' };
+}
+
+function restoreVisualField(field: VisualField) {
+  const edit = visualDraft.value;
+  if (!edit) return;
+  edit.fields[field] = resolveVisualValue(field, undefined, edit.fixed);
+  edit.restored.add(field);
+  if (field === 'outfit') edit.noOutfit = false;
+}
+
+function setVisualOutfitAbsent(absent: boolean) {
+  const edit = visualDraft.value;
+  if (!edit) return;
+  if (!absent) { restoreVisualField('outfit'); return; }
+  edit.noOutfit = true;
+  edit.fields.outfit = '';
+  edit.restored.delete('outfit');
 }
 
 async function confirmVisual() {
@@ -103,7 +133,16 @@ async function confirmVisual() {
   const tags = settings.excludes.customStripTags;
   const changed: VisualFields = {};
   for (const key of visualFields) {
-    if (edit.fields[key] !== edit.initial[key]) changed[key] = edit.fields[key]?.trim() ?? null;
+    if (key === 'outfit' && edit.noOutfit) {
+      if (edit.initial.outfit !== '') changed.outfit = '';
+      continue;
+    }
+    const value = edit.fields[key].trim();
+    const fallback = resolveVisualValue(key, undefined, edit.fixed);
+    if (!edit.restored.has(key) && value === resolveVisualValue(key, edit.initial, edit.fixed)) continue;
+    if (edit.restored.has(key) || !value || value === fallback) {
+      if (edit.initial[key] != null) changed[key] = null;
+    } else if (value !== edit.initial[key]) changed[key] = value;
   }
   if (!Object.keys(changed).length) { visualDraft.value = null; return; }
   visualSaving.value = true;
@@ -406,15 +445,18 @@ function sourceLabel(entry: CharTagEntry): string {
       <ModalMask :open="!!visualDraft" @close="visualDraft = null">
         <div v-if="visualDraft" class="bbi-modal bbi-char-modal" role="dialog" aria-modal="true" aria-label="编辑当前造型">
           <h3>{{ visualDraft.name }}的当前造型</h3>
-          <p class="bbi-field-hint">填写临时造型的英文提示词。点「恢复固定」只清除对应的一项临时记录。</p>
-          <div v-for="field in visualFields" :key="field" class="bbi-num-row">
+          <p class="bbi-field-hint">极速模式会参考这里的造型。没有临时记录的字段沿用固定档案。点「恢复固定」可撤销这一项临时改动。</p>
+          <p v-if="visualDraft.fixedRaw" class="bbi-field-hint">固定档案整串提示词 · {{ visualDraft.fixedRaw }}</p>
+          <div v-for="field in visualFields" :key="field" class="bbi-num-row bbi-visual-field">
             <label :for="'bbi-visual-' + field">{{ visualLabels[field] }}</label>
             <input :id="'bbi-visual-' + field" type="text" class="bbi-input"
-              :value="visualDraft.fields[field] ?? ''" @input="visualDraft.fields[field] = ($event.target as HTMLInputElement).value || null" />
-            <button type="button" class="bbi-btn bbi-btn-sm" @click="visualDraft.fields[field] = null">恢复固定</button>
+              :value="visualDraft.fields[field]" :disabled="field === 'outfit' && visualDraft.noOutfit"
+              placeholder="暂无记录"
+              @input="visualDraft.fields[field] = ($event.target as HTMLInputElement).value; visualDraft.restored.delete(field)" />
+            <button type="button" class="bbi-btn bbi-btn-sm" @click="restoreVisualField(field)">恢复固定</button>
           </div>
-          <label class="bbi-switch-row"><input type="checkbox" :checked="visualDraft.fields.outfit === ''"
-            @change="visualDraft.fields.outfit = ($event.target as HTMLInputElement).checked ? '' : null" />明确无衣着</label>
+          <label class="bbi-switch-row"><span>明确无衣着</span><input type="checkbox" :checked="visualDraft.noOutfit"
+            @change="setVisualOutfitAbsent(($event.target as HTMLInputElement).checked)" /></label>
           <button type="button" class="bbi-btn bbi-btn-primary" :disabled="visualSaving" @click="confirmVisual">保存</button>
         </div>
       </ModalMask>
@@ -977,6 +1019,11 @@ function sourceLabel(entry: CharTagEntry): string {
 }
 
 /* —— 弹窗加宽,容纳两列字段表单 —— */
+.bbi-visual-field > label {
+  flex: 0 0 4em;
+  white-space: nowrap;
+}
+
 .bbi-char-modal {
   max-width: 600px;
 }

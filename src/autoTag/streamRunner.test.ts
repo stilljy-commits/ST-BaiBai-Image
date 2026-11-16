@@ -10,7 +10,7 @@ vi.mock('@/autoTag/streamInlinePreview',async importOriginal=>({...await importO
 }}));
 vi.mock('@/st/context',async importOriginal=>({...await importOriginal<typeof import('@/st/context')>(),getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
-vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any,compactSpec:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode,compactSpec}]}));
+vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
 vi.mock('@/autoTag/charAnchors',()=>({resolveCharAnchors:(entries:any[])=>({text:JSON.stringify(entries),entries}),applyPositionedCharRefs:(text:string)=>({text,unknown:[]})}));
 vi.mock('@/state/charTags',()=>({CHAR_TAG_FIELDS:['sex','hair','eyes','fandom','outfit'],BBI_CHAR_EXTRA_KEY:'chars',charTagsBeforeFloor:()=>[],lockedCharTagNames:()=>new Set(),readCharTagFloorDelta:()=>null,makeCharTagFloorDelta:(x:any)=>x,recomputeCharTags:()=>{},createCharTagNewOp:(x:any,r:any)=>({...x,kind:'new',reason:r,at:Date.now()}),createCharTagSetOp:(name:any,field:any,value:any,reason:any)=>({kind:'set',name,field,value,reason,at:Date.now()}),emptyCharFields:()=>({}),applyCharTagOps:(entries:any[],ops:any[])=>[...entries,...ops.filter(op=>op.kind==='new').map(op=>({name:op.name,fields:op.fields,raw:op.raw,nl:op.nl,history:[]}))]}));
@@ -31,9 +31,6 @@ const body='她打开门。\n[img: 门口相见]\n他交出钥匙。\n[img: 钥�
 const ai=(mes:string)=>({name:'Char',is_user:false,is_system:false,mes,send_date:'same-message',extra:{}});
 function finishAnalysis(index:number,count?:number){const task=h.analyses[index];const ids=[...task.m[0].content.matchAll(/⟦(P\d+)⟧/g)].map((m:any)=>m[1]);
   const markers=[...task.m[0].note.matchAll(/图片 position 固定填 "(M\d+)"/g)].map((m:any)=>m[1]);const positions=markers.length?markers:ids;
-  if(task.m[0].compactSpec){
-    task.o.validate(JSON.stringify({pages:Array.from({length:count??task.m[0].options.maxImages},(_,i)=>({id:positions[i%positions.length],scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}]}))}));task.resolve();return;
-  }
   task.o.validate(JSON.stringify({images:Array.from({length:count ?? task.m[0].options.maxImages},(_,i)=>({position:positions[i%positions.length],tag:`scene_${index}_${i}`,nl:'',negative:'',characters:[],size:'portrait'})),changes:[]}));task.resolve();}
 function finishImage(index:number){h.images[index].resolve({result:{url:`data:image/png;base64,image${index}`,filename:'fake.png',revoke:vi.fn()},seed:42,size:'portrait',backend:'nai',charactersApplied:false,meta:{backend:'nai'}});}
 function previewDocument(){
@@ -416,21 +413,20 @@ describe('real stream runner with fixed groups of three',()=>{
   });
 });
 
-function useCompactChannel(){
+function useComicChannel(){
  Object.assign(settings.nai,{comicMode:true,comicV2:true,comicAnalysisMode:'fast',comicPanelStyle:'universal',comicExtraRules:'',comicNsfwRules:false});
  settings.channels=[{id:'compact',name:'test',provider:'openai',url:'https://api.deepseek.com/v1',key:'dummy',model:'deepseek-flash',temperature:1,maxTokens:2048,timeoutSec:60,stream:false,excludeParams:[],reasoningEffort:'max'}];
  settings.assignments.tagGen='compact';Object.assign(settings.autoTag,{maxImages:6,minImages:0,streamAnalysisConcurrency:1});
 }
-const compactPage=(id:string,extra:any={})=>({id,scene:'station, daylight',profiles:[],changes:[],shots:[{camera:'wide shot',actors:[]}],...extra});
+const nativePage=(position:string,extra:any={})=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[],...extra});
+const snowProfile=(extra:any={})=>({name:'小雪',field:'new',sex:'girl',hair:'black hair',eyes:'blue eyes',position:'P1',...extra});
 describe('source ordered costume completion before NAI',()=>{
  it.each(['standard','simple','fast'] as const)('passes confirmed source fields to the next %s batch without waiting for NAI',async mode=>{
-  useCompactChannel();settings.nai.comicAnalysisMode=mode;
+  useComicChannel();settings.nai.comicAnalysisMode=mode;
   beginStreamSession('A');feedStreamText(Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n'));await flush();
   expect(h.analyses[0].m[0].note).toContain('【程序已确认cosplay来源】{}');
   const cosplay={character:'Hero',work:'Example Work',costume:'Festival'};
-  const raw=mode==='fast'?{pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{profiles:!i?[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}]:[],
-   shots:[{camera:'medium shot',actors:[{name:'小雪',action:'standing',face:'front',omit:[],outfit:'white jacket',...(!i?{cosplay}:{})}]}]}))}:
-   {changes:[],images:['M1','M2','M3'].map((position,i)=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[{name:'小雪',tag:'girl, black hair, standing',outfit:'white jacket',panel:'This single panel fills the page.',nl:'',...(!i?{cosplay}:{})}],nl:'',negative:'',size:'portrait'}))};
+  const raw={changes:[],images:['M1','M2','M3'].map((position,i)=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[{name:'小雪',tag:'girl, black hair, standing',outfit:'white jacket',panel:'This single panel fills the page.',nl:'',...(!i?{cosplay}:{})}],nl:'',negative:'',size:'portrait'}))};
   h.analyses[0].o.validate(JSON.stringify(raw));h.analyses[0].resolve();await flush();
   expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(2);
   const note=h.analyses[1].m[0].note,stored=JSON.parse(note.match(/【程序已确认cosplay来源】([^\n]+)/)![1]);
@@ -439,12 +435,10 @@ describe('source ordered costume completion before NAI',()=>{
  });
  for(const mode of ['standard','simple','fast'] as const)for(const v2 of [true,false]){
   it(`${mode} V2=${v2} repairs a later batch that finished before the first cosplay source`,async()=>{
-   useCompactChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;
+   useComicChannel();Object.assign(settings.nai,{comicAnalysisMode:mode,comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;
    beginStreamSession('A');feedStreamText(Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n'));await flush();expect(h.analyses).toHaveLength(2);
    const response=(first:boolean)=>{
     const cosplay={character:'Hero',work:'Example Work',costume:'Festival'};
-    if(mode==='fast')return JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{profiles:!i?[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}]:[],
-     shots:[{camera:'medium shot',actors:[{name:'小雪',action:'standing',face:'front',omit:[],outfit:'white jacket',...(first&&!i?{cosplay}:{})}]}]}))});
     return JSON.stringify({changes:[],images:['M1','M2','M3'].map((position,i)=>({position,tag:v2?'SFW, 1girl, comic, 1 panel, This single panel fills the page. Medium shot.':
      '<image>\n@page\nSFW, 1girl, comic\n@panel P1\nThis single panel fills the page. Medium shot.\n@character C1 小雪\ngirl, black hair, standing\n@outfit\nwhite jacket'+(first&&!i?'\n@cosplay\n'+JSON.stringify(cosplay):'')+'\n</image>',nl:'',negative:'',size:'portrait',
      characters:v2?[{name:'小雪',tag:'girl, black hair, standing',panel:'This single panel fills the page.',outfit:'white jacket',nl:'',...(first&&!i?{cosplay}:{})}]:[]}))});
@@ -456,9 +450,9 @@ describe('source ordered costume completion before NAI',()=>{
   });
  }
 });
-describe('compact pages integrated with real task lifecycle',()=>{
+describe('fast visual archive integrated with native comic plans',()=>{
  it('carries the previous visual archive before any NAI result and sends only the unprocessed tail and skipped floor',async()=>{
-  useCompactChannel();
+  useComicChannel();
   settings.autoTag.contextMessages=30;
   settings.autoTag.streamAnalysisBatchSize=1;
   settings.nai.comicReasoningByModel={'["compact","openai","https://api.deepseek.com/v1","deepseek-flash"]':'off'};
@@ -466,9 +460,8 @@ describe('compact pages integrated with real task lifecycle',()=>{
   beginStreamSession('A');feedStreamText(first);await flush();await attachStory(first);
   const task=h.analyses[0];
   expect(task.o.reasoningOverride).toBeUndefined();
-  task.o.validate(JSON.stringify({pages:[compactPage('M1',{
-    profiles:[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}],
-    state:{complete:true,facts:'小雪来到门口',outfits:{小雪:'yellow raincoat'},looks:{小雪:{hair:'ponytail',makeup:'light makeup'}}},
+  task.o.validate(JSON.stringify({changes:[snowProfile()],images:[nativePage('M1',{
+    visualState:{complete:true,facts:'小雪来到门口',changes:{小雪:{outfit:'yellow raincoat',hair:'ponytail',makeup:'light makeup'}}},
   })]}));task.resolve();await flush();
   expect(saveImageResult).not.toHaveBeenCalled();
   const archive=readVisualArchive(h.ctx.chat,2,[]);
@@ -480,26 +473,25 @@ describe('compact pages integrated with real task lifecycle',()=>{
   h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续',send_date:'user2'});
   beginStreamSession('A');feedStreamText('小雪走到月台。\n[img: 女主在月台]');await flush();
   const request=h.analyses[1].m[0];
-  expect(request.library).toContain('yellow raincoat');
-  expect(request.library).toContain('ponytail');
+  expect(request.note).toContain('yellow raincoat');
+  expect(request.note).toContain('ponytail');
   expect(request.note).toContain('她在门口收起银发夹。');
   expect(request.note).toContain('这一楼只写别人在月台等车。');
   expect(request.note).not.toContain('小雪换黄雨衣、扎马尾、化淡妆。');
  });
  it('reuses the confirmed look when continuing the same AI floor and records the new look after it',async()=>{
-  useCompactChannel();
+  useComicChannel();
   settings.autoTag.streamAnalysisBatchSize=1;
   const original='小雪披上黄雨衣。\n[img: 小雪出门]';
   beginStreamSession('A');feedStreamText(original);await flush();await attachStory(original);
-  const answer=(outfit:string)=>JSON.stringify({pages:[compactPage('M1',{
-   profiles:[{name:'小雪',fields:{sex:'girl',hair:'black hair',eyes:'blue eyes'},position:'P1'}],
-   state:{complete:true,facts:'人物来到车站',outfits:{小雪:outfit}},
+  const answer=(outfit:string)=>JSON.stringify({changes:[],images:[nativePage('M1',{
+   visualState:{complete:true,facts:'人物来到车站',changes:{小雪:{outfit}}},
   })]});
   h.analyses[0].o.validate(answer('yellow raincoat'));h.analyses[0].resolve();await flush();
   expect(readVisualArchive(h.ctx.chat,2,[]).changes.小雪.outfit).toBe('yellow raincoat');
   const continued='小雪换上灰色外套。\n[img: 小雪换衣]';
   beginStreamSession('A','continue');feedStreamText(continued);await flush();
-  expect(h.analyses[1].m[0].library).toContain('yellow raincoat');
+  expect(h.analyses[1].m[0].note).toContain('yellow raincoat');
   h.ctx.chat[1].mes+='\n'+continued;
   await reconcileStreamFloor(1,'A');await flush();
   h.analyses[1].o.validate(answer('gray jacket'));h.analyses[1].resolve();await flush();
@@ -508,12 +500,11 @@ describe('compact pages integrated with real task lifecycle',()=>{
   expect(archive.pending).toBe('');
  });
  it('keeps an explicit uncommon garment through dispatch and carries it across incomplete-summary batches',async()=>{
-  useCompactChannel();const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');
+  useComicChannel();const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');
   beginStreamSession('A');feedStreamText(text);await flush();
-  const response=(first:boolean)=>JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{
-    profiles:first&&!i?[{name:'小雪',fields:{sex:'girl',hair:'silver hair',eyes:'blue eyes',outfit:'red coat'},position:'P1'}]:[],
-    shots:[{camera:'medium shot',actors:[{name:'小雪',action:'walking',face:'front',omit:[],...(first&&!i?{outfit:'yellow poncho'}:{})}]}],
-    state:{complete:false},
+  const response=(first:boolean)=>JSON.stringify({changes:first?[snowProfile({hair:'silver hair',outfit:'red coat'})]:[],images:['M1','M2','M3'].map((id,i)=>nativePage(id,{
+    characters:[{name:'小雪',tag:'girl, walking, full body',...(first&&!i?{outfit:'yellow poncho'}:{})}],
+    visualState:{complete:false},
   }))});
   h.analyses[0].o.validate(response(true));h.analyses[0].resolve();await flush();
   expect(h.analyses).toHaveLength(2);
@@ -521,59 +512,65 @@ describe('compact pages integrated with real task lifecycle',()=>{
   expect(h.images).toHaveLength(6);
   for(const image of h.images){expect(image.input.characters[0].tag).toContain('yellow poncho');expect(image.input.characters[0].tag).not.toContain('red coat');}
  });
- it.each(['standard','simple'] as const)('keeps the old %s engine and channel inference even with saved fast-mode overrides',async(mode)=>{
-  useCompactChannel();settings.nai.comicAnalysisMode=mode;
+ it.each(['standard','simple','fast'] as const)('ignores saved legacy fast-mode overrides in %s',async(mode)=>{
+  useComicChannel();settings.nai.comicAnalysisMode=mode;
   const {comicReasoningKey}=await import('@/api/comicReasoning');
   settings.nai.comicReasoningByModel={[comicReasoningKey(settings.channels[0])]:'off'};
   beginStreamSession('A');feedStreamText(story(3));await flush();
-  const task=h.analyses[0];expect(task.m[0].analysisMode).toBe(mode);expect(task.m[0].compactSpec).toBeUndefined();
+  const task=h.analyses[0];expect(task.m[0].analysisMode).toBe(mode);
   expect(task.o).not.toHaveProperty('onContent');expect(task.o).not.toHaveProperty('reasoningOverride');expect(task.o).not.toHaveProperty('stream');
   finishAnalysis(0);await flush();expect(h.images).toHaveLength(3);
  });
  it('captures fast mode for the running floor and switches back to simple on the next floor',async()=>{
-  useCompactChannel();beginStreamSession('A');settings.nai.comicAnalysisMode='simple';feedStreamText(story(3));await flush();
-  expect(h.analyses[0].m[0].analysisMode).toBe('fast');expect(h.analyses[0].o.onContent).toBeTypeOf('function');
+  useComicChannel();beginStreamSession('A');settings.nai.comicAnalysisMode='simple';feedStreamText(story(3));await flush();
+  expect(h.analyses[0].m[0].analysisMode).toBe('fast');expect(h.analyses[0].o).not.toHaveProperty('onContent');
   finishAnalysis(0);await flush();await attachStory(story(3));h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'继续'});
   beginStreamSession('A');feedStreamText(story(3));await flush();expect(h.analyses[1].m[0].analysisMode).toBe('simple');
-  expect(h.analyses[1].m[0].compactSpec).toBeUndefined();expect(h.analyses[1].o).not.toHaveProperty('onContent');
- });
- it('starts an accepted page before the rest of its batch arrives and never renders it twice',async()=>{
-  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();
-  const task=h.analyses[0];expect(task.o.stream).toBe(true);expect(settings.channels[0].stream).toBe(false);
-  task.o.onContent('{"pages":['+JSON.stringify(compactPage('M1'))+',');await flush();expect(h.images).toHaveLength(1);
-  const raw=JSON.stringify({pages:['M1','M2','M3'].map(id=>compactPage(id))});task.o.validate(raw);task.resolve();await flush();
-  expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(1);await attachStory(story(3));expect(parseImageTags(h.ctx.chat[1].mes)).toHaveLength(3);
- });
- it('retries only the rejected last page while keeping two already generated pages',async()=>{
-  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
-  const raw=JSON.stringify({pages:[compactPage('M1'),compactPage('M2'),compactPage('M3',{shots:[{camera:'',actors:[]}]})]});
-  task.o.onContent(raw);await flush();expect(h.images).toHaveLength(2);
-  try{task.o.validate(raw);}catch(error){task.reject(error);}await flush();
-  expect(h.analyses).toHaveLength(2);expect(h.analyses[1].m[0].options.maxImages).toBe(1);expect(h.analyses[1].m[0].note).toContain('camera');
-  finishAnalysis(1);await flush();expect(h.images).toHaveLength(3);expect(h.analyses).toHaveLength(2);
+  expect(h.analyses[1].o).not.toHaveProperty('onContent');
  });
  it('reuses a confirmed prefix only for the next batch and leaves unprocessed narrative intact',async()=>{
-  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
-  task.o.validate(JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{state:{complete:true,facts:'已确认的先前事实'+i,outfits:{}}}))}));task.resolve();await flush();
+  useComicChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
+  task.o.validate(JSON.stringify({changes:[],images:['M1','M2','M3'].map((id,i)=>nativePage(id,{visualState:{complete:true,facts:'已确认的先前事实'+i,changes:{}}}))}));task.resolve();await flush();
   feedStreamText(story(6));await flush();const note=h.analyses[1].m[0].note;
-  expect(note).toContain('已确认的此前连续状态');expect(note).toContain('已确认的先前事实2');expect(note).not.toContain('事件0发生');
+  expect(note).toContain('已确认的前情');expect(note).toContain('已确认的先前事实2');expect(note).not.toContain('事件0发生');
  });
 });
 
 describe('native comic reasoning and progressive dispatch',()=>{
- const nativePage=(position:string,extra:any={})=>({position,tag:'SFW, 1girl, comic, 1 panel',characters:[],...extra});
- function nativeMode(mode:'standard'|'simple'='standard',progressive=true){
-  useCompactChannel();settings.nai.comicAnalysisMode=mode;Object.assign(settings.autoTag,{streamProgressivePages:progressive,maxImages:3});
+ function nativeMode(mode:'standard'|'simple'|'fast'='standard',progressive=true){
+  useComicChannel();settings.nai.comicAnalysisMode=mode;Object.assign(settings.autoTag,{streamProgressivePages:progressive,maxImages:3});
  }
- it.each(['standard','simple'] as const)('applies a %s request override without changing its native protocol or stored channel',async(mode)=>{
+ it.each([true,false])('sends the same panel and character prompts in standard and fast with progressive=%s',async progressive=>{
+  const images=['M1','M2','M3'].map(id=>nativePage(id,{
+   tag:'SFW, 2girls, comic, 2 panels, station, medium shot',
+   characters:[{name:'小雪',tag:'girl, source#hug, standing behind her',outfit:'white jacket'},{name:'同伴',tag:'girl, target#hug, facing forward',outfit:'blue coat'}],
+  }));
+  const result=[];
+  for(const mode of ['standard','fast'] as const){
+   const before=h.images.length;
+   nativeMode(mode,progressive);beginStreamSession('A');feedStreamText(story(3));await flush();
+   const task=h.analyses.at(-1)!;
+   expect(Boolean(task.o.onContent)).toBe(progressive);
+   const response=JSON.stringify({changes:[],images:mode==='standard'?images:images.map(image=>({...image,
+    visualState:{complete:true,facts:'两人在站台相遇',changes:{}},
+   }))});
+   task.o.onContent?.(response);task.o.validate(response);task.resolve();await flush();
+   expect(h.images).toHaveLength(before+3);
+   result.push(h.images.slice(before).map(({input})=>({prompt:input.prompt,characters:input.characters,size:input.size})));
+   stopCurrentStream();
+  }
+  expect(result[0]).toHaveLength(3);
+  expect(result[1]).toEqual(result[0]);
+ });
+ it.each(['standard','simple','fast'] as const)('applies a %s request override without changing its native protocol or stored channel',async(mode)=>{
   nativeMode(mode,false);const {comicReasoningKey}=await import('@/api/comicReasoning');
-  const before=JSON.stringify(settings.channels[0]);settings.nai.comicReasoningByModel={[comicReasoningKey(settings.channels[0],mode)]:'off'};
+  const before=JSON.stringify(settings.channels[0]);settings.nai.comicReasoningByModel={[comicReasoningKey(settings.channels[0],mode==='simple'?'simple':'standard')]:'off'};
   beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
-  expect(task.o.reasoningOverride).toEqual({thinking:{type:'disabled'}});expect(task.m[0].compactSpec).toBeUndefined();
+  expect(task.o.reasoningOverride).toEqual({thinking:{type:'disabled'}});
   expect(task.o).not.toHaveProperty('onContent');expect(JSON.stringify(settings.channels[0])).toBe(before);
   finishAnalysis(0);await flush();expect(h.images).toHaveLength(3);
  });
- it.each(['standard','simple'] as const)('dispatches a complete %s page before EOF and never generates it twice',async(mode)=>{
+ it.each(['standard','simple','fast'] as const)('dispatches a complete %s page before EOF and never generates it twice',async(mode)=>{
   nativeMode(mode);beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
   expect(task.o.stream).toBe(true);expect(task.m[0].note).toContain('先完整输出changes');expect(task.m[0].note).not.toContain('输出顺序不限');
   task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();expect(h.images).toHaveLength(1);
@@ -624,25 +621,5 @@ describe('native comic reasoning and progressive dispatch',()=>{
  it('stops late page dispatch after the chat owner changes',async()=>{
   nativeMode();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
   h.ctx.getCurrentChatId=()=> 'B';task.o.onContent('{"changes":[],"images":['+JSON.stringify(nativePage('M1'))+',');await flush();expect(h.images).toHaveLength(0);
- });
-});
-
-describe('partial request and parallel identity recovery',()=>{
- it('keeps all accepted pages when transport fails after their final objects arrived',async()=>{
-  useCompactChannel();beginStreamSession('A');feedStreamText(story(3));await flush();const task=h.analyses[0];
-  task.o.onContent(JSON.stringify({pages:['M1','M2','M3'].map(id=>compactPage(id))}));await flush();expect(h.images).toHaveLength(3);
-  task.reject(Error('connection closed after final page'));await flush();expect(h.analyses).toHaveLength(1);expect(h.images).toHaveLength(3);
- });
- it.each([true,false])('compiles the canonical first accepted identity for V2=%s even when batches finish out of order',async(v2)=>{
-  useCompactChannel();Object.assign(settings.nai,{comicV2:v2});settings.autoTag.streamAnalysisConcurrency=2;
-  const text=Array.from({length:6},(_,i)=>'小雪事件'+i+'发生。\n[img: 画面'+i+']').join('\n');
-  beginStreamSession('A');feedStreamText(text);await flush();expect(h.analyses).toHaveLength(2);
-  const response=(hair:string)=>JSON.stringify({pages:['M1','M2','M3'].map((id,i)=>compactPage(id,{
-    profiles:i?[]:[{name:'小雪',fields:{sex:'girl',hair,eyes:'blue eyes'},position:'P1'}],
-    shots:[{camera:'medium shot',actors:[{name:'小雪',action:'walking',face:'front',omit:[]}]}],
-  }))});
-  h.analyses[1].o.validate(response('silver hair'));h.analyses[1].resolve();await flush();
-  h.analyses[0].o.validate(response('pink hair'));h.analyses[0].resolve();await flush();expect(h.images).toHaveLength(6);
-  for(const image of h.images){const value=v2?image.input.characters[0].tag:image.input.prompt;expect(value).toContain('silver hair');expect(value).not.toContain('pink hair');}
  });
 });

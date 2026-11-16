@@ -1,43 +1,36 @@
-import type { ComicContinuity } from './compactComic';
-import type { CharChange } from './protocol';
-import { mergeVisualChanges, type VisualChanges } from './visualArchive';
+import { mergeVisualChanges, type VisualChanges, type VisualState } from './visualArchive';
 
-interface RecordState { ordinal: number; text: string; marker: string; sourceLine: number; state: ComicContinuity; changes: CharChange[]; }
+interface RecordState { ordinal: number; text: string; marker: string; state: VisualState }
 /** Session-only, source ordered. Later completion never supplies earlier requests with future facts. */
 export class ComicContinuityLedger {
   private records = new Map<number, RecordState>();
-  clear(): void { this.records.clear(); }
   accept(record: RecordState): void { this.records.set(record.ordinal, structuredClone(record)); }
   confirmed(beforeOrdinal = Infinity): RecordState[] {
     const records: RecordState[] = [];
     for (let i = 0; i < beforeOrdinal; i++) {
       const record = this.records.get(i);
-      if (!record || !record.state.complete || !record.text.trim()) break;
+      if (!record || !record.text.trim()) break;
       records.push(record);
     }
     return records;
   }
-  context(beforeOrdinal: number, prefix: string): { prefix: string; note: string; changes: CharChange[]; outfits: Record<string,string>; visual?: VisualChanges } {
-    const changes=[...this.records.values()].filter(r=>r.ordinal<beforeOrdinal&&prefix.includes(r.text.trim())).sort((a,b)=>a.ordinal-b.ordinal).flatMap(r=>r.changes).filter(c=>c.field!=='new');
+  context(beforeOrdinal: number, prefix: string): { prefix: string; facts?: string; changes?: VisualChanges } {
     const contiguous = this.confirmed(beforeOrdinal);
     const last=contiguous.at(-1);
-    if (!last) return {prefix,note:'',changes,outfits:{}};
+    if (!last) return {prefix};
     // Verify every replaced segment and separator, not just a coincidentally matching last sentence.
     let cursor=0,previousMarker='';
     for(const record of contiguous){
       const anchor=record.text.trim(),found=prefix.indexOf(anchor,cursor);
-      if(found<0 || prefix.slice(cursor,found).trim()!==previousMarker) return {prefix,note:'',changes,outfits:{}};
+      if(found<0 || prefix.slice(cursor,found).trim()!==previousMarker) return {prefix};
       cursor=found+anchor.length;previousMarker=record.marker;
     }
     let rest=prefix.slice(cursor).trimStart();
     if (rest.startsWith(last.marker)) rest=rest.slice(last.marker.length).trimStart();
-    const outfits=Object.assign({},...contiguous.map(r=>r.state.outfits));
     return {
-      prefix:rest,
-      note:'【已确认的此前连续状态｜按正文先后，后项更新前项；不作为选图目标】\n'+contiguous.map(r=>`原文行${r.sourceLine}之后：${r.state.facts}`).join('\n')+'\n当前衣着：'+JSON.stringify(outfits),
-      changes, outfits,
-      ...(contiguous.some(record => record.state.visual && Object.keys(record.state.visual).length) ?
-        { visual: mergeVisualChanges(...contiguous.map(record => record.state.visual)) } : {}),
+      prefix: rest,
+      facts: contiguous.map(record => record.state.facts).join('；'),
+      changes: mergeVisualChanges(...contiguous.map(record => record.state.changes)),
     };
   }
 }

@@ -295,9 +295,9 @@ export interface NaiSettings extends BackendConn {
   comicMode?: boolean;
   /** New analyses always use V2. False is only used when rendering a saved V1 image. */
   comicV2?: boolean;
-  /** 保留 standard / simple；fast 为独立的简短分镜引擎，不自动迁移旧选择。 */
+  /** fast 沿用 standard 分镜，只减少世界书和较早正文等输入。 */
   comicAnalysisMode?: 'standard' | 'simple' | 'fast';
-  /** Connection/model/engine scoped task overrides; older fast keys remain valid. */
+  /** Connection/model/mode scoped reasoning overrides. Standard and fast share the standard entry. */
   comicReasoningByModel?: Record<string, ComicReasoning>;
   /**
    * 漫画页分镜风格(comicMode 开启时生效)。取值见 COMIC_PANEL_STYLES 的 id;

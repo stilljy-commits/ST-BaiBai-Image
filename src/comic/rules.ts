@@ -1,4 +1,4 @@
-export const NAI_INTERACTION_RULE = '仅在多人姿态或接触容易混淆时，按正文在各自人物栏写本人朝向、相对站位和关键接触点。区分并排同向、隔桌对坐、从身后接触；只写可见且有依据的细节。适用时用配对的source# / target# / mutual#动作标签，只放对应人物栏。公共描述只写共享姿态或核心事件。';
+export const NAI_INTERACTION_RULE = '同格多人姿态或接触容易混淆时，各自写朝向、相对站位和可见的关键接触点，区分并排同向、隔桌对坐、从身后接触。动作明确且有适用的NAI标签时，在同格双方的人物栏配对写source# / target# / mutual#。例如单向拥抱，主动方写source#hug，被抱方写target#hug；相互拥抱，双方写mutual#hug。公共描述只写共享姿态或核心事件。';
 
 /** Shared concise contract for all three analysis modes. No additional model
  * pass, visible checklist, exhaustive pairwise comparison or reasoning report. */

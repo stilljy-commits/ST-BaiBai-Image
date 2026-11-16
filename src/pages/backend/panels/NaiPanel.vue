@@ -479,10 +479,10 @@ const comicReasoningOptions = computed(() => [
   ...(comicReasoningCaps.value.off ? [{value:'off',label:'关闭推理'}] : []),
 ]);
 const comicReasoning = computed({get:() => {
-  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode??'standard'); const value=settings.nai.comicReasoningByModel?.[key] ?? 'follow';
+  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode==='simple'?'simple':'standard'); const value=settings.nai.comicReasoningByModel?.[key] ?? 'follow';
   return comicReasoningOptions.value.some(o=>o.value===value)?value:'follow';
 },set:(value:string) => {
-  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode??'standard');if(key) settings.nai.comicReasoningByModel={...settings.nai.comicReasoningByModel,[key]:value as ComicReasoning};
+  const key=comicReasoningKey(getTagGenChannel(),settings.nai.comicAnalysisMode==='simple'?'simple':'standard');if(key) settings.nai.comicReasoningByModel={...settings.nai.comicReasoningByModel,[key]:value as ComicReasoning};
 }});
 const comicStyleOptions = COMIC_PANEL_STYLES.map(s => ({ value: s.id, label: s.label }));
 const comicGutterOptions = COMIC_GUTTER_MODES.map(g => ({ value: g.id, label: g.label }));
@@ -1310,22 +1310,18 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
         <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
           {{ comicAnalysisMode === 'fast'
-            ? '极速适合想少用 token 的时候。用本段正文和角色档案规划画面，只补读尚未记下的前情；已确认的衣着、发型、妆容随聊天保存。'
+            ? '极速沿用标准的分镜和提示词规则，使用本段正文与造型档案，只补读尚未记录的前情，减少分析用量。'
             : comicAnalysisMode === 'simple'
               ? '简单适合日常配图。保留对场景和人物的参考，缩短分析指令，由 AI 直接写提示词。'
               : '标准适合复杂剧情，使用完整分镜规则和近期上下文，通常需要更多分析时间和 token。' }}
           模式切换从下一轮生效。
         </p>
-        <p v-if="showComicSettings && comicAnalysisMode === 'fast'" class="bbi-field-hint">
-          极速的推理强度由生成提示词的 API 渠道决定。
-        </p>
-
-        <div v-if="showComicSettings && comicAnalysisMode !== 'fast'" class="bbi-num-row">
-          <span class="bbi-field-label">当前模式推理方式</span>
+        <div v-if="showComicSettings" class="bbi-num-row">
+          <span class="bbi-field-label">{{ comicAnalysisMode === 'simple' ? '简单模式推理方式' : '标准与极速的推理方式' }}</span>
           <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="当前漫画模式推理方式" />
         </div>
-        <p v-if="showComicSettings && comicAnalysisMode !== 'fast'" class="bbi-field-hint" aria-live="polite">
-          {{ comicReasoningCaps.label }}。这项只控制当前模式用于分析画面的思考强度，按渠道和模型保存。跟随渠道最省事；关闭推理可能加快分析，也可能漏掉复杂情节。
+        <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
+          {{ comicReasoningCaps.label }}。标准和极速共用这项设置。关闭推理可能加快分析，也可能漏掉复杂情节。
         </p>
 
         <div v-if="showComicSettings" class="bbi-num-row">
@@ -1355,7 +1351,7 @@ async function removeVibe(vibe: NaiVibe) {
           留白决定画格之间和页面边缘如何分隔。{{ selectedComicGutter.description }}
         </p>
 
-        <label v-if="showComicSettings && comicAnalysisMode === 'standard'" class="bbi-switch-row">
+        <label v-if="showComicSettings && comicAnalysisMode !== 'simple'" class="bbi-switch-row">
           <span class="bbi-field-label">减弱同人角色带入的原作画风</span>
           <input
             v-model="settings.nai.comicAntiPossession"
@@ -1364,7 +1360,7 @@ async function removeVibe(vibe: NaiVibe) {
           />
         </label>
 
-        <p v-if="showComicSettings && comicAnalysisMode === 'standard'" class="bbi-field-hint">同人角色有时会把原作画风带到整页。开启后，标准模式会尝试排除对应人物的原作画风，保留身份和外貌。</p>
+        <p v-if="showComicSettings && comicAnalysisMode !== 'simple'" class="bbi-field-hint">同人角色有时会把原作画风带到整页。开启后会尝试排除对应人物的原作画风，保留身份和外貌。</p>
 
         <ComicExtraRules v-if="showComicSettings" />
 

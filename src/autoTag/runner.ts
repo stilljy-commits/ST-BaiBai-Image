@@ -1,6 +1,5 @@
 import { startMarkedFloorGeneration } from '@/floor/generateSlot';
-import { compactComicSpec, compactLibrary, parseCompactComic, type CompactComicContext, type CompiledComicPage } from '@/autoTag/compactComic';
-import { readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualStory } from '@/autoTag/visualArchive';
+import { archivedOutfits, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualStory } from '@/autoTag/visualArchive';
 import { finalizeComicPlan } from '@/comic/plan';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import { planChangeOps } from '@/autoTag/changeOps';
@@ -287,7 +286,6 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const fast = renderProfile.mode !== 'illustration' && environment.nai.comicAnalysisMode === 'fast';
     const archive = fast ? readVisualArchive(context.chat, floor, tags,
       slotMatch ? visualStory(rawSource.slice(0, slotMatch.index), tags).length : undefined) : undefined;
-    const compact:CompactComicContext|undefined = archive ? {target:preparedTarget,entries:anchors.entries,locked:lockedNames,nai:environment.nai,size:profile.lockedSize,min:promptOptions.minImages,max:promptOptions.maxImages,visual:archive.changes}:undefined;
     const note = [slot ? buildSlotTaskNote(rawSource, slot.seq) : '', archive ? visualArchiveNote(archive) : ''].filter(Boolean).join('\n\n');
     const messages = await buildAutoTagMessages(
       context,
@@ -295,16 +293,15 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       promptOptions,
       fast ? null : readBookMemory(floor, context.chat[floor]?.mes ?? '', context.name1),
       preparedTarget,
-      compact ? compactLibrary(compact) : anchors.text,
+      anchors.text,
       note,
       profile,
       environment,
-      'select-scenes',
-      compact ? compactComicSpec(compact) : undefined,
     );
     const channel = getTagGenChannel();
-    const reasoningMode = renderProfile.mode !== 'illustration' && !fast
-      ? environment.nai.comicReasoningByModel?.[comicReasoningKey(channel,environment.nai.comicAnalysisMode ?? 'standard')] ?? 'follow'
+    const comicMode = environment.nai.comicAnalysisMode === 'simple' ? 'simple' : 'standard';
+    const reasoningMode = renderProfile.mode !== 'illustration'
+      ? environment.nai.comicReasoningByModel?.[comicReasoningKey(channel, comicMode)] ?? 'follow'
       : 'follow';
     // 失败重试:请求异常与「返回无法解析/校验不通过」都视为可重试的异常(后者常见于模型没遵守协议);
     // 中止信号立即收手,不消耗重试。parseImagePlan 对坏输出抛错,「无画面」则是正常返回空数组。
@@ -312,7 +309,6 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     // 错误原样抛回这里走重试——显示与行为同口径。
     const retries = Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0));
     let plan: ImagePlan | null = null;
-    let visualPages: CompiledComicPage[] = [];
     let lastError = '';
     for (let attempt = 0; attempt <= retries && !plan; attempt++) {
       if (controller.signal.aborted) {
@@ -324,7 +320,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         // (直接 let 会被 TS 收窄成 null:闭包内的赋值控制流分析看不见。)
         const parsed: { plan: ImagePlan | null } = { plan: null };
         const validate = (raw: string) => {
-          const candidate = compact ? parseCompactComic(raw,compact,pages => { visualPages = pages; }) : parseImagePlan(
+          const candidate = parseImagePlan(
             raw,
             preparedTarget.segments,
             promptOptions.minImages,
@@ -354,7 +350,6 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
             signal: controller.signal,
             source,
             validate,
-            ...(compact ? {stream:true} : {}),
             ...(reasoningOverride?{reasoningOverride}:{}),
           });
         } else {
@@ -466,7 +461,9 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       }
       for (const n of tagRes.unknown) unknownNames.add(n);
     }
-    if(renderProfile.mode!=='illustration'&&!compact)finalizeComicPlan(plan,anchors.entries,undefined,lockedNames);
+    if (renderProfile.mode !== 'illustration') {
+      finalizeComicPlan(plan, anchors.entries, undefined, lockedNames, archivedOutfits(archive?.changes));
+    }
     if (unknownNames.size) {
       // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。
       // 这是漏建档唯一的确定性信号,藏进控制台等于没有,必须让用户看见。
@@ -550,11 +547,11 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       if (archive) {
         const proseLines = source.split(/\r\n|\r|\n/);
         const points = [];
-        for (const page of visualPages) {
-          if (!page.state.complete) break;
-          const through = page.plan.images[0].sourceLine;
+        for (const image of [...plan.images].sort((a, b) => a.sourceLine - b.sourceLine)) {
+          if (!image.visualState) break;
+          const through = image.sourceLine;
           const prefix = visualStory(proseLines.slice(0, through + 1).join('\n'), tags);
-          if (prefix) points.push(visualPoint(prefix, page.state.visual ?? {}, page.state.facts));
+          if (prefix) points.push(visualPoint(prefix, image.visualState.changes, image.visualState.facts));
         }
         await saveVisualArchive(floor, chatId, message, swipeId, tags, archive.basis, points).catch(error => {
           console.warn('[柏宝绘] 当前造型记录保存失败', error);

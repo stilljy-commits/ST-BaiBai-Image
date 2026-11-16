@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildAutoTagMessages, captureAutoTagEnvironment } from './prompt';
 import { prepareStreamBatch } from './streamBatch';
-import { compactComicSpec } from './compactComic';
 import { settings } from '@/state/settings';
 import { normalizeComicRuleTabs, selectComicRuleTab, updateComicRuleText } from '@/state/comicRuleTabs';
 import type { STContext } from '@/st/context';
@@ -23,8 +22,7 @@ describe('shared visual rules and active natural-language rules across analysis 
       selectComicRuleTab(environment.nai, 2);
       updateComicRuleText(environment.nai, '此作品专用三号规则：保留蓝色围巾，突出友好的互动。');
       const build = () => buildAutoTagMessages(ctx, 0, { ...settings.autoTag, minImages: 1, maxImages: 1 }, null,
-        batch.target, undefined, batch.instructions, profile, environment, 'fixed-markers',
-        compactComicSpec({ nai: environment.nai, target: batch.target, markers: batch.markerTargets, entries: [], locked: new Set(), size: 'portrait', min: 1, max: 1 }));
+        batch.target, undefined, batch.instructions, profile, environment, 'fixed-markers');
       const text = (await build()).map(message => message.content).join('\n');
       expect(text.split(COMIC_VISUAL_RULES)).toHaveLength(2);
       expect(text).toContain('cosplay是临时穿着');

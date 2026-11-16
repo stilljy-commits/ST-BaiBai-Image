@@ -5,7 +5,6 @@ import { getCheckWorldInfo, type STMessage, type WorldInfoEntry } from '@/st/con
 import { serializeImageTag } from '@/st/imageTagRegex';
 import { buildAutoTagMessages, captureAutoTagEnvironment } from './prompt';
 import { prepareTargetText } from './clean';
-import { compactComicSpec } from './compactComic';
 import { settings } from '@/state/settings';
 import type { STContext } from '@/st/context';
 
@@ -75,11 +74,13 @@ describe('visual context in the analysis request', () => {
     expect(standardText).toContain('站台有一把绿色长椅');
     expect(check).toHaveBeenCalledTimes(1);
     environment.nai.comicAnalysisMode = 'fast';
-    const compactSpec = compactComicSpec({ target, entries: [], locked: new Set(), nai: environment.nai, size: 'portrait', min: 1, max: 1 });
     const fast = (contextMessages: number) => buildAutoTagMessages(ctx, 1, { ...options, contextMessages },
-      null, target, '人物档案', '这一小段前文尚未记录。', profile, environment, 'select-scenes', compactSpec);
+      null, target, '人物档案', '这一小段前文尚未记录。', profile, environment, 'select-scenes');
     const long = await fast(30);
     expect(await fast(1)).toEqual(long);
+    const standardRules = standard.filter(m => m.role === 'system' && !m.content.includes('站台有一把绿色长椅') && !m.content.includes('角色卡全文'));
+    expect(long.filter(m => m.role === 'system')).toEqual(standardRules);
+    expect(long.at(-1)?.content).toContain('visualState');
     const fastText = long.map(message => message.content).join('\n');
     expect(fastText).toContain('这一小段前文尚未记录');
     expect(fastText).not.toMatch(/已归档的旧正文|绿色长椅|角色卡全文/);

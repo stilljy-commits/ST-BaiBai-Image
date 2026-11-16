@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readVisualArchive, visualPoint, visualStory, VISUAL_EXTRA } from './visualArchive';
+import { parseVisualState, readVisualArchive, resolveVisualValue, visualPoint, visualStory, VISUAL_EXTRA } from './visualArchive';
 import type { STMessage } from '@/st/context';
 
 const story = (mes: string): STMessage => ({ name: 'AI', is_user: false, is_system: false, mes });
@@ -12,6 +12,22 @@ function saved(chat: STMessage[], floor: number, prefix: string, changes = {}) {
 }
 
 describe('current look across AI floors', () => {
+  it('opens with the current value or the fixed fallback, including an explicit empty outfit', () => {
+    const fixed = { outfit: 'blue coat', hair: 'black hair' };
+    expect(resolveVisualValue('hair', { hair: 'ponytail' }, fixed)).toBe('ponytail');
+    expect(resolveVisualValue('hair', { hair: null }, fixed)).toBe('black hair');
+    expect(resolveVisualValue('hair', {}, fixed)).toBe('black hair');
+    expect(resolveVisualValue('outfit', { outfit: '' }, fixed)).toBe('');
+    expect(resolveVisualValue('makeup', {}, fixed)).toBe('');
+  });
+
+  it('trusts a visual summary only when the model confirmed coverage and used valid fields', () => {
+    const changes = { 小满: { outfit: '', hair: 'ponytail', makeup: null } };
+    expect(parseVisualState({ complete: true, facts: ' 站台等车 ', changes })).toEqual({ facts: '站台等车', changes });
+    expect(parseVisualState({ complete: false, facts: '站台等车', changes })).toBeUndefined();
+    expect(parseVisualState({ complete: true, facts: '站台等车', changes: { 小满: { outfit: [] } } })).toBeUndefined();
+  });
+
   it('retains an outfit and a temporary look after an absent chapter; preserves subsequent unprocessed prose', () => {
     const first = '小满换了黄雨衣，扎好马尾。';
     const chat = [story(first + '\n<bbi_image><pending>出门</pending></bbi_image>\n她放下钥匙。'), story('齐远独自在站台等车。')];

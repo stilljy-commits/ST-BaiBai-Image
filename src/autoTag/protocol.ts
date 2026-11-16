@@ -1,6 +1,7 @@
 import type { RenderProfile } from '@/autoTag/renderProfile';
 import { normalizeOrientation, type Orientation } from '@/backends/size';
 import type { TargetSegment } from '@/autoTag/clean';
+import { parseVisualState, type VisualState } from '@/autoTag/visualArchive';
 import { FORBIDDEN_SUBTAG, serializeImageTag } from '@/st/imageTagRegex';
 import { readComicCosplay, type ComicCosplay } from '@/comic/costume';
 import {
@@ -28,6 +29,8 @@ export interface ImageCharacterPrompt {
 export interface ImageInsertion {
   slotId?: string;
   renderProfile?: RenderProfile;
+  /** Optional context for later analysis. Never sent to the image backend. */
+  visualState?: VisualState;
   /** 模型选择的目标正文位置 ID。 */
   position: string;
   /** 位置 ID 对应的原始物理行(0-based，仅插件内部使用)。 */
@@ -250,7 +253,8 @@ export function parseImagePlan(
     const characters = sanitizeCharacters(entry.characters, index);
     // 兼容模型按习惯返回 orientation / aspect 键
     const size = normalizeOrientation(entry.size ?? entry.orientation ?? entry.aspect);
-    images.push({ position, sourceLine, tag, nl, negative, characters, size });
+    const visualState = parseVisualState(entry.visualState);
+    images.push({ position, sourceLine, tag, nl, negative, characters, size, ...(visualState ? { visualState } : {}) });
   }
 
   const limitedImages = images.slice(0, normalizedMax);

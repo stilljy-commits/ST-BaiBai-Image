@@ -19,8 +19,8 @@ function nativeFraming(image:ImagePlan['images'][number]):ImagePlan['images'][nu
 
 /** Applies the same local completion to standard/simple/fast results. Only
  * accepted wardrobe states are shared, keyed by original source order. */
-export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[],ledger?:ComicWardrobeLedger,locked:ReadonlySet<string>=new Set()):void {
-  let outfits:Record<string,string>={};
+export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[],ledger?:ComicWardrobeLedger,locked:ReadonlySet<string>=new Set(),archivedOutfits:Record<string,string>={}):void {
+  let outfits={...archivedOutfits};
   let costumes:ComicCostumes={};
   let previousLine=-Infinity;
   for(const image of [...plan.images].sort((a,b)=>a.sourceLine-b.sourceLine)){

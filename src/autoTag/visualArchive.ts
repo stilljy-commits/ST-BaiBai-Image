@@ -8,6 +8,36 @@ export const VISUAL_LOOK_FIELDS = ['hair', 'eyes', 'skin', 'body', 'extra', 'mak
 export type VisualLookField = typeof VISUAL_LOOK_FIELDS[number];
 export type VisualFields = Partial<Record<VisualLookField | 'outfit', string | null>>;
 export type VisualChanges = Record<string, VisualFields>;
+export const VISUAL_FIELDS = ['outfit', ...VISUAL_LOOK_FIELDS] as const;
+export interface VisualState { facts: string; changes: VisualChanges }
+
+export function resolveVisualValue(field: keyof VisualFields, current?: VisualFields, fixed?: VisualFields): string {
+  return current?.[field] ?? fixed?.[field] ?? '';
+}
+
+/** Archive metadata is optional. Incomplete metadata must never invalidate an image. */
+export function parseVisualState(value: unknown): VisualState | undefined {
+  if (!value || typeof value !== 'object') return;
+  const state = value as Record<string, unknown>;
+  if (state.complete !== true || typeof state.facts !== 'string' || !state.facts.trim() ||
+      !state.changes || typeof state.changes !== 'object' || Array.isArray(state.changes)) return;
+  const changes = Object.create(null) as VisualChanges;
+  for (const [name, look] of Object.entries(state.changes)) {
+    if (!name || !look || typeof look !== 'object' || Array.isArray(look)) return;
+    const fields: VisualFields = {};
+    for (const [key, value] of Object.entries(look)) {
+      if (!VISUAL_FIELDS.some(field => field === key) || (value !== null && typeof value !== 'string')) return;
+      fields[key as keyof VisualFields] = value === null ? null : value.trim();
+    }
+    if (Object.keys(fields).length) changes[name] = fields;
+  }
+  return { facts: state.facts.trim(), changes };
+}
+
+export function archivedOutfits(changes?: VisualChanges): Record<string, string> {
+  return Object.fromEntries(Object.entries(changes ?? {}).flatMap(([name, fields]) =>
+    typeof fields.outfit === 'string' ? [[name, fields.outfit]] : []));
+}
 export interface VisualPoint { end: number; hash: string; changes: VisualChanges; facts: string }
 interface VisualBranch { basis: string; points: VisualPoint[]; manual?: { hash: string; end: number; changes: VisualChanges } }
 interface VisualReceipt { v: 1; branches: Record<string, VisualBranch> }
@@ -113,8 +143,9 @@ export function readVisualArchive(chat: STMessage[], before: number, tags: strin
   return { basis, changes, facts, pending: tracked ? pending.join('\n\n') : legacy, sources, points: currentPoints };
 }
 
-export function visualArchiveNote(archive: { pending: string; facts: string }): string {
+export function visualArchiveNote(archive: { pending: string; facts: string; changes: VisualChanges }): string {
   return [archive.facts && `【已确认的前情】${archive.facts}`,
+    Object.keys(archive.changes).length && `【当前造型】${JSON.stringify(archive.changes)}。本段正文明确的造型变化优先，其次沿用当前造型，最后用固定档案。null 表示恢复对应固定值。`,
     archive.pending && `【尚未记录的较早正文，仅用于续接，无需为其选图】\n${archive.pending}`].filter(Boolean).join('\n');
 }
 

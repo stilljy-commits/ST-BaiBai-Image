@@ -750,7 +750,7 @@ async function confirmUpdate() {
             <span class="bbi-field-label">合批分析逐页启动出图</span>
             <input v-model="settings.autoTag.streamProgressivePages" type="checkbox" class="bbi-checkbox" />
           </label>
-          <p class="bbi-field-hint">标准、简单漫画模式使用副 API 时，一页提示词通过校验就可开始出图。极速模式自动逐页启动。没法按页读取结果时，等这一批分析结束再出图。</p>
+          <p class="bbi-field-hint">漫画模式使用副 API 时，一页提示词通过校验就可开始出图。没法按页读取结果时，等这一批分析结束再出图。</p>
 
           <label class="bbi-num-row">
             <span class="bbi-field-label">每批分析图片数</span>
