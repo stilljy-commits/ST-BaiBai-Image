@@ -117,8 +117,9 @@ function wardrobeTimeline(characters:readonly ImageCharacterPrompt[],known:Recor
   }
   return {updates,snapshots};
 }
-export function comicWardrobeUpdates(characters:readonly ImageCharacterPrompt[],known:Record<string,string>={},costumes:ComicCostumes={}):Record<string,string> {
-  return wardrobeTimeline(characters,known,costumes).updates;
+export function comicWardrobeUpdates(characters:readonly ImageCharacterPrompt[],known:Record<string,string>={},costumes:ComicCostumes={},archive=false):Record<string,string> {
+  const covered = archive ? characters.filter(c => c.wardrobe !== undefined || (!detailClothes(c) && visibleClothing(frameOf(c)))) : characters;
+  return wardrobeTimeline(covered,known,costumes).updates;
 }
 /** No model calls, no semantic clothing guesses, and no error/retry for optional
  * fields. Metadata is consumed into final tags, so manual tag edits stay final. */

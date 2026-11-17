@@ -1,5 +1,5 @@
 import { startMarkedFloorGeneration } from '@/floor/generateSlot';
-import { archivedOutfits, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualStory } from '@/autoTag/visualArchive';
+import { archivedOutfits, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPointsForImages, visualStory } from '@/autoTag/visualArchive';
 import { finalizeComicPlan } from '@/comic/plan';
 import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning';
 import { planChangeOps } from '@/autoTag/changeOps';
@@ -462,7 +462,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
       for (const n of tagRes.unknown) unknownNames.add(n);
     }
     if (renderProfile.mode !== 'illustration') {
-      finalizeComicPlan(plan, anchors.entries, undefined, lockedNames, archivedOutfits(archive?.changes));
+      finalizeComicPlan(plan, anchors.entries, undefined, lockedNames, archivedOutfits(archive?.changes), fast && !slot);
     }
     if (unknownNames.size) {
       // 模型认为这是角色、却没给它建档 —— 该角色在图里将完全没有外貌。
@@ -545,14 +545,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
         return;
       }
       if (archive) {
-        const proseLines = source.split(/\r\n|\r|\n/);
-        const points = [];
-        for (const image of [...plan.images].sort((a, b) => a.sourceLine - b.sourceLine)) {
-          if (!image.visualState) break;
-          const through = image.sourceLine;
-          const prefix = visualStory(proseLines.slice(0, through + 1).join('\n'), tags);
-          if (prefix) points.push(visualPoint(prefix, image.visualState.changes, image.visualState.facts));
-        }
+        const points = visualPointsForImages(source, tags, plan.images);
         await saveVisualArchive(floor, chatId, message, swipeId, tags, archive.basis, points).catch(error => {
           console.warn('[柏宝绘] 当前造型记录保存失败', error);
         });

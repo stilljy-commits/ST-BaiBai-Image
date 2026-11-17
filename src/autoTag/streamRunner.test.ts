@@ -451,6 +451,23 @@ describe('source ordered costume completion before NAI',()=>{
  }
 });
 describe('fast visual archive integrated with native comic plans',()=>{
+ it('saves a later explicit outfit without visualState before NAI, while retaining the unconfirmed prose',async()=>{
+  useComicChannel();
+  const body='小雪从站台走来。\n[img: 小雪走来]\n小雪换上黄雨衣，站在门口。\n[img: 小雪在门口]\n她低头微笑。\n[img: 小雪面部特写]';
+  beginStreamSession('A');feedStreamText(body);await flush();await attachStory(body);
+  const task=h.analyses[0],panel='This is the main panel.';
+  task.o.validate(JSON.stringify({changes:[],images:[
+   nativePage('M1'),
+   nativePage('M2',{tag:panel+' Full body, standing at the door.',characters:[{name:'小雪',panel,tag:'girl, standing',outfit:'yellow raincoat'}]}),
+   nativePage('M3',{tag:panel+' Close-up on her face.',characters:[{name:'小雪',panel,tag:'girl, smiling',outfit:'gold hair clip'}]}),
+  ]}));task.resolve();await flush();
+  expect(saveImageResult).not.toHaveBeenCalled();
+  const archive=readVisualArchive(h.ctx.chat,2,[]);
+  expect(archive.changes.小雪.outfit).toBe('yellow raincoat');
+  expect(archive.pending).toContain('小雪从站台走来。');
+  expect(archive.pending).toContain('小雪换上黄雨衣，站在门口。');
+ });
+
  it('carries the previous visual archive before any NAI result and sends only the unprocessed tail and skipped floor',async()=>{
   useComicChannel();
   settings.autoTag.contextMessages=30;

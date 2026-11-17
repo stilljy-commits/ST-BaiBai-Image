@@ -1,5 +1,5 @@
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
-import { archivedOutfits, mergeVisualChanges, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualStory } from '@/autoTag/visualArchive';
+import { archivedOutfits, mergeVisualChanges, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualPointsForImages, visualStory } from '@/autoTag/visualArchive';
 import { ComicWardrobeLedger, needsComicClothingHistory } from '@/comic/characters';
 import { parseComicSections, comicSectionCharacters } from '@/comic/sections';
 import { comicCosplayContext } from '@/comic/costume';
@@ -291,9 +291,9 @@ function preparePlan(s: Session, plan: ImagePlan, anchors: ReturnType<typeof res
     for(const image of plan.images){
       const draft=jsonCopy(image);
       const sections=parseComicSections(draft.tag),characters=sections?comicSectionCharacters(sections):draft.characters;
-      refreshPlans.set(image,{needsClothingHistory:needsComicClothingHistory(characters),refresh:()=>{const fresh={images:[jsonCopy(draft)],changes};finalizeComicPlan(fresh,entries,s.wardrobe,locked,outfits);return fresh.images[0];}});
+      refreshPlans.set(image,{needsClothingHistory:needsComicClothingHistory(characters),refresh:()=>{const fresh={images:[jsonCopy(draft)],changes};finalizeComicPlan(fresh,entries,s.wardrobe,locked,outfits,fastComicAnalysis(s));return fresh.images[0];}});
     }
-    finalizeComicPlan(plan,anchors.entries,s.wardrobe,locked,outfits);
+    finalizeComicPlan(plan,anchors.entries,s.wardrobe,locked,outfits,fastComicAnalysis(s));
   }
   return plan;
 }
@@ -309,18 +309,20 @@ async function saveFastStreamArchive(s: Session): Promise<void> {
     if (basis !== archive.basis || (s.continuationBase && !actual.startsWith(s.continuationBase))) return;
     let prefix = s.continuationBase ?? '';
     const points = archive.points;
+    let covered = true;
     for (const record of s.continuity.confirmed()) {
       const part = visualStory(record.text, s.stripTags);
       prefix += (prefix ? '\n\n' : '') + part;
       if (!part || !(actual === prefix || actual.startsWith(prefix + '\n\n'))) break;
-      points.push(visualPoint(prefix, record.state.changes, record.state.facts));
+      covered &&= !!record.state && record.state.complete !== false;
+      if (record.state) points.push(visualPoint(prefix, record.state.changes, record.state.facts, covered));
     }
     await saveVisualArchive(floor, s.chatId, message, expectedSwipe, s.stripTags, basis, points);
   });
 }
 
 function acceptFastVisual(s: Session, job: Job, image: ImageInsertion) {
-  if (!fastComicAnalysis(s) || !image.visualState) return;
+  if (!fastComicAnalysis(s) || job.controller.signal.aborted) return;
   s.continuity.accept({ ordinal: job.ordinal, text: job.input.text, marker: job.input.raw, state: image.visualState });
 }
 
@@ -610,6 +612,7 @@ async function supplement(s: Session, count: number): Promise<void> {
   const note = `文末补充配图：已接受 ${count} 张，只补足还缺的 ${needed} 张。${STREAM_SCENE_SUBJECT_RULE}已有画面意图：${s.core.jobs.map(job=>job.input.intent).join('；')}。本楼此前已有图片：${priorImages || '无'}。已有图片与任务全部保留，只选尚未覆盖的视觉事件，不为同一画面重复出图。目标只含正式正文,不从摘要、行动选项或变量更新中选图。`;
   const controller = s.controller;
   let plan: ReturnType<typeof parseImagePlan> | undefined;
+  let visualBasis: string | undefined;
   let lastError: unknown;
   await s.core.additionalAnalysis(async () => {
     if (controller.signal.aborted || !ownerValid(s)) return;
@@ -617,6 +620,7 @@ async function supplement(s: Session, count: number): Promise<void> {
     const missingIntroductions = planChangeOps({ images: [], changes: [...s.established.values()].filter(change => !known.has(change.name)) }).map(item => item.op);
     const anchors = resolveCharAnchors(applyCharTagOps(entries, missingIntroductions, s.binding!.floor, lockedCharTagNames()), lockedCharTagNames(),s.profile.mode!=='illustration');
     const archive = fastComicAnalysis(s) ? readVisualArchive(getContext()!.chat, s.binding!.floor, s.stripTags) : undefined;
+    visualBasis = archive?.basis;
     const messages = await buildAutoTagMessages(s.context, s.binding!.floor, { ...s.options, minImages: needed, maxImages: needed },
       archive ? null : readBookMemory(s.binding!.floor, s.body!, s.context.name1), target, anchors.text,
       archive ? [note, visualArchiveNote(archive)].join('\n') : note,
@@ -641,6 +645,15 @@ async function supplement(s: Session, count: number): Promise<void> {
   if (ok !== 'saved') { for (const job of added) s.core.cancelJob(job); throw new Error(`补图位置写入失败：${ok}`); }
   for (const job of added) s.written.set(job.id, tagFor(s, job));
   s.core.attach(added); hydrateMessage(s.binding.floor, getContext()!);
+  const basis = visualBasis;
+  if (basis !== undefined) {
+    const { floor, message, expectedSwipe } = s.binding;
+    const points = visualPointsForImages(s.body, s.stripTags, added.map(job => job.payload!.image), false);
+    if (points.length) void serial(s, async () => {
+      if (!ownerValid(s)) return;
+      await saveVisualArchive(floor, s.chatId, message, expectedSwipe, s.stripTags, basis, points);
+    }).catch(error => log('stream:visual-archive-error', String(error)));
+  }
   void ensureFloorRendered(getContext()!, s.binding.message, s.binding.floor, s.chatId);
   log('stream:supplement', { added: added.length, total: count + added.length });
 }

@@ -24,8 +24,19 @@ describe('current look across AI floors', () => {
   it('trusts a visual summary only when the model confirmed coverage and used valid fields', () => {
     const changes = { 小满: { outfit: '', hair: 'ponytail', makeup: null } };
     expect(parseVisualState({ complete: true, facts: ' 站台等车 ', changes })).toEqual({ facts: '站台等车', changes });
-    expect(parseVisualState({ complete: false, facts: '站台等车', changes })).toBeUndefined();
+    expect(parseVisualState({ complete: false, facts: '站台等车', changes })).toEqual({ facts: '', changes, complete: false });
     expect(parseVisualState({ complete: true, facts: '站台等车', changes: { 小满: { outfit: [] } } })).toBeUndefined();
+  });
+
+  it('reads known clothes from a partial point while preserving all unchecked prose', () => {
+    const chat = [story('小满在站台。\n小满换上黄雨衣。')];
+    const basis = readVisualArchive(chat, 0, []).basis;
+    chat[0].extra = { [VISUAL_EXTRA]: { v: 1, branches: {
+      0: { basis, points: [visualPoint(visualStory(chat[0].mes, []), { 小满: { outfit: 'yellow raincoat' } }, '', false)] },
+    } } };
+    const archive = readVisualArchive(chat, 1, []);
+    expect(archive.changes.小满.outfit).toBe('yellow raincoat');
+    expect(archive.pending).toBe('小满在站台。\n\n小满换上黄雨衣。');
   });
 
   it('retains an outfit and a temporary look after an absent chapter; preserves subsequent unprocessed prose', () => {

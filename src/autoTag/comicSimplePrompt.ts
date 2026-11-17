@@ -43,7 +43,7 @@ characters中每格每人一条，按格顺序、格内从左到右排列。同�
     COMIC_VISUAL_RULES,
     format,
     `【角色与状态】正式角色只按库中同名条目判断已建档，直接复用；缺档用changes的field:"new"，无名路人不建档。原创新档至少sex/hair/eyes；同人有可靠fandom和sex即可，未确认外貌留空。用户/锁定资料不覆盖，自动同人档案不强制逐项抄写。临时衣着不进固定档案。永久变化用field/value和生效P位置，不能提前；field限sex/hair/eyes/skin/body/extra/outfit/fandom。新建position填首次出现P位置，仅作记录；无新增永久变化填changes:[]。${profileNl?'每条field:"new"还必须附nl，只含简短固定外貌，不含临时状态。':''}`,
-    `【字段】images有position、tag、characters、nl、negative、size；人物有name、tag、nl及上述panel/outfit/cosplay/可选negative。cosplay包含character/work及已明确的costume；不能从字段列表漏掉来源。图片及人物nl、图片negative填空串；size填${lockedSize ?? 'portrait'}。changes新建用name、field:"new"、fields、position、reason；更新用name、field、value、position、reason。`,
+    `【字段】images有position、tag、characters、nl、negative、size及条件字段interactions；人物有name、tag、nl及上述panel/outfit/cosplay/可选negative。cosplay包含character/work及已明确的costume；不能从字段列表漏掉来源。图片及人物nl、图片negative填空串；size填${lockedSize ?? 'portrait'}。changes新建用name、field:"new"、fields、position、reason；更新用name、field、value、position、reason。`,
     `【所选分镜】${nativeRule(style.rule) || '仅用共同分镜，按事件自然分配主次。'}`,
     `【所选留白】${nativeRule(gutter.rule)}`,
     `【色彩】full color，保留本镜头已确认的发色、瞳色与服装主色，包含正文明确的临时变化。`,

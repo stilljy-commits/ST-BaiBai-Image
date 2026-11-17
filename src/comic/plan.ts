@@ -1,4 +1,5 @@
-import type { ImagePlan } from '@/autoTag/protocol';
+import type { ImageInsertion, ImagePlan, ImageCharacterPrompt } from '@/autoTag/protocol';
+import { mergeVisualChanges } from '@/autoTag/visualArchive';
 import type { CharTagEntry } from '@/state/charTags';
 import { comicWardrobeUpdates, comicCostumeUpdates, finalizeComicCharacters, type ComicWardrobeLedger } from './characters';
 import type { ComicCostumes } from './costume';
@@ -17,9 +18,33 @@ function nativeFraming(image:ImagePlan['images'][number]):ImagePlan['images'][nu
   });
 }
 
+function applyInteractions(characters: ImageCharacterPrompt[], interactions: ImageInsertion['interactions']) {
+  for (const interaction of interactions ?? []) {
+    const inPanel = (name: string) => characters.filter(c => c.name === name &&
+      (c.panel === interaction.panel || (!c.panel && c.tag.startsWith(interaction.panel))));
+    const source = inPanel(interaction.source), target = inPanel(interaction.target);
+    if (source.length !== 1 || target.length !== 1) continue;
+    for (const [character, pose, role] of [
+      [source[0], interaction.sourcePose, 'source'],
+      [target[0], interaction.targetPose, 'target'],
+    ] as const) {
+      const [visual, dialogue] = character.tag.split(/(?=\n\s*Text:)/i, 2);
+      const { action } = interaction;
+      const parts = visual.split(',').map(tag => tag.trim()).filter(tag => {
+        const pairedAction = tag.match(/^(?:source|target|mutual)#(.+)$/i)?.[1].toLowerCase();
+        return tag && (!action || pairedAction !== action);
+      });
+      if (action) parts.push(`${interaction.mutual ? 'mutual' : role}#${action}`);
+      const seen = new Set(parts.map(tag => tag.toLowerCase()));
+      parts.push(...pose.split(',').map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase())));
+      character.tag = parts.join(', ') + (dialogue ?? '');
+    }
+  }
+}
+
 /** Applies the same local completion to standard/simple/fast results. Only
  * accepted wardrobe states are shared, keyed by original source order. */
-export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[],ledger?:ComicWardrobeLedger,locked:ReadonlySet<string>=new Set(),archivedOutfits:Record<string,string>={}):void {
+export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[],ledger?:ComicWardrobeLedger,locked:ReadonlySet<string>=new Set(),archivedOutfits:Record<string,string>={},recordVisual=false):void {
   let outfits={...archivedOutfits};
   let costumes:ComicCostumes={};
   let previousLine=-Infinity;
@@ -46,7 +71,16 @@ export function finalizeComicPlan(plan:ImagePlan,entries:readonly CharTagEntry[]
     }
     const sections=parseComicSections(image.tag);
     const draft=sections?comicSectionCharacters(sections):nativeFraming(image);
+    applyInteractions(draft, image.interactions);
     const updates=comicWardrobeUpdates(draft,outfits,costumes),costumeUpdates=comicCostumeUpdates(draft,outfits,costumes);
+    if (recordVisual && !image.earlyFrame) {
+      const observed = comicWardrobeUpdates(draft, outfits, costumes, true);
+      if (Object.keys(observed).length) {
+        const state = image.visualState ?? { facts: '', changes: {}, complete: false as const };
+        const clothes = Object.fromEntries(Object.entries(observed).map(([name, outfit]) => [name, { outfit }]));
+        image.visualState = { ...state, changes: mergeVisualChanges(clothes, state.changes) };
+      }
+    }
     if(sections){
       const characters=finalizeComicCharacters(draft,{entries:current,outfits,costumes});
       image.tag=writeComicSections(sections,characters);image.characters=[];

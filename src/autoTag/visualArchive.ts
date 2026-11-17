@@ -9,7 +9,7 @@ export type VisualLookField = typeof VISUAL_LOOK_FIELDS[number];
 export type VisualFields = Partial<Record<VisualLookField | 'outfit', string | null>>;
 export type VisualChanges = Record<string, VisualFields>;
 export const VISUAL_FIELDS = ['outfit', ...VISUAL_LOOK_FIELDS] as const;
-export interface VisualState { facts: string; changes: VisualChanges }
+export interface VisualState { facts: string; changes: VisualChanges; complete?: false }
 
 export function resolveVisualValue(field: keyof VisualFields, current?: VisualFields, fixed?: VisualFields): string {
   return current?.[field] ?? fixed?.[field] ?? '';
@@ -19,26 +19,28 @@ export function resolveVisualValue(field: keyof VisualFields, current?: VisualFi
 export function parseVisualState(value: unknown): VisualState | undefined {
   if (!value || typeof value !== 'object') return;
   const state = value as Record<string, unknown>;
-  if (state.complete !== true || typeof state.facts !== 'string' || !state.facts.trim() ||
-      !state.changes || typeof state.changes !== 'object' || Array.isArray(state.changes)) return;
+  if (!state.changes || typeof state.changes !== 'object' || Array.isArray(state.changes)) return;
   const changes = Object.create(null) as VisualChanges;
+  let valid = true;
   for (const [name, look] of Object.entries(state.changes)) {
-    if (!name || !look || typeof look !== 'object' || Array.isArray(look)) return;
+    if (!name || !look || typeof look !== 'object' || Array.isArray(look)) { valid = false; continue; }
     const fields: VisualFields = {};
     for (const [key, value] of Object.entries(look)) {
-      if (!VISUAL_FIELDS.some(field => field === key) || (value !== null && typeof value !== 'string')) return;
+      if (!VISUAL_FIELDS.some(field => field === key) || (value !== null && typeof value !== 'string')) { valid = false; continue; }
       fields[key as keyof VisualFields] = value === null ? null : value.trim();
     }
     if (Object.keys(fields).length) changes[name] = fields;
   }
-  return { facts: state.facts.trim(), changes };
+  const facts = typeof state.facts === 'string' ? state.facts.trim() : '';
+  if (valid && state.complete === true && facts) return { facts, changes };
+  if (Object.keys(changes).length) return { facts: '', changes, complete: false };
 }
 
 export function archivedOutfits(changes?: VisualChanges): Record<string, string> {
   return Object.fromEntries(Object.entries(changes ?? {}).flatMap(([name, fields]) =>
     typeof fields.outfit === 'string' ? [[name, fields.outfit]] : []));
 }
-export interface VisualPoint { end: number; hash: string; changes: VisualChanges; facts: string }
+export interface VisualPoint extends VisualState { end: number; hash: string }
 interface VisualBranch { basis: string; points: VisualPoint[]; manual?: { hash: string; end: number; changes: VisualChanges } }
 interface VisualReceipt { v: 1; branches: Record<string, VisualBranch> }
 
@@ -90,8 +92,26 @@ export function mergeVisualChanges(...sources: (VisualChanges | undefined)[]): V
   return merged;
 }
 
-export function visualPoint(source: string, changes: VisualChanges, facts: string): VisualPoint {
-  return { end: source.length, hash: signature(source), changes, facts };
+export function visualPoint(source: string, changes: VisualChanges, facts: string, complete = true): VisualPoint {
+  return { end: source.length, hash: signature(source), changes, facts, ...(complete ? {} : { complete: false }) };
+}
+
+/** A sparse image list can still update looks without consuming unchecked prose. */
+export function visualPointsForImages(
+  source: string, tags: string[], images: readonly { sourceLine: number; visualState?: VisualState }[], covered = true,
+): VisualPoint[] {
+  const lines = source.split(/\r\n|\r|\n/);
+  const points = new Map<number, VisualPoint>();
+  for (const image of [...images].sort((a, b) => a.sourceLine - b.sourceLine)) {
+    const state = image.visualState;
+    covered &&= !!state && state.complete !== false;
+    if (!state) continue;
+    const prefix = visualStory(lines.slice(0, image.sourceLine + 1).join('\n'), tags);
+    if (!prefix) continue;
+    const previous = points.get(prefix.length);
+    points.set(prefix.length, visualPoint(prefix, mergeVisualChanges(previous?.changes, state.changes), state.facts, covered));
+  }
+  return [...points.values()];
 }
 
 /** Replay checked paragraphs and preserve every unchecked gap since tracking began. */
@@ -118,14 +138,17 @@ export function readVisualArchive(chat: STMessage[], before: number, tags: strin
       tracked = true;
       if (legacy) pending.push(legacy);
     }
-    let end = 0;
+    let end = 0, coveredEnd = 0;
     for (const point of points) {
       if (!point || !Number.isInteger(point.end) || point.end > limit) break;
       if (point.end <= end || point.hash !== signature(text.slice(0, point.end)) ||
           !point.changes || typeof point.changes !== 'object') break;
       changes = mergeVisualChanges(changes, point.changes);
       for (const name of Object.keys(point.changes)) sources[name] = floor;
-      facts = point.facts || facts;
+      if (point.complete !== false) {
+        facts = point.facts || facts;
+        coveredEnd = point.end;
+      }
       end = point.end;
       if (floor === before) currentPoints.push(point);
     }
@@ -134,8 +157,8 @@ export function readVisualArchive(chat: STMessage[], before: number, tags: strin
       for (const name of Object.keys(manual.changes)) sources[name] = floor;
     }
     if (tracked) {
-      if (end) pending = [];
-      const tail = text.slice(end, limit).trim();
+      if (coveredEnd) pending = [];
+      const tail = text.slice(coveredEnd, limit).trim();
       if (tail) pending.push(tail);
     } else legacy = text.slice(0, limit);
     if (floor < before) basis = signature(`${basis}|${activeSwipe(message) ?? 0}|${hash}`);
@@ -164,10 +187,16 @@ export async function saveVisualArchive(
   const existing = branchOf(live);
   const previous = existing?.basis === basis && Array.isArray(existing.points) ? existing.points
     .filter(point => point && point.end <= text.length && point.hash === signature(text.slice(0, point.end))) : [];
-  const retained = (points.at(-1)?.end ?? 0) >= (previous.at(-1)?.end ?? 0) ? points : previous;
+  const retained = new Map(previous.map(point => [point.end, point]));
+  for (const point of points) {
+    const prior = retained.get(point.end);
+    retained.set(point.end, prior && point.complete === false
+      ? { ...prior, changes: mergeVisualChanges(prior.changes, point.changes) }
+      : point);
+  }
   const currentManual = manual ? { end: text.length, hash: signature(text), changes: mergeVisualChanges(existing?.manual?.changes, manual) } : existing?.manual;
   const next: VisualReceipt = { v: 1, branches: { ...(receipt(live.extra)?.branches ?? {}),
-    [key]: { basis, points: retained, ...(currentManual ? { manual: currentManual } : {}) } } };
+    [key]: { basis, points: [...retained.values()].sort((a, b) => a.end - b.end), ...(currentManual ? { manual: currentManual } : {}) } } };
   // A streaming reanalysis can race with a later floor. Only the captured floor and swipe own this update.
   const result = await applyMessageText(floor, raw => visualStory(raw, tags) === text ? raw : null,
     chatId, swipe, message, { key: VISUAL_EXTRA, value: next });

@@ -13,6 +13,29 @@ const batch=prepareStreamBatch([{id:'a',input:{text:'成年旅人甲和乙在车
 const fields={position:'M1',nl:'',negative:'',size:'portrait'};
 const v1='<image>\n@page\nSFW, 2girls, comic, 2 panels\n@panel P1\nThis is the upper right panel. Medium shot.\n@character C1 甲\ngirl, holding a map\n@outfit\nred coat\n@negative\nblue coat\n@panel P2\nThis is the lower main panel. Medium shot.\n@character C2 乙\ngirl, receiving a map\n@outfit\nblue coat\n@negative\nred coat\n</image>';
 describe('same per-person rendering pipeline in every comic analysis mode',()=>{
+ it('anchors horseback embrace to both riders in the same panel only',()=>{
+  const nai:NaiSettings={...settings.nai,model:'nai-diffusion-5-full',comicMode:true,comicV2:true};
+  const panel='This is the large main panel.';
+  const cutIn='This is the small upper right panel.';
+  const raw={...fields,tag:`SFW, 1girl, 1boy, comic, 2 panels, ${panel} Medium shot, riders sharing one horse. ${cutIn} Close-up on her face.`,
+   characters:[{name:'甲',panel,tag:'boy, pulling a cloak'},{name:'乙',panel,tag:'girl, covering her face'},
+    {name:'乙',panel:cutIn,tag:'girl, close-up on her face'}],
+   interactions:[{panel,source:'甲',target:'乙',action:'hug',sourcePose:'sitting behind her on the same horse, arms around her waist',
+    targetPose:'sitting in front of him on the same horse, held around the waist from behind'},
+    {panel:cutIn,source:'甲',target:'乙',action:'hug',sourcePose:'leaning forward',targetPose:'looking ahead'}],
+  };
+  const plan=parseImagePlan(JSON.stringify({changes:[],images:[raw]}),batch.target.segments,1,1,batch.markerTargets);
+  finalizeComicPlan(plan,entries);
+  const saved=serializeImageTag(plan.images[0]);
+  expect(saved).not.toContain('sourcePose');
+  const image=parseImageTagContent(saved);
+  const caption=(buildNaiParameters(nai,{prompt:image.tag,characters:image.characters,seed:42}).v4_prompt as any).caption;
+  const [rear,front,detail]=caption.char_captions.map((item:any)=>item.char_caption);
+  expect(rear).toContain('source#hug, sitting behind her on the same horse, arms around her waist');
+  expect(front).toContain('target#hug, sitting in front of him on the same horse, held around the waist from behind');
+  expect(detail).not.toMatch(/#hug|looking ahead|same horse/);
+ });
+
  it.each([true,false])('sends paired action tags to separate NAI character prompts in V2=%s',comicV2=>{
   const nai:NaiSettings={...settings.nai,model:'nai-diffusion-5-full',comicMode:true,comicV2};
   const actors=[{name:'甲',tag:'girl, source#hug, standing behind her',nl:''},{name:'乙',tag:'girl, target#hug, facing forward',nl:''}];

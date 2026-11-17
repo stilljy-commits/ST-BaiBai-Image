@@ -31,6 +31,9 @@ export interface ImageInsertion {
   renderProfile?: RenderProfile;
   /** Optional context for later analysis. Never sent to the image backend. */
   visualState?: VisualState;
+  /** The depicted moment precedes the marker's end-of-segment wardrobe state. */
+  earlyFrame?: true;
+  interactions?: ComicInteraction[];
   /** 模型选择的目标正文位置 ID。 */
   position: string;
   /** 位置 ID 对应的原始物理行(0-based，仅插件内部使用)。 */
@@ -44,6 +47,16 @@ export interface ImageInsertion {
   characters: ImageCharacterPrompt[];
   /** 画幅方向:模型只判横/竖,具体像素由用户在后端面板配置。漏给/乱给一律降级竖屏。 */
   size: Orientation;
+}
+
+export interface ComicInteraction {
+  panel: string;
+  source: string;
+  target: string;
+  action?: string;
+  mutual?: boolean;
+  sourcePose: string;
+  targetPose: string;
 }
 
 export interface ImagePlan {
@@ -206,6 +219,23 @@ function sanitizePosition(value: unknown, index: number): string {
   return position;
 }
 
+function sanitizeInteractions(value: unknown, index: number): ComicInteraction[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 16).flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    try {
+      const read = (key: string) => sanitizeContent(item[key], 'interactions.' + key, index);
+      const panel = read('panel'), source = read('source'), target = read('target');
+      const sourcePose = read('sourcePose'), targetPose = read('targetPose'), action = read('action').toLowerCase();
+      if (!panel || !source || !target || source === target || !sourcePose || !targetPose) return [];
+      return [{ panel, source, target, sourcePose, targetPose,
+        ...(/^[a-z][a-z0-9 -]{0,39}$/.test(action) ? { action } : {}), mutual: item.mutual === true }];
+    } catch {
+      return [];
+    }
+  });
+}
+
 /**
  * 解析并严格校验模型给出的“目标位置 ID + 提示词”列表。tag 必填;nl/negative 选填。
  * size 一律容忍:归一不出就当竖屏——为它抛错会白白吃掉 runner 的重试次数。
@@ -254,7 +284,10 @@ export function parseImagePlan(
     // 兼容模型按习惯返回 orientation / aspect 键
     const size = normalizeOrientation(entry.size ?? entry.orientation ?? entry.aspect);
     const visualState = parseVisualState(entry.visualState);
-    images.push({ position, sourceLine, tag, nl, negative, characters, size, ...(visualState ? { visualState } : {}) });
+    const interactions = sanitizeInteractions(entry.interactions, index);
+    images.push({ position, sourceLine, tag, nl, negative, characters, size, ...(visualState ? { visualState } : {}),
+      ...(marker && position !== marker.position ? { earlyFrame: true } : {}),
+      ...(interactions.length ? { interactions } : {}) });
   }
 
   const limitedImages = images.slice(0, normalizedMax);
