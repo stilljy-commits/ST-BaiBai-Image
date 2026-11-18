@@ -1,4 +1,7 @@
-# 柏宝绘 · 流式重构版 0.4.28
+# 柏宝绘 · 流式重构版 0.4.29
+
+[0.4.29 更新说明](./RELEASE-0.4.29.md)。
+
 
 安装／更新链接：https://github.com/stilljy-commits/ST-BaiBai-Image
 
