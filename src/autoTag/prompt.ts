@@ -20,6 +20,7 @@ import {
 } from '@/autoTag/context';
 import type { BookMemoryContext } from '@/autoTag/bookMemory';
 import { buildSimpleComicPrompt } from '@/autoTag/comicSimplePrompt';
+import { readVisualArchive } from '@/autoTag/visualArchive';
 import { isAiStoryMessage, isStoryMessage, type STContext } from '@/st/context';
 import type { AutoTagSettings, NaiSettings, BackendId } from '@/state/settings';
 import {
@@ -189,6 +190,7 @@ function recentFloors(context: STContext, targetFloor: number, count: number): n
     const message = context.chat[floor];
     if (isAiStoryMessage(message)) aiFloors.push(floor);
   }
+  if (count <= 0) return [targetFloor];
   const keep = Math.max(1, Math.floor(count) || 1);
   const start = aiFloors[Math.max(0, aiFloors.length - keep)] ?? targetFloor;
   const floors: number[] = [];
@@ -232,8 +234,7 @@ export async function buildAutoTagMessages(
   const naiCharPromptsOn = profile.naiCharPrompts;
   const comicOn = comicModeOn(naiCharPromptsOn, environment);
   const fastComicOn = comicOn && environment.nai.comicAnalysisMode === 'fast';
-  // Fast callers supply archived visual facts and any uncovered prose explicitly.
-  const scanFloors = fastComicOn ? [] : recentFloors(context, targetFloor, options.contextMessages);
+  const scanFloors = recentFloors(context, targetFloor, options.contextMessages);
   const previous = scanFloors
     .filter(floor => floor !== targetFloor)
     .map(floor => {
@@ -249,7 +250,12 @@ export async function buildAutoTagMessages(
   const charCard = fastComicOn ? '' : fetchCharCard(context);
   const persona = fastComicOn ? '' : fetchUserPersona(context);
   const visualReferences = environment.backend === 'nai' ? [charCard, persona, memory?.text ?? '', library ?? ''] : undefined;
-  const worldInfo = fastComicOn ? '' : await fetchWorldInfo(context.chat, scanFloors, context.name1, context.name2, visualReferences);
+  const knownCharacters = fastComicOn ? new Set([
+    ...Array.from((library ?? '').matchAll(/^- (.+?)(?: \[locked\])?: /gm), match => match[1]),
+    ...Object.keys(readVisualArchive(context.chat, targetFloor, settings.excludes.customStripTags).changes),
+  ]) : undefined;
+  const worldInfo = await fetchWorldInfo(context.chat, scanFloors, context.name1, context.name2, visualReferences,
+    knownCharacters ? { knownCharacters, targetText: preparedTarget.segments.map(segment => segment.text).join('\n') } : undefined);
 
   // 自然语言模式(profile.nl):ComfyUI 当前工作流或 NAI 渠道开启了「生成自然语言」。
   // 开启后协议变为 tag/nl 两键——自然语言是配合短 tag 用的,不是替代。

@@ -6,7 +6,7 @@ interface Panel { id:string; description:string; nonCharacter:string; characters
 export interface ComicSections { base:string; nonCharacter:string; negative:string; panels:Panel[]; }
 export function panelLocation(description:string):string {
   const first=description.trim().match(/^[^.\n]+(?:\.|$)/)?.[0]??'';
-  return /\bpanel\b/i.test(first)&&/\b(?:upper|lower|left|right|top|bottom|middle|row|single|vertical|second|third)\b/i.test(first)?first:'';
+  return /\bpanel\b/i.test(first)&&/\b(?:upper|lower|left|right|top|bottom|middle|row|single|vertical|second|third|main|inset|cut[- ]in)\b/i.test(first)?first:'';
 }
 /** The section markers are a plugin protocol, not NAI request fields. Parse
  * locally and fail open to the legacy text path for malformed saved content. */

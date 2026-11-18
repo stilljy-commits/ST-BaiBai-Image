@@ -18,10 +18,23 @@ function nativeFraming(image:ImagePlan['images'][number]):ImagePlan['images'][nu
   });
 }
 
+function panelKey(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!?。！？]+$/, '');
+}
+
 function applyInteractions(characters: ImageCharacterPrompt[], interactions: ImageInsertion['interactions']) {
   for (const interaction of interactions ?? []) {
-    const inPanel = (name: string) => characters.filter(c => c.name === name &&
-      (c.panel === interaction.panel || (!c.panel && c.tag.startsWith(interaction.panel))));
+    const panel = panelKey(interaction.panel);
+    const inPanel = (name: string) => characters.filter(c => {
+      if (c.name !== name) return false;
+      if (c.panel?.trim()) return panelKey(c.panel) === panel;
+      // Saved captions may carry the location at either end. Match only the
+      // full existing location once; never guess a different panel or actor.
+      const text = panelKey(c.tag), at = text.indexOf(panel);
+      return at >= 0 && text.indexOf(panel, at + panel.length) < 0 &&
+        !/[\p{L}\p{N}]/u.test(text[at - 1] ?? '') &&
+        !/[\p{L}\p{N}]/u.test(text[at + panel.length] ?? '');
+    });
     const source = inPanel(interaction.source), target = inPanel(interaction.target);
     if (source.length !== 1 || target.length !== 1) continue;
     for (const [character, pose, role] of [
@@ -30,13 +43,19 @@ function applyInteractions(characters: ImageCharacterPrompt[], interactions: Ima
     ] as const) {
       const [visual, dialogue] = character.tag.split(/(?=\n\s*Text:)/i, 2);
       const { action } = interaction;
-      const parts = visual.split(',').map(tag => tag.trim()).filter(tag => {
+      const parts: string[] = [], seen = new Set<string>();
+      const append = (tag: string) => {
+        const value = tag.trim(), key = value.toLowerCase();
+        if (value && !seen.has(key)) { parts.push(value); seen.add(key); }
+      };
+      const paired = action ? `${interaction.mutual ? 'mutual' : role}#${action}` : '';
+      for (const tag of visual.split(',').map(tag => tag.trim())) {
         const pairedAction = tag.match(/^(?:source|target|mutual)#(.+)$/i)?.[1].toLowerCase();
-        return tag && (!action || pairedAction !== action);
-      });
-      if (action) parts.push(`${interaction.mutual ? 'mutual' : role}#${action}`);
-      const seen = new Set(parts.map(tag => tag.toLowerCase()));
-      parts.push(...pose.split(',').map(tag => tag.trim()).filter(tag => tag && !seen.has(tag.toLowerCase())));
+        if (action && pairedAction === action) append(paired);
+        else if (tag) { parts.push(tag); seen.add(tag.toLowerCase()); }
+      }
+      if (paired) append(paired);
+      for (const tag of pose.split(',')) append(tag);
       character.tag = parts.join(', ') + (dialogue ?? '');
     }
   }

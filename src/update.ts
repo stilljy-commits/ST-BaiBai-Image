@@ -6,6 +6,7 @@
 import { getContext } from '@/st/context';
 import { PLUGIN_VERSION } from '@/version';
 import { reactive } from 'vue';
+import releaseNotes from '../release-notes.json';
 
 const CURRENT_VERSION = PLUGIN_VERSION;
 const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/stilljy-commits/ST-BaiBai-Image/main/manifest.json';
@@ -16,6 +17,8 @@ export const updateState = reactive({
   available: false,
   checking: false,
   updating: false,
+  currentNotes: (releaseNotes as Record<string, string[]>)[CURRENT_VERSION] ?? [],
+  latestNotes: [] as string[],
 });
 
 let checkedThisSession = false;
@@ -34,7 +37,12 @@ export function isNewer(a: string, b: string): boolean {
   return false;
 }
 
-async function readRemoteVersion(): Promise<string> {
+export function normalizeReleaseNotes(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((line): line is string => typeof line === 'string')
+    .map(line => line.trim().slice(0, 600)).filter(Boolean).slice(0, 20) : [];
+}
+
+async function readRemoteVersion(): Promise<{ version: string; notes: string[] } | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
@@ -44,14 +52,14 @@ async function readRemoteVersion(): Promise<string> {
         cache: 'no-store',
         signal: controller.signal,
       });
-      if (!response.ok) return '';
-      const manifest = (await response.json()) as { version?: string };
-      return String(manifest.version ?? '').trim();
+      if (!response.ok) return null;
+      const manifest = (await response.json()) as { version?: string; release_notes?: unknown };
+      return { version: String(manifest.version ?? '').trim(), notes: normalizeReleaseNotes(manifest.release_notes) };
     } finally {
       clearTimeout(timer);
     }
   } catch {
-    return '';
+    return null;
   }
 }
 
@@ -60,9 +68,10 @@ export async function checkForUpdate(force = false): Promise<void> {
   updateState.checking = true;
   try {
     const latest = await readRemoteVersion();
-    if (latest) {
-      updateState.latest = latest;
-      updateState.available = isNewer(latest, CURRENT_VERSION);
+    if (latest?.version) {
+      updateState.latest = latest.version;
+      updateState.latestNotes = latest.notes;
+      updateState.available = isNewer(latest.version, CURRENT_VERSION);
     }
     checkedThisSession = true;
   } finally {

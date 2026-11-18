@@ -9,6 +9,7 @@ const manifestPath = path.join(root, 'manifest.json');
 const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
 const manifestText = await readFile(manifestPath, 'utf8');
 const manifest = JSON.parse(manifestText);
+const notes = JSON.parse(await readFile(path.join(root, 'release-notes.json'), 'utf8'));
 
 const version = String(pkg.version ?? '').trim();
 if (!version) {
@@ -18,6 +19,7 @@ if (!version) {
 const expectedJs = `dist/index.js?ver=${encodeURIComponent(version)}`;
 manifest.version = version;
 manifest.js = expectedJs;
+manifest.release_notes = Array.isArray(notes[version]) ? notes[version] : [];
 
 const nextManifestText = `${JSON.stringify(manifest, null, 2)}\n`;
 if (nextManifestText !== manifestText) {

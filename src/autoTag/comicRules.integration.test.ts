@@ -25,6 +25,10 @@ describe('shared visual rules and active natural-language rules across analysis 
         batch.target, undefined, batch.instructions, profile, environment, 'fixed-markers');
       const text = (await build()).map(message => message.content).join('\n');
       expect(text.split(COMIC_VISUAL_RULES)).toHaveLength(2);
+      expect(text).toContain('正常跨坐');
+      expect(text).toContain('正文明确侧坐、倒坐等则按正文');
+      expect(text).toContain('镜头侧拍不等于人物侧坐');
+      expect(text).toContain('同格存在明确互动时，用现有images[].interactions记录双方关系');
       expect(text).toContain('cosplay是临时穿着');
       expect(text).toContain('服装/皮肤版本');
       expect(text).toContain('结束cosplay明确写cosplay:null');

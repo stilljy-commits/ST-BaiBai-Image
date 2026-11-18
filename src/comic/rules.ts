@@ -1,15 +1,13 @@
-export const NAI_INTERACTION_RULE = '同格多人姿态或接触容易混淆时，各自写朝向、相对站位和可见的关键接触点，区分并排同向、隔桌对坐、从身后接触。动作明确且有适用的NAI标签时，在同格双方的人物栏配对写source# / target# / mutual#。例如单向拥抱，主动方写source#hug，被抱方写target#hug；相互拥抱，双方写mutual#hug。公共描述只写共享姿态或核心事件。';
+export const NAI_INTERACTION_RULE = '动作写成可见姿态：在人物栏用英文短语交代本人正在做什么、身体朝向及必要支撑，不只写抽象动词或情绪。同一动作有多种坐法、方向或接触方式时，写明能区分它们的关键细节；骑马、自行车、摩托车未说明特殊坐法时，采用正常跨坐、双腿分居坐骑或车体两侧、朝行进方向，正文明确侧坐、倒坐等则按正文。主画格内每位骑乘者都明确astride或正文指定的坐姿，不能仅写sitting或seated。镜头侧拍不等于人物侧坐。有明确互动时，双方各写自己的姿态、相对位置与必要接触点，公共描述写共享对象和核心事件；区分并排同向、相对而坐、从身后接触，共用坐骑或座位须明确同一对象及前后位置。只补决定动作的可见细节，不推算关节角度，不臆造左右手。存在可靠NAI动作标签时，在双方人物栏配对使用source# / target# / mutual#；例如单向拥抱对应source#hug与target#hug，双方相互拥抱才都用mutual#hug，仍须保留自然语言姿态。';
 
 /** Shared concise contract for all three analysis modes. No additional model
  * pass, visible checklist, exhaustive pairwise comparison or reasoning report. */
 export const COMIC_VISUAL_RULES=`【共同画面约束｜直接落实，不输出检查报告】
 只用画面讲故事。对白情绪用动作与表情表达，省略文字、气泡、旁白和拟音。
 连续场景沿用光源、明暗与色调，只在正文写明转场、时间或光源变化时更新；人物固有颜色与环境光分开。
-每格只定格一个时刻；先后动作择关键瞬间或拆格。写清谁对谁做什么及必要的接触、持物、支撑；只在会造成冲突的操作中交代左右手，不推算关节角度。新动作不清除仍有效的持物、接触或衣着。
-站、坐、躺等姿态应有合理的支撑面；遮挡与裁切按实际可见范围处理。接触或换装时写清衣物仍归谁、遮到哪里，避免把肢体或服饰画到另一人身上。
+每格只定格一个时刻；先后动作择关键瞬间或拆格。站、坐、躺应有合理支撑；持物、接触和衣着状态按正文延续。手臂等部位的主动作与伴随动作冲突时保留主动作，把伴随项写成状态或拆格，仅在消除歧义时指定左右手。遮挡与裁切按可见范围处理；接触或换装时写清衣物仍归谁、遮到哪里，避免肢体或服饰串人。
 ${NAI_INTERACTION_RULE}
-核心动作发生在同一坐骑、座位或支撑面时，画格的事件句要写明共享对象、两人的前后或相对位置、主动作。两人在同一匹马上从后方环抱时，写清双方同骑、谁坐前谁坐后、谁的手臂环住谁。若伴随动作和主动作占用同一只手，保留主动作，把伴随项写成可见状态或拆到另一格。
-这类同格互动容易被画错时，在该图片的 interactions 数组记录一条关系，人物名照抄，panel 照抄双方同一格位置句。示例 {"panel":"This is the main panel.","source":"甲","target":"乙","action":"hug","sourcePose":"sitting behind her on the same horse, arms around her waist","targetPose":"sitting in front of him on the same horse, held around the waist from behind"}。sourcePose 和 targetPose 原样加入各自人物词，人物 tag 无需再重复。action 只填有把握的 NAI 动作词，如 hug；互相做同一动作才填 mutual:true。没有合适动作标签时仍可写双方站位，省略 action。只记录正文明确的动作；不为两个独立动作或不同画格创建关系。
+同格存在明确互动时，用现有images[].interactions记录双方关系：panel照抄该格位置句，source/target照抄人物名；sourcePose/targetPose各写本人的完整英文姿态，按需要包含相对朝向、支撑与接触点。不能只填一方、只填动作词，或用另一方的表情代替姿态。两段会合入人物提示词；相同姿态和动作只写在这里，人物tag保留外貌、表情与未覆盖动作。同格多组互动分别记录；独立动作或跨格人物不创建关系。action有可靠对应词就必须填，例如拥抱用hug；仅无合适词才省略；mutual:true仅表示双方相互做同一动作。不输出另份动作分析报告。
 fandom只表示人物本人身份，同人默认保留原作辨识，原创按固定库保留外貌；不为建档重做原作外貌与穿搭。正文明确改设或换装优先。cosplay是临时穿着，不把被cos的角色写入本人的fandom或永久changes；保留本人脸和体型，假发、美瞳等只按正文临时改变。
 【cosplay来源完整性｜优先于精简】每张图中每位cosplay穿着者的首次入镜都必须单列cosplay:{character:被cos角色的可靠英文名,work:所属作品英文名,costume:已明确的服装/皮肤版本}。正文或资料已明确的作品和角色必须保留，不能因为此前提过、未换装、关闭nl或追求简短而省略；同图后续画格沿用本图来源。仅确实无法可靠确定的作品或版本才省略，不编造。程序已确认表用于照抄完整字段，不是少写许可。结束cosplay明确写cosplay:null，换对象或版本从生效位置更新。不输出考据或检查报告。
 outfit写当前关键衣饰，不压成普通制服或泛化套装。兼容旧写法时必须给完整英文来源短句，例如“cosplay, wearing 被cos角色's 明确版本 outfit from 作品.”，不能只写“角色名 costume”“角色名 cosplay”这类无作品的缩写。最终每个可见衣着人物的NAI提示词都要有完整已知来源和镜头内关键衣饰；特写裁切不表示结束cosplay。

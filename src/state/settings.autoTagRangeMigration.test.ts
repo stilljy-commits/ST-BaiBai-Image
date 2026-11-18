@@ -42,6 +42,10 @@ describe('自动 tag 图片数量范围迁移', () => {
     expect(autoTag.maxImages).toBe(2);
   });
 
+  it('preserves zero recent AI floors after reopening settings',async()=>{
+    expect((await hydrateWithAutoTag({contextMessages:0})).contextMessages).toBe(0);
+  });
+
   it('drops the retired long-gap supplement setting', async () => {
     const autoTag = await hydrateWithAutoTag({maxImages:5,streamGapSupplement:true});
     expect(autoTag).not.toHaveProperty('streamGapSupplement');

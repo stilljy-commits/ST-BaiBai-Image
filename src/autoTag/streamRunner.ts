@@ -1,4 +1,5 @@
 import { ComicContinuityLedger } from '@/autoTag/comicContinuity';
+import { recordStreamDiagnostic } from '@/autoTag/diagnostics';
 import { archivedOutfits, mergeVisualChanges, readVisualArchive, saveVisualArchive, visualArchiveNote, visualPoint, visualPointsForImages, visualStory } from '@/autoTag/visualArchive';
 import { ComicWardrobeLedger, needsComicClothingHistory } from '@/comic/characters';
 import { parseComicSections, comicSectionCharacters } from '@/comic/sections';
@@ -59,7 +60,7 @@ const sessions = new Map<string, Session>();
 // Output metadata is excluded from scene discovery without editing the user's message.
 const STREAM_NON_STORY_TAGS = ['summary', 'action', 'UpdateVariable', 'JSONPatch', 'Analysis', 'statusplaceholder', 'CONTEXT_options', 'CONTEXT_conception', 'thought'];
 let current: Session | undefined;
-const log = (event: string, detail: unknown) => console.info(`[BBI][AutoTagDebug] ${event}`, JSON.stringify(detail));
+const log = (event: string, detail: unknown) => { recordStreamDiagnostic(event, detail); console.info(`[BBI][AutoTagDebug] ${event}`, JSON.stringify(detail)); };
 const swipe = (message: STMessage) => Array.isArray(message.swipes) ? (message.swipe_id ?? 0) : null;
 const jsonCopy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
@@ -240,6 +241,23 @@ async function completion(s: Session, messages: ChatMsg[], signal: AbortSignal, 
   });
   else await requestViaMainApi(messages, { signal, source, validate });
 }
+
+/** GENERATION_STARTED can precede the user's message and the new AI floor in TT. */
+function analysisFloor(s: Session): number {
+  if (s.binding) return s.binding.floor;
+  if (s.inlineOwner) return s.inlineOwner.floor;
+  const context = getContext();
+  if (!context || context.getCurrentChatId() !== s.chatId) return s.referenceFloor;
+  const hostFloor = context.streamingProcessor?.messageId;
+  if (typeof hostFloor === 'number' && Number.isInteger(hostFloor) && hostFloor >= s.referenceFloor && context.chat[hostFloor] && !context.chat[hostFloor].is_user) {
+    s.referenceFloor = hostFloor;
+  } else if (s.type === 'normal') {
+    const latest = context.chat.length - 1;
+    const floor = context.chat[latest]?.is_user ? latest + 1 : latest;
+    s.referenceFloor = Math.max(s.referenceFloor, floor);
+  }
+  return s.referenceFloor;
+}
 const STREAM_ANALYSIS_SCOPE = `【当前流式任务范围】
 本楼仍指整条消息；当前请求的「目标正文」仅指下方带 P 编号的段落。图片规划和首次建档检查都只处理这些目标段落中的角色。
 角色卡、世界书、柏宝书、此前正文提供完整设定与连续性依据；段外出现但未进入本次目标段落的角色，不在本请求补建档，不追加 changes，也不用反复盘点其此前是否漏建档。
@@ -258,7 +276,7 @@ function analysisScope(s: Session): string {
   return `${scope}\n${STREAM_SCENE_SUBJECT_RULE}`;
 }
 function analysisAnchors(s: Session): ReturnType<typeof resolveCharAnchors> {
-  const floor = s.binding?.floor ?? s.referenceFloor;
+  const floor = analysisFloor(s);
   const entries = charTagsBeforeFloor(floor + (s.continuing ? 1 : 0));
   const locked = lockedCharTagNames();
   // Only immutable introductions are shared. Timeline updates (outfit etc.) remain positional.
@@ -327,7 +345,7 @@ function acceptFastVisual(s: Session, job: Job, image: ImageInsertion) {
 }
 
 async function streamAnalysisRequest(s: Session, jobs: Job[], batch: ReturnType<typeof prepareStreamBatch>, progressive = false) {
-  const ctx = getContext()!, floor = s.binding?.floor ?? s.referenceFloor;
+  const ctx = getContext()!, floor = analysisFloor(s);
   const first = jobs[0].input;
   const scanText = jobs.at(-1)!.input.prefix + '\n' + jobs.map(job => job.input.text).join('\n');
   const anchors = analysisAnchors(s);
@@ -341,7 +359,7 @@ async function streamAnalysisRequest(s: Session, jobs: Job[], batch: ReturnType<
     prefix = continuity.prefix;
     const changes = mergeVisualChanges(archive.changes, continuity.changes);
     visualNote = visualArchiveNote({
-      pending: continuity.facts ? '' : archive.pending, facts: continuity.facts || archive.facts, changes,
+      pending: '', facts: continuity.facts || archive.facts, changes,
     });
     outfits = archivedOutfits(changes);
   }

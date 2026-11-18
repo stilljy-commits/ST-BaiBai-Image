@@ -1310,12 +1310,18 @@ async function removeVibe(vibe: NaiVibe) {
         </div>
         <p v-if="showComicSettings" class="bbi-field-hint" aria-live="polite">
           {{ comicAnalysisMode === 'fast'
-            ? '极速沿用标准的分镜和提示词规则，使用本段正文与造型档案，只补读尚未记录的前情，减少分析用量。'
+            ? '极速沿用标准的分镜规则，优先使用本段正文和造型档案；近期正文按下方楼数携带。世界书仅补充未建档人物的相关外貌资料。'
             : comicAnalysisMode === 'simple'
               ? '简单适合日常配图。保留对场景和人物的参考，缩短分析指令，由 AI 直接写提示词。'
               : '标准适合复杂剧情，使用完整分镜规则和近期上下文，通常需要更多分析时间和 token。' }}
           模式切换从下一轮生效。
         </p>
+        <label class="bbi-num-row">
+          <span class="bbi-field-label">携带最近 AI 楼数</span>
+          <input v-model.number="settings.autoTag.contextMessages" class="bbi-input bbi-num" type="number" min="0" step="1"
+            @change="settings.autoTag.contextMessages = Math.max(0, Math.floor(Number(settings.autoTag.contextMessages) || 0))" />
+        </label>
+        <p class="bbi-field-hint">三个漫画分析模式与普通插图都适用。当前回复计入楼数：1 只分析本楼，2 再带上一条 AI 回复及其间用户消息。0 关闭额外历史参考。本楼正文与当前造型仍会保留；楼数越大通常越耗 token。</p>
         <div v-if="showComicSettings" class="bbi-num-row">
           <span class="bbi-field-label">{{ comicAnalysisMode === 'simple' ? '简单模式推理方式' : '标准与极速的推理方式' }}</span>
           <BbiSelect v-model="comicReasoning" :options="comicReasoningOptions" aria-label="当前漫画模式推理方式" />

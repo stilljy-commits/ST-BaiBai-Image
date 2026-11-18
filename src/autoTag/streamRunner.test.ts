@@ -10,7 +10,7 @@ vi.mock('@/autoTag/streamInlinePreview',async importOriginal=>({...await importO
 }}));
 vi.mock('@/st/context',async importOriginal=>({...await importOriginal<typeof import('@/st/context')>(),getContext:()=>h.ctx}));
 vi.mock('@/api/client',()=>({requestCompletion:(_c:unknown,m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject})),requestViaMainApi:(m:any,o:any)=>new Promise<void>((resolve,reject)=>h.analyses.push({m,o,resolve,reject}))}));
-vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode}]}));
+vi.mock('@/autoTag/prompt',()=>({captureAutoTagEnvironment:()=>({profile:{...h.profile},nai:JSON.parse(JSON.stringify(settings.nai))}),buildAutoTagMessages:async(_c:any,_f:any,o:any,_m:any,t:any,a:any,n:any,_p:any,_e:any,planning:any)=>[{role:'user',content:t.promptText,options:o,note:n,library:a,planning,analysisMode:_e.nai.comicAnalysisMode,targetFloor:_f}]}));
 vi.mock('@/autoTag/bookMemory',()=>({readBookMemory:()=>null}));
 vi.mock('@/autoTag/charAnchors',()=>({resolveCharAnchors:(entries:any[])=>({text:JSON.stringify(entries),entries}),applyPositionedCharRefs:(text:string)=>({text,unknown:[]})}));
 vi.mock('@/state/charTags',()=>({CHAR_TAG_FIELDS:['sex','hair','eyes','fandom','outfit'],BBI_CHAR_EXTRA_KEY:'chars',charTagsBeforeFloor:()=>[],lockedCharTagNames:()=>new Set(),readCharTagFloorDelta:()=>null,makeCharTagFloorDelta:(x:any)=>x,recomputeCharTags:()=>{},createCharTagNewOp:(x:any,r:any)=>({...x,kind:'new',reason:r,at:Date.now()}),createCharTagSetOp:(name:any,field:any,value:any,reason:any)=>({kind:'set',name,field,value,reason,at:Date.now()}),emptyCharFields:()=>({}),applyCharTagOps:(entries:any[],ops:any[])=>[...entries,...ops.filter(op=>op.kind==='new').map(op=>({name:op.name,fields:op.fields,raw:op.raw,nl:op.nl,history:[]}))]}));
@@ -451,6 +451,27 @@ describe('source ordered costume completion before NAI',()=>{
  }
 });
 describe('fast visual archive integrated with native comic plans',()=>{
+ it.each([true,false])('uses the newly created TT floor when generation starts before the user message, host processor=%s',async hasProcessor=>{
+  useComicChannel();settings.autoTag.streamAnalysisBatchSize=1;
+  h.ctx.chat.push(ai('上一轮她还穿着蓝外套。'));
+  beginStreamSession('A');
+  h.ctx.chat.push({name:'User',is_user:true,is_system:false,mes:'换件衣服',send_date:'next-user'});
+  const text='她换上黄雨衣，走到门口。\n[img: 女主在门口]';
+  h.ctx.chat.push({...ai(text),send_date:'next-ai'});
+  if(hasProcessor)h.ctx.streamingProcessor={messageId:3,isFinished:false};
+  feedStreamText(text);await flush();
+  const task=h.analyses[0];
+  expect(task.m[0].targetFloor).toBe(3);
+  task.o.validate(JSON.stringify({changes:[],images:[nativePage('M1',{
+   visualState:{complete:true,facts:'她站在门口',changes:{小雪:{outfit:'yellow raincoat'}}},
+  })]}));task.resolve();await flush();
+  await reconcileStreamFloor(3,'A');await flush();
+  const archive=readVisualArchive(h.ctx.chat,4,[]);
+  expect(archive.changes.小雪.outfit).toBe('yellow raincoat');
+  expect(h.ctx.chat[1].extra.bbiVisualArchive).toBeUndefined();
+  expect(h.analyses).toHaveLength(1);
+ });
+
  it('saves a later explicit outfit without visualState before NAI, while retaining the unconfirmed prose',async()=>{
   useComicChannel();
   const body='小雪从站台走来。\n[img: 小雪走来]\n小雪换上黄雨衣，站在门口。\n[img: 小雪在门口]\n她低头微笑。\n[img: 小雪面部特写]';
@@ -468,7 +489,7 @@ describe('fast visual archive integrated with native comic plans',()=>{
   expect(archive.pending).toContain('小雪换上黄雨衣，站在门口。');
  });
 
- it('carries the previous visual archive before any NAI result and sends only the unprocessed tail and skipped floor',async()=>{
+ it('carries the previous visual archive before NAI and leaves historical prose to the configured window',async()=>{
   useComicChannel();
   settings.autoTag.contextMessages=30;
   settings.autoTag.streamAnalysisBatchSize=1;
@@ -492,8 +513,9 @@ describe('fast visual archive integrated with native comic plans',()=>{
   const request=h.analyses[1].m[0];
   expect(request.note).toContain('yellow raincoat');
   expect(request.note).toContain('ponytail');
-  expect(request.note).toContain('她在门口收起银发夹。');
-  expect(request.note).toContain('这一楼只写别人在月台等车。');
+  expect(request.note).not.toContain('她在门口收起银发夹。');
+  expect(request.note).not.toContain('这一楼只写别人在月台等车。');
+  expect(request.options.contextMessages).toBe(30);
   expect(request.note).not.toContain('小雪换黄雨衣、扎马尾、化淡妆。');
  });
  it('reuses the confirmed look when continuing the same AI floor and records the new look after it',async()=>{

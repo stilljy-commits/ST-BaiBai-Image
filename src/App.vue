@@ -2,9 +2,18 @@
 import Icon from '@/components/Icon.vue';
 import NavBar from '@/components/NavBar.vue';
 import FloatingOrb from '@/components/FloatingOrb.vue';
+import { settings } from '@/state/settings';
+import { normalizeImageLimits } from '@/autoTag/limits';
 import { getPage } from '@/pages/registry';
 import { closePanel, cycleTheme, lastOpenedAt, modalHost, THEMES, ui } from '@/state/ui';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
+
+const quickMinimum = computed({ get: () => settings.autoTag.minImages, set: (value: number) => {
+  settings.autoTag.minImages = value; normalizeImageLimits(settings.autoTag, 'minImages');
+} });
+const quickMaximum = computed({ get: () => settings.autoTag.maxImages, set: (value: number) => {
+  settings.autoTag.maxImages = value; normalizeImageLimits(settings.autoTag, 'maxImages');
+} });
 
 // 题首主题按钮:显示「下一个」主题的图标与名,点击即切换到它
 const nextTheme = computed(() => {
@@ -119,6 +128,17 @@ const windowStyle = computed(() => {
             <!-- 题首 -->
             <header class="bbi-head">
               <span class="bbi-brand-name">柏宝绘</span>
+              <div class="bbi-quick-limits" role="group" aria-label="单楼图片数量快捷设置">
+                <span class="bbi-quick-limits-title">单楼图片数</span>
+                <label title="每条 AI 回复要求的最少图片数，0 允许不出图；从下一轮生效">
+                  <span>最少</span><input v-model.number="quickMinimum" type="number" min="0" step="1"
+                    aria-label="单楼最少图片数" />
+                </label>
+                <label title="每条 AI 回复允许的最多图片数；从下一轮生效">
+                  <span>最多</span><input v-model.number="quickMaximum" type="number" min="1" step="1"
+                    aria-label="单楼最多图片数" />
+                </label>
+              </div>
               <div class="bbi-head-actions">
                 <button class="bbi-icon-btn" type="button" :title="`切换主题:${nextTheme.label}`" @click="cycleTheme">
                   <Icon :name="nextTheme.icon" />
@@ -168,6 +188,17 @@ const windowStyle = computed(() => {
 .bbi-head-actions {
   display: flex;
   gap: 8px;
+}
+.bbi-head { gap: 8px; flex-wrap: wrap; }
+.bbi-brand-name { flex-shrink: 0; }
+.bbi-quick-limits { display: flex; gap: 8px; margin-right: auto; }
+.bbi-quick-limits-title { align-self: center; white-space: nowrap; font-size: 12px; color: var(--bbi-ink-soft); }
+.bbi-quick-limits label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--bbi-ink-soft); }
+.bbi-quick-limits input { width: 44px; min-height: 32px; border: 1px solid var(--bbi-line); border-radius: var(--bbi-radius-sm); background: var(--bbi-surface-2); color: var(--bbi-ink); text-align: center; }
+.bbi-quick-limits input:focus-visible { outline: 2px solid var(--bbi-accent); outline-offset: 1px; }
+@media (max-width: 480px) {
+  .bbi-quick-limits { order: 3; width: 100%; }
+  .bbi-head-actions { margin-left: auto; }
 }
 .bbi-icon-btn {
   width: 36px;

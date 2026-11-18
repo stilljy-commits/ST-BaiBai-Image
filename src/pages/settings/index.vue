@@ -9,6 +9,9 @@ import { fetchModels, testChannel } from '@/api/client';
 import { currentVertexSettings, vertexModelList } from '@/api/vertex';
 import { normalizeStreamBatchSize, MAX_STREAM_BATCH_SIZE } from '@/autoTag/batchSettings';
 import { streamBatchSizes } from '@/autoTag/streamCore';
+import { normalizeImageLimits } from '@/autoTag/limits';
+import { streamDiagnosticReport } from '@/autoTag/diagnostics';
+import { copyText } from '@/st/clipboard';
 import {
   BACKENDS,
   DEFAULT_COMFY_SPEC,
@@ -142,15 +145,7 @@ function cloneChannel(ch: ApiChannel): ApiChannel {
 const showKey = ref(false);
 
 function normalizeAutoTagNumbers(changed?: 'minImages' | 'maxImages' | Event) {
-  settings.autoTag.contextMessages = Math.max(1, Math.floor(Number(settings.autoTag.contextMessages) || 1));
-  let minImages = Math.max(0, Math.floor(Number(settings.autoTag.minImages) || 0));
-  let maxImages = Math.max(1, Math.floor(Number(settings.autoTag.maxImages) || 1));
-  // 用户抬高下限时顺带抬高上限;用户压低上限时顺带压低下限。
-  // 这样正在编辑的那一格始终保留用户意图,不会出现 min > max 的瞬时脏配置。
-  if (changed === 'minImages') maxImages = Math.max(maxImages, minImages);
-  else minImages = Math.min(minImages, maxImages);
-  settings.autoTag.minImages = minImages;
-  settings.autoTag.maxImages = maxImages;
+  normalizeImageLimits(settings.autoTag, typeof changed === 'string' ? changed : undefined);
   settings.autoTag.retryCount = Math.min(5, Math.max(0, Math.floor(Number(settings.autoTag.retryCount) || 0)));
 }
 
@@ -523,6 +518,7 @@ function closeModelMenuSoon() {
 }
 
 const updateConfirmOpen = ref(false);
+const releaseNotesOpen = ref(false);
 onMounted(() => void checkForUpdate(true));
 
 function openUpdateConfirm() {
@@ -556,6 +552,7 @@ async function confirmUpdate() {
         >
           v{{ updateState.current || '—' }}
         </button>
+        <button class="bbi-btn bbi-btn-sm" type="button" @click="releaseNotesOpen = true">更新说明</button>
         <button
           v-if="updateState.available"
           class="bbi-btn bbi-btn-primary bbi-btn-sm"
@@ -732,6 +729,10 @@ async function confirmUpdate() {
           <input v-model="settings.autoTag.streamGen" type="checkbox" class="bbi-checkbox" />
         </label>
         <p class="bbi-field-hint">正文边写，插件边按配图标记分析提示词。打开「自动生成图片」后也会提前出图。关闭流式，或正文没有配图标记时，插件等正文结束再选图。</p>
+        <p class="bbi-field-hint">若出现滑动或回到前台才开始配图，可在发生后点击
+          <button class="bbi-btn bbi-btn-sm" type="button" @click="copyText(streamDiagnosticReport(), '已复制流式诊断')">复制流式诊断</button>。
+          仅记录本次打开页面后的处理时间和状态，不包含正文或密钥。
+        </p>
 
         <fieldset class="bbi-stream-options" :disabled="!settings.autoTag.streamGen" aria-label="流式出图设置">
           <label class="bbi-switch-row">
@@ -771,19 +772,6 @@ async function confirmUpdate() {
           </label>
           <p class="bbi-field-hint">设为 1 时各批依次分析。设得更高可以同时分析几批；实际同时出几张图由出图渠道决定。</p>
         </fieldset>
-
-        <label class="bbi-num-row">
-          <span class="bbi-field-label">携带最近 AI 楼数</span>
-          <input
-            v-model.number="settings.autoTag.contextMessages"
-            class="bbi-input bbi-num"
-            type="number"
-            min="1"
-            step="1"
-            @change="normalizeAutoTagNumbers"
-          />
-        </label>
-        <p class="bbi-field-hint">生图分析可参考几条 AI 回复，当前这一条也算在内。中间的用户消息会一起带上。这个数字适用于普通插图和漫画的标准、简单模式。极速模式根据造型档案的记录进度补读前文。</p>
 
         <label class="bbi-num-row">
           <span class="bbi-field-label">单楼最少图片数</span>
@@ -1238,6 +1226,24 @@ async function confirmUpdate() {
       </div>
     </ModalMask>
 
+    <ModalMask :open="releaseNotesOpen" @close="releaseNotesOpen = false">
+      <div class="bbi-modal bbi-release-notes" role="dialog" aria-modal="true" aria-label="更新说明">
+        <header class="bbi-modal-head">
+          <span class="bbi-modal-title">更新说明</span>
+          <button class="bbi-icon-mini" type="button" title="关闭更新说明" @click="releaseNotesOpen = false"><Icon name="close" /></button>
+        </header>
+        <template v-if="updateState.available">
+          <h3>新版本 v{{ updateState.latest }}</h3>
+          <ul v-if="updateState.latestNotes.length"><li v-for="(line, index) in updateState.latestNotes" :key="index">{{ line }}</li></ul>
+          <p v-else>此版本尚未提供简要说明。</p>
+        </template>
+        <h3>当前版本 v{{ updateState.current }}</h3>
+        <ul v-if="updateState.currentNotes.length"><li v-for="(line, index) in updateState.currentNotes" :key="index">{{ line }}</li></ul>
+        <p v-else>此版本尚未提供简要说明。</p>
+        <footer class="bbi-modal-foot"><button class="bbi-btn" type="button" @click="releaseNotesOpen = false">关闭</button></footer>
+      </div>
+    </ModalMask>
+
     <ConfirmDialog
       v-model:open="updateConfirmOpen"
       title="发现新版本"
@@ -1253,6 +1259,10 @@ async function confirmUpdate() {
 </template>
 
 <style scoped>
+.bbi-release-notes { max-width: 540px; line-height: 1.7; }
+.bbi-release-notes h3 { margin: 16px 0 4px; font-size: 14px; }
+.bbi-release-notes ul { margin: 6px 0; padding-left: 20px; }
+.bbi-release-notes li { margin-bottom: 6px; }
 .bbi-stream-options {
   min-width: 0;
   margin: 8px 0;

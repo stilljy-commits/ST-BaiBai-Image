@@ -226,10 +226,12 @@ function sanitizeInteractions(value: unknown, index: number): ComicInteraction[]
     try {
       const read = (key: string) => sanitizeContent(item[key], 'interactions.' + key, index);
       const panel = read('panel'), source = read('source'), target = read('target');
-      const sourcePose = read('sourcePose'), targetPose = read('targetPose'), action = read('action').toLowerCase();
-      if (!panel || !source || !target || source === target || !sourcePose || !targetPose) return [];
+      const optional = (key: string) => { try { return read(key); } catch { return ''; } };
+      const sourcePose = optional('sourcePose'), targetPose = optional('targetPose'), rawAction = optional('action').toLowerCase();
+      const action = /^[a-z][a-z0-9 -]{0,39}$/.test(rawAction) ? rawAction : '';
+      if (!panel || !source || !target || source === target || (!sourcePose && !targetPose && !action)) return [];
       return [{ panel, source, target, sourcePose, targetPose,
-        ...(/^[a-z][a-z0-9 -]{0,39}$/.test(action) ? { action } : {}), mutual: item.mutual === true }];
+        ...(action ? { action } : {}), mutual: item.mutual === true }];
     } catch {
       return [];
     }

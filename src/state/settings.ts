@@ -2241,7 +2241,7 @@ function normalize(raw: unknown): ImageSettings {
     enabled: typeof rt.enabled === 'boolean' ? rt.enabled : d.autoTag.enabled,
     contextMessages:
       typeof rt.contextMessages === 'number' && Number.isFinite(rt.contextMessages)
-        ? Math.max(1, Math.floor(rt.contextMessages))
+        ? Math.max(0, Math.floor(rt.contextMessages))
         : d.autoTag.contextMessages,
     minImages,
     maxImages,

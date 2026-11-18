@@ -71,7 +71,7 @@ export class StreamInput {
       // Older wrappers can remain inside another extension's async delegate
       // chain. Only our newest wrapper may claim the response.
       const run = this.wrapper === wrapper ? this.requestOwner(input, init) : undefined;
-      if (run) { run.route = 'response'; run.claimed = true; }
+      if (run) { run.route = 'response'; run.claimed = true; this.log('stream:input-request-claimed', { source: 'response' }); }
       let response: Response;
       try { response = await original.call(target, input, init); }
       catch (error) { if (run) this.fallback(run, 'main-request-failed'); throw error; }
@@ -95,6 +95,7 @@ export class StreamInput {
     this.install();
     const run: InputRun = { owner, route: 'events', lastEvent: '', lastResponse: '', claimed: false, finished: false, hostFinished: false, started: Date.now() };
     this.run = run;
+    this.log('stream:input-begin', { source: run.route });
     const tick = () => {
       if (!this.alive(run) || Date.now() - run.started > (this.options.lifetimeMs ?? 30 * 60_000)) { if (this.run === run) this.stop(); return; }
       this.recover();
@@ -107,6 +108,7 @@ export class StreamInput {
   hostText(text: string): void {
     const run = this.run;
     if (!run || !this.alive(run)) return;
+    if (!run.lastEvent && text) this.log('stream:input-first-host-text', { source: run.route, chars: text.length });
     run.lastEvent = text;
     if (run.route === 'events' || run.route === 'fallback' && (!run.lastResponse || text.startsWith(run.lastResponse))) this.text(run, text);
   }

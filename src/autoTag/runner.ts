@@ -5,6 +5,7 @@ import { comicReasoningKey, comicReasoningOverride } from '@/api/comicReasoning'
 import { planChangeOps } from '@/autoTag/changeOps';
 import { beginStreamSession, feedStreamText, finishStreamInput, markStreamHostFinished, streamRecoveryTarget, reconcileStreamFloor, cancelStreamSessions, stopCurrentStream, invalidateStreamOwners } from '@/autoTag/streamRunner';
 import { StreamInput } from '@/autoTag/streamInput';
+import { recordStreamDiagnostic } from '@/autoTag/diagnostics';
 import { captureRenderProfile } from '@/autoTag/renderProfile';
 import { requestCompletion, requestViaMainApi } from '@/api/client';
 import { readBookMemory } from '@/autoTag/bookMemory';
@@ -58,6 +59,7 @@ const scheduled = new Set<ReturnType<typeof setTimeout>>();
 const DIAGNOSTIC_PREFIX = '[BBI][AutoTagDebug]';
 
 function diagnostic(event: string, payload: unknown = null): void {
+  recordStreamDiagnostic(event, payload);
   const seen = new WeakSet<object>();
   let detail: string;
   try {
@@ -286,7 +288,7 @@ async function runForFloor(floor: number, opts: RunOptions = {}): Promise<void> 
     const fast = renderProfile.mode !== 'illustration' && environment.nai.comicAnalysisMode === 'fast';
     const archive = fast ? readVisualArchive(context.chat, floor, tags,
       slotMatch ? visualStory(rawSource.slice(0, slotMatch.index), tags).length : undefined) : undefined;
-    const note = [slot ? buildSlotTaskNote(rawSource, slot.seq) : '', archive ? visualArchiveNote(archive) : ''].filter(Boolean).join('\n\n');
+    const note = [slot ? buildSlotTaskNote(rawSource, slot.seq) : '', archive ? visualArchiveNote({ ...archive, pending: '' }) : ''].filter(Boolean).join('\n\n');
     const messages = await buildAutoTagMessages(
       context,
       floor,
@@ -680,7 +682,11 @@ export function bindAutoTagging(): void {
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {
     input = new StreamInput({ target: window, diagnostic });
     input.install();
-    const resume = () => { if (document.visibilityState !== 'hidden') input?.recover(); };
+    const resume = () => {
+      const processor = getContext()?.streamingProcessor;
+      diagnostic('stream:visibility', { hidden: document.visibilityState === 'hidden', hasProcessor: !!processor, processorFinished: !!processor?.isFinished });
+      if (document.visibilityState !== 'hidden') input?.recover();
+    };
     window.addEventListener('focus', resume);
     document.addEventListener('visibilitychange', resume);
     window.addEventListener('pageshow', resume);

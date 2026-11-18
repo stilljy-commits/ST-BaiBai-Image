@@ -205,6 +205,7 @@ export async function fetchWorldInfo(
   name1: string,
   name2: string,
   suppliedReferences?: readonly string[],
+  newCharacterOnly?: { knownCharacters: ReadonlySet<string>; targetText: string },
 ): Promise<string> {
   const scanText = buildScanText(chat, targets, name1, name2);
   if (!scanText.length) return '';
@@ -212,7 +213,10 @@ export async function fetchWorldInfo(
   const refFloor = targets.length ? targets[targets.length - 1] : undefined;
   try {
     const check = await getCheckWorldInfo();
-    if (!check) return fetchWorldInfoViaPrompt(scanText, refFloor);
+    if (!check) {
+      const text = await fetchWorldInfoViaPrompt(scanText, refFloor);
+      return newCharacterOnly ? text.split(/\n\s*\n/).filter(content => needsCharacterReference({ content }, newCharacterOnly)).join('\n\n') : text;
+    }
 
     const res = await check(scanText, HUGE_WI_CONTEXT, true);
     const activated = res?.allActivatedEntries;
@@ -226,6 +230,7 @@ export async function fetchWorldInfo(
     const chunks = await Promise.all(
       entries
         .filter(e => e && !isWorldInfoEntryExcluded(e, settings.excludes))
+        .filter(e => !newCharacterOnly || needsCharacterReference(e, newCharacterOnly))
         .map(async entry => {
           const raw = typeof entry.content === 'string' ? entry.content : '';
           return { raw, text: await renderWorldInfoContent(raw, entry, refFloor) };
@@ -237,6 +242,25 @@ export async function fetchWorldInfo(
     console.log('[柏宝绘] 世界书激活失败(降级为不带设定):', e);
     return '';
   }
+}
+
+/** Local matching only: do not send established character profiles or general rules to fast analysis. */
+export function needsCharacterReference(entry: WorldInfoEntry, selection: { knownCharacters: ReadonlySet<string>; targetText: string }): boolean {
+  const content = String(entry.content ?? '');
+  if (!DYNAMIC_WORLD_TEXT.test(content) && !/(?:外貌|外观|发色|发型|长发|短发|瞳色|眼睛|头发|身高|体型|衣着|身穿|穿着|服装|appearance|hair|eyes|outfit|wearing|height|physique)/i.test(content)) return false;
+  const explicitNames = Array.from(content.matchAll(/(?:^|\n)\s*(?:姓名|角色名|人物名|name)\s*[:：]\s*([^\n,，;；]+)/gi), match => match[1].trim());
+  const keys = Array.isArray(entry.key) ? entry.key.filter((key): key is string => typeof key === 'string' && !!key.trim()) : [];
+  const mentioned = [...keys, ...explicitNames].filter(name => selection.targetText.includes(name));
+  // A title naming a known owner also covers that profile's alternate trigger words.
+  const title = String(entry.comment ?? '');
+  const knownOwner = [...selection.knownCharacters].some(name => title.includes(name));
+  const mixedOwner = mentioned.some(name => !selection.knownCharacters.has(name) && (explicitNames.includes(name) || title.includes(name)));
+  if (knownOwner && !mixedOwner) return false;
+  if (mentioned.length) return mentioned.some(name => !selection.knownCharacters.has(name));
+  // Old hosts may supply only text. Require an explicit name or a small title,
+  // never fall back to attaching the whole combined worldbook.
+  const titleName = title.replace(/^[【\[（(]|[】\]）)]$/g, '').replace(/(?:角色|人物|外貌|设定|档案|资料)/g, '').trim();
+  return !!titleName && titleName.length <= 32 && selection.targetText.includes(titleName) && !selection.knownCharacters.has(titleName);
 }
 
 /* ============ 角色卡描述 + user 人设(与柏宝书 fetchCharCard / fetchUserPersona 一致) ============ */

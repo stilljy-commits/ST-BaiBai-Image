@@ -3,10 +3,17 @@
   "loading_order": 100,
   "requires": [],
   "optional": [],
-  "js": "dist/index.js?ver=0.4.28",
+  "js": "dist/index.js?ver=0.4.29",
   "author": "柏柏",
-  "version": "0.4.28",
+  "version": "0.4.29",
   "homePage": "https://github.com/stilljy-commits/ST-BaiBai-Image",
   "auto_update": false,
-  "minimum_client_version": "1.12.13"
+  "minimum_client_version": "1.12.13",
+  "release_notes": [
+    "修复流式分析偶尔绑定到上一楼，导致极速模式漏存当前造型的问题。",
+    "极速模式可按设置携带最近 AI 楼数，设为 0 时不发送额外前文。角色缺档时按需发送匹配的世界书外貌条目，已建档角色继续使用档案。",
+    "改进漫画动作提示词，明确人物朝向、姿势、支撑和接触位置。保留正文指定的特殊姿势。",
+    "插件标题旁新增「单楼图片数」快捷设置，设置页版本号旁新增「更新说明」。",
+    "新增「复制流式诊断」，帮助排查手机端返回或滚动后才启动生图的问题。该问题仍待真机验证。"
+  ]
 }
